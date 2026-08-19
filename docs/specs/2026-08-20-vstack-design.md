@@ -199,7 +199,12 @@ disagreeing — not a shared abstraction, but having nothing to convert.
 Max box is `min(sourceW, sourceH × 9/8)` wide. For 1920×1080 that is
 1215×1080, which *downscales* into the 1080×960 half. A 720p source maxes at
 810×720, a 1.33× upscale — acceptable, but the reason yt-dlp prefers ≥1080p.
-Dimensions rounded to even for chroma subsampling.
+
+Crop rects are plain integers, **not** rounded to even. Chroma subsampling
+constrains the *encoded frame*, which is a fixed 1080×960 — both even — not the
+crop window ffmpeg reads. Even-rounding the crop would buy nothing and cost
+exactness: with `w = round(h × 9/8)` the aspect error is 0, whereas
+even-rounding leaves a ±2px slop that has to be tolerated in validation.
 
 ## geometry.ts
 
@@ -211,15 +216,29 @@ export const MIN_BOX_W = 160;   // source px; blocks degenerate boxes
 export const SKIP_TRIM_UNDER = 180;  // s; auto-mark 0→duration below this
 
 maxBox(source: Size): Size
-snapAspect(w, h, source): Size                       // aspect-lock + min/max clamp + even
+boxFromHeight(h, source): Size                       // aspect-lock + size clamp
 clampToBounds(rect, source): Rect                    // slides, never resizes
+moveBy(rect, dx, dy, source): Rect
 resizeFromCorner(rect, corner, dx, dy, source): Rect // scales about opposite corner
+defaultBoxes(source): { top: Rect; bottom: Rect }
 displayScale(source: Size, displayW: number): number
 toDisplay(rect, scale) / fromDisplay(rect, scale)
+isValidBox(rect, source): boolean                    // shared with the server
 ```
 
-Every function returns a rect that is aspect-correct, even-dimensioned, and
-fully inside the source. No caller can construct an invalid rect.
+Every function returns a rect that is aspect-correct and fully inside the
+source. No caller can construct an invalid rect.
+
+**Size is height-driven, not width-driven.** Aspect is locked, so `h`
+determines `w` — a `snapAspect(w, h, …)` taking both is not just redundant, it
+is not idempotent: deriving `h` from `w` and then `w` from `h` loses a pixel
+each round, so a box re-snapped on every drag frame visibly shrinks. Canonical
+form is `h` integer, `w = round(h × 9/8)`. `resizeFromCorner` converts a
+horizontal drag to a height via the ratio and takes whichever axis moved more.
+
+`isValidBox` is imported by the server (`../src/geometry.ts` — Node 24 strips
+types), so client and server share one definition of a legal rect instead of
+two that can drift.
 
 **Critical ordering: clamping slides the rect, it never shrinks it.**
 Shrinking would break the 9:8 lock, and a box off 9:8 produces a stretched
@@ -277,8 +296,9 @@ Output name: `<title-slug>-<mmss>-<mmss>.mp4`.
 args array, so no shell is involved and this is not injection defense; it is
 that numbers are the one thing interpolated into `crop=`, and a `NaN` or
 out-of-bounds rect makes ffmpeg fail unreadably. Coerce to int, range-check
-against the clip's source dimensions, verify `abs(w - round(h * 9/8)) <= 1`,
-reject with a clear message.
+against the clip's source dimensions, and check `isValidBox` — which asserts
+`w === round(h * 9/8)` exactly, integers only, and fully in bounds. Reject with
+a clear message.
 
 ## Errors
 
