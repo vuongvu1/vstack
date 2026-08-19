@@ -7,6 +7,15 @@ import { probe, videoIdFrom } from "./ytdlp.ts";
 const run = promisify(execFile);
 const PORT = 8787;
 
+export class HttpError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 const REQUIRED: ReadonlyArray<readonly [string, string, string]> = [
   ["yt-dlp", "--version", "brew install yt-dlp"],
   ["ffmpeg", "-version", "brew install ffmpeg"],
@@ -27,7 +36,11 @@ async function checkBinaries(): Promise<void> {
 export async function json<T>(req: IncomingMessage): Promise<T> {
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c as Buffer);
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+  } catch {
+    throw new HttpError(400, "Body is not valid JSON.");
+  }
 }
 
 export function send(res: ServerResponse, code: number, body: unknown): void {
@@ -42,7 +55,8 @@ export function send(res: ServerResponse, code: number, body: unknown): void {
 const server = createServer((req, res) => {
   void route(req, res).catch((err: Error) => {
     console.error(err);
-    send(res, 500, { error: err.message });
+    const status = err instanceof HttpError ? err.status : 500;
+    send(res, status, { error: err.message });
   });
 });
 
@@ -50,7 +64,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.method !== "POST") return send(res, 405, { error: "POST only" });
 
   if (req.url === "/api/probe") {
-    const { url } = await json<{ url: string }>(req);
+    const { url } = await json<{ url?: unknown }>(req);
+    if (typeof url !== "string") return send(res, 400, { error: "Expected a JSON body with a url string." });
     const videoId = videoIdFrom(url);
     if (!videoId) return send(res, 400, { error: "Not a YouTube video URL." });
     const result = await probe(videoId);
