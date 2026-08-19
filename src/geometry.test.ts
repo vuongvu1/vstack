@@ -202,3 +202,21 @@ describe("isValidBox", () => {
     }
   });
 });
+
+describe("sources too small for MIN_BOX_H", () => {
+  it("still produces boxes isValidBox accepts", () => {
+    const tiny: Size[] = [
+      { w: 100, h: 100 },
+      { w: 64, h: 64 },
+      { w: 320, h: 40 },
+      { w: 40, h: 320 },
+    ];
+    for (const s of tiny) {
+      const { top, bottom } = defaultBoxes(s);
+      expect(isValidBox(top, s)).toBe(true);
+      expect(isValidBox(bottom, s)).toBe(true);
+      // Asking for an impossibly small box must still yield a legal one.
+      expect(isValidBox({ x: 0, y: 0, ...boxFromHeight(1, s) }, s)).toBe(true);
+    }
+  });
+});

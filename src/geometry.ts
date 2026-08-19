@@ -26,9 +26,17 @@ export function maxBox(source: Size): Size {
   return { w: Math.round(h * BOX_RATIO), h };
 }
 
+/** MIN_BOX_H is the preferred floor, but a source too small to contain it
+ *  cannot honour it — the effective floor is whichever is smaller. Both
+ *  boxFromHeight and isValidBox read it, so the validator can never reject
+ *  what the constructors produce. */
+function effectiveMinH(source: Size): number {
+  return Math.min(MIN_BOX_H, maxBox(source).h);
+}
+
 /** Canonical box construction: integer height, width derived exactly. */
 export function boxFromHeight(h: number, source: Size): Size {
-  const height = Math.round(clamp(h, MIN_BOX_H, maxBox(source).h));
+  const height = Math.round(clamp(h, effectiveMinH(source), maxBox(source).h));
   return { w: Math.round(height * BOX_RATIO), h: height };
 }
 
@@ -121,7 +129,7 @@ export function isValidBox(rect: Rect, source: Size): boolean {
   return (
     ints &&
     rect.w === Math.round(rect.h * BOX_RATIO) &&
-    rect.h >= MIN_BOX_H &&
+    rect.h >= effectiveMinH(source) &&
     rect.x >= 0 &&
     rect.y >= 0 &&
     rect.x + rect.w <= source.w &&
