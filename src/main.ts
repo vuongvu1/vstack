@@ -4,6 +4,13 @@ import { clock } from "./format.ts";
 import type { AppState } from "./state.ts";
 import { getState, restore, setQuiet, setState, subscribe } from "./state.ts";
 
+// TEMP TEST SCAFFOLD — verifying guard()'s finally still releases inFlight
+// when render() throws. Removed immediately after the test in this round.
+let __testThrowOnce = false;
+(window as unknown as { __armTestThrow: () => void }).__armTestThrow = () => {
+  __testThrowOnce = true;
+};
+
 const appEl = document.querySelector<HTMLDivElement>("#app");
 if (!appEl) throw new Error("#app missing");
 // Rebound so `app`'s declared type is HTMLDivElement outright: control-flow
@@ -53,13 +60,17 @@ let inFlight = false;
 async function guard(label: string, fn: () => Promise<void>): Promise<void> {
   if (inFlight) return;
   inFlight = true;
-  setState({ busy: label, error: "" });
   try {
+    // Inside the try: setState notifies subscribers synchronously, so this
+    // is a render() call. If it threw outside the try, finally would never
+    // run and inFlight would stay true — wedging every later load with no
+    // way back but a page reload.
+    setState({ busy: label, error: "" });
     await fn();
   } catch (err) {
     setState({ error: err instanceof Error ? err.message : String(err) });
   } finally {
-    inFlight = false;
+    inFlight = false; // must stay first, so a throwing setState below can't strand it
     setState({ busy: "" });
   }
 }
