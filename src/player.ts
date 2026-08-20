@@ -1,5 +1,11 @@
 type YtErrorEvent = { data: number };
 
+type YtPlayerInstance = {
+  getCurrentTime(): number;
+  seekTo(s: number, allow: boolean): void;
+  destroy(): void;
+};
+
 type YtApi = {
   Player: new (
     host: HTMLElement,
@@ -8,7 +14,7 @@ type YtApi = {
       playerVars?: Record<string, number | string>;
       events?: { onReady?: () => void; onError?: (event: YtErrorEvent) => void };
     },
-  ) => { getCurrentTime(): number; seekTo(s: number, allow: boolean): void; destroy(): void };
+  ) => YtPlayerInstance;
 };
 
 declare global {
@@ -93,40 +99,63 @@ function loadApi(): Promise<YtApi> {
  *  that keeps `host` attached and never re-parents it gets a player that
  *  survives unrelated re-renders. Re-parenting `host` (or any ancestor)
  *  after this resolves discards the iframe's nested browsing context and
- *  reloads the video — there is no supported way to move a live player. */
+ *  reloads the video — there is no supported way to move a live player.
+ *
+ *  On rejection (any of the four failure modes above), this cleans up
+ *  after itself: the throwaway `slot` div is removed if the constructor
+ *  never got to replace it, and the constructed player (if any) is
+ *  destroyed so its iframe doesn't linger in `host` as an orphan. A caller
+ *  that retries after a rejection must not accumulate dead nodes in
+ *  `host` on every attempt. */
 export async function mountPlayer(host: HTMLElement, videoId: string): Promise<YtPlayer> {
   const YT = await loadApi();
   const slot = document.createElement("div");
   host.append(slot);
   return new Promise((resolve, reject) => {
     let settled = false;
+
+    // Declared (not yet assigned) before the constructor call so the ready
+    // timeout below — set up only once construction succeeds — can clean up
+    // whatever player it built. If construction itself throws, `p` is never
+    // assigned and the catch block below cleans up `slot` instead.
+    let p: YtPlayerInstance;
+    try {
+      p = new YT.Player(slot, {
+        videoId,
+        playerVars: { rel: 0, modestbranding: 1 },
+        events: {
+          onReady: () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve({
+              currentTime: () => p.getCurrentTime(),
+              seekTo: (s) => p.seekTo(s, true),
+              destroy: () => p.destroy(),
+            });
+          },
+          onError: (event) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            p.destroy(); // remove the iframe this failed attempt created
+            reject(new Error(ytErrorMessage(event.data)));
+          },
+        },
+      });
+    } catch (err) {
+      settled = true;
+      slot.remove(); // construction threw before creating anything to destroy
+      reject(err instanceof Error ? err : new Error(String(err)));
+      return;
+    }
+
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      p.destroy();
       reject(new Error("Timed out waiting for the YouTube player to become ready."));
     }, READY_TIMEOUT_MS);
-    const p = new YT.Player(slot, {
-      videoId,
-      playerVars: { rel: 0, modestbranding: 1 },
-      events: {
-        onReady: () => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve({
-            currentTime: () => p.getCurrentTime(),
-            seekTo: (s) => p.seekTo(s, true),
-            destroy: () => p.destroy(),
-          });
-        },
-        onError: (event) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          reject(new Error(ytErrorMessage(event.data)));
-        },
-      },
-    });
   });
 }
 

@@ -111,6 +111,9 @@ async function load(url: string): Promise<void> {
 
 let player: YtPlayer | null = null;
 let playerFor = "";
+// A failed mount is terminal for this videoId until the user explicitly
+// asks to try again (Retry button below) — see ensureSourcePlayer.
+let playerFailed = "";
 // The actual mounted <iframe>, captured once mountPlayer resolves. render()
 // toggles `hidden` on this element directly, not on some wrapper around it
 // — an ancestor-level hide would leave the iframe's own `hidden` property
@@ -135,9 +138,22 @@ let sourceIframe: HTMLIFrameElement | null = null;
  *  — private, deleted, age-restricted, region-locked, or embedding simply
  *  disabled, all ordinary cases) surfaces through `state.error` instead of
  *  leaving Set Start/Set End/Continue clickable while silently doing
- *  nothing forever. */
+ *  nothing forever.
+ *
+ *  Critically, a failed mount must NOT be retried automatically:
+ *  `renderTrimming()` calls this on every render, and `setState({error})`
+ *  itself triggers a render — so clearing the gate on failure (instead of
+ *  recording it in `playerFailed`) would remount immediately on the very
+ *  next render, spinning forever with no user action and no backoff
+ *  (a tight, near-synchronous loop for a mount that fails before `onReady`
+ *  can even attach, a ~15s-interval loop for the two timeouts — each cycle
+ *  appending another throwaway host into `sourceSlot`, since `mountPlayer`
+ *  is what owns cleaning up its own DOM node on rejection, not this
+ *  function). Recovery is the explicit "Retry" control in `renderTrimming`,
+ *  which clears `playerFailed` for exactly one further attempt per click. */
 function ensureSourcePlayer(videoId: string): void {
-  if (playerFor === videoId) return;
+  if (playerFor === videoId || playerFailed === videoId) return;
+  playerFailed = "";
   playerFor = videoId;
   player?.destroy();
   player = null;
@@ -154,10 +170,8 @@ function ensureSourcePlayer(videoId: string): void {
     })
     .catch((err: unknown) => {
       if (playerFor !== videoId) return;
-      // Clear the gate so a future attempt for this same video (e.g. a
-      // retry control, or just calling load() again) is not wedged forever
-      // by one failed mount.
       playerFor = "";
+      playerFailed = videoId; // terminal until Retry is clicked
       setState({ error: err instanceof Error ? err.message : String(err) });
     });
 }
@@ -170,6 +184,7 @@ function renderTrimming(): Node[] {
   const s = getState();
   ensureSourcePlayer(s.videoId);
   const ready = player !== null;
+  const failed = playerFailed === s.videoId;
 
   const setStart = el("button", { textContent: "Set Start", disabled: !ready });
   setStart.onclick = () => {
@@ -201,9 +216,19 @@ function renderTrimming(): Node[] {
   });
   go.onclick = () => void openWindow();
 
+  const controls: Node[] = [setStart, setEnd];
+  if (failed) {
+    // One attempt per click, never automatic — see ensureSourcePlayer.
+    const retry = el("button", { textContent: "Retry" });
+    retry.onclick = () => {
+      playerFailed = "";
+      setState({ error: "" });
+    };
+    controls.push(retry);
+  }
+
   return [
-    setStart,
-    setEnd,
+    ...controls,
     renderStrip({
       duration: s.duration,
       start: s.start,
