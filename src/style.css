@@ -31,17 +31,19 @@ body {
 
 .source { position: relative; display: grid; place-items: center; }
 .source > video, .source > iframe { max-width: 100%; max-height: 100%; display: block; }
-/* The `display: block` above is an author-origin rule, so it beats the
-   browser's default `[hidden] { display: none }` (user-agent origin) no
-   matter how the two selectors' specificities compare — origin wins before
-   specificity is even considered. Without this, setting `.hidden = true`
-   on the source iframe/video (e.g. to step away from it once framing owns
-   the stage) would leave it fully visible despite the DOM property being
-   set correctly. */
-.source > [hidden] { display: none; }
 
-.out { aspect-ratio: 9 / 16; height: 100%; background: #000; }
+.out { aspect-ratio: 9 / 16; height: 100%; background: var(--gray-1); }
 .out > canvas { width: 100%; height: 100%; display: block; }
+
+/* Author-origin `display: block` on the media children above beats the UA's
+   `[hidden] { display: none }` (user-agent origin), no matter how the two
+   selectors' specificities compare — origin wins before specificity is even
+   considered. Both media slots need this: without it, setting `.hidden =
+   true` on the source iframe/video or the output canvas (e.g. to step away
+   from one once another phase owns the stage) would leave the element fully
+   visible despite the DOM property being set correctly. */
+.source > [hidden],
+.out > [hidden] { display: none; }
 
 .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
