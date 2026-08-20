@@ -1,3 +1,4 @@
+import { isValidBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
 
 export type Phase = "idle" | "trimming" | "framing";
@@ -128,15 +129,24 @@ export function save(): void {
 
 /** Restores marks and boxes for a video. Boxes are dropped if the source
  *  resolution changed — rects are stored in source pixels, so they are
- *  meaningless against different dimensions. */
+ *  meaningless against different dimensions — or if they fail `isValidBox`,
+ *  the same check the server runs before ffmpeg. A rect that matches
+ *  dimensions but fails aspect or min-height would otherwise restore and
+ *  preview cleanly and die only at export time. localStorage is untrusted
+ *  input like any other: `Saved`'s field types are a compile-time claim,
+ *  not a runtime guarantee, so marks are coerced through `Number.isFinite`
+ *  too — a stray string in storage must not silently make it into a
+ *  numeric comparison (`"50" > 5` is `true`) and enable Continue. */
 export function restore(videoId: string, source: Size | null): Partial<AppState> {
   const s = readSaved(videoId);
   if (!s) return {};
   const sameSource = source !== null && s.sourceW === source.w && s.sourceH === source.h;
+  const validBox = (box: Rect | null): Rect | null =>
+    source !== null && sameSource && box !== null && isValidBox(box, source) ? box : null;
   return {
-    start: s.start,
-    end: s.end,
-    boxTop: sameSource ? s.boxTop : null,
-    boxBottom: sameSource ? s.boxBottom : null,
+    start: Number.isFinite(s.start) ? s.start : initial.start,
+    end: Number.isFinite(s.end) ? s.end : initial.end,
+    boxTop: validBox(s.boxTop),
+    boxBottom: validBox(s.boxBottom),
   };
 }

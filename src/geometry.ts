@@ -13,6 +13,13 @@ export const MIN_BOX_H = 142;
 /** Seconds. Videos shorter than this skip the trim phase entirely. */
 export const SKIP_TRIM_UNDER = 180;
 
+/** Seconds. The soft-warning threshold for "longer than a YouTube Short".
+ *  Numerically equal to SKIP_TRIM_UNDER but a different meaning — one means
+ *  "short enough to skip trimming", this means "long enough to warn about"
+ *  — so it is its own named constant rather than the two call sites
+ *  reusing SKIP_TRIM_UNDER by coincidence. */
+export const SHORTS_MAX_S = 180;
+
 /** Seconds of slack fetched either side of the marked range. Absorbs
  *  keyframe-sloppy stream-copy edges and lets the export seek accurately. */
 export const PAD = 5;

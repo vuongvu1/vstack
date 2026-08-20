@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -21,6 +22,29 @@ export function clipName(windowStart: number, windowEnd: number): string {
 
 export function clipPath(videoId: string, windowStart: number, windowEnd: number): string {
   return join(MEDIA_DIR, videoId, clipName(windowStart, windowEnd));
+}
+
+function cacheSize(dir: string): number {
+  let total = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    total += entry.isDirectory() ? cacheSize(p) : statSync(p).size;
+  }
+  return total;
+}
+
+// ponytail: no eviction, just visibility. Add an LRU when this gets annoying.
+/** Logs the media cache's total size. Called once at server boot and again
+ *  after every successful fetch — a long session that only logged at boot
+ *  would grow the cache silently until the next restart. */
+export function reportCache(): void {
+  try {
+    if (!existsSync(MEDIA_DIR)) return;
+    const mb = Math.round(cacheSize(MEDIA_DIR) / 1e6);
+    if (mb > 0) console.warn(`vstack: media cache is ${mb} MB (media/)`);
+  } catch (err) {
+    console.warn("vstack: could not compute media cache size:", err);
+  }
 }
 
 /** The fetched clip's real dimensions. yt-dlp picks a format, so these can

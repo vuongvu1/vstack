@@ -103,9 +103,12 @@ vstack/
     index.ts     3 routes, boot checks
     ytdlp.ts     probe + window fetch (spawn)
     ffmpeg.ts    filter graph build + spawn
+    errors.ts    HttpError + tool-failure wrapping
   src/
-    main.ts      state + wiring + phase machine
+    main.ts      wiring + phase machine (DOM, render loop glue)
+    state.ts     AppState + localStorage persistence
     geometry.ts  pure rect math  ← the tested core
+    format.ts    mmss/clock/slugify
     api.ts       3 fetch wrappers
     player.ts    YT iframe + timeline strip (phase 1)
     editor.ts    box drag/resize overlay (phase 2)
@@ -118,8 +121,8 @@ vstack/
 | Route | In | Out | Does |
 |---|---|---|---|
 | `POST /api/probe` | `{url}` | `{videoId, duration, width, height, title, isLive}` | `yt-dlp --dump-json`, no video bytes, ~1s |
-| `POST /api/window` | `{videoId, start, end}` | `{clipUrl, windowStart, windowEnd, width, height}` | `--download-sections`, stream copy, cached |
-| `POST /api/export` | `{videoId, windowStart, windowEnd, start, end, boxTop, boxBottom}` | the mp4, as the response body | one ffmpeg pass |
+| `POST /api/window` | `{videoId, start, end, duration}` | `{clipUrl, windowStart, windowEnd, width, height}` | `--download-sections`, stream copy, cached |
+| `POST /api/export` | `{videoId, windowStart, windowEnd, start, end, title, boxTop, boxBottom}` | the mp4, as the response body | one ffmpeg pass |
 
 No job queue, no polling, no SSE. Single-user local: the export request
 blocks, the UI shows a spinner, the browser saves the response via
@@ -146,8 +149,10 @@ idle ──probe──> trimming ──window──> framing ──export──>
                    └───── re-trim ──────┘   (outside pad → re-fetch)
 ```
 
-`idle` — URL field. Video id extracted by regex and rejected early, before any
-round trip.
+`idle` — URL field. The raw URL is posted to `/api/probe` as-is; the server
+extracts the video id by regex (`videoIdFrom`, checked against a host
+allowlist) and rejects it there, before `yt-dlp` is ever spawned. There is no
+client-side extraction or early-reject round trip to skip.
 
 `trimming` — left: YT iframe. Right: 9:16 placeholder with probed title and
 duration. Bottom: `[Set Start] [Set End]` plus a timeline strip showing the
@@ -212,7 +217,7 @@ even-rounding leaves a ±2px slop that has to be tolerated in validation.
 export const OUTPUT = { w: 1080, h: 1920 };
 export const HALF   = { w: 1080, h: 960 };
 export const BOX_RATIO = 9 / 8;
-export const MIN_BOX_W = 160;   // source px; blocks degenerate boxes
+export const MIN_BOX_H = 142;   // source px; blocks degenerate boxes
 export const SKIP_TRIM_UNDER = 180;  // s; auto-mark 0→duration below this
 
 maxBox(source: Size): Size
@@ -242,7 +247,7 @@ two that can drift.
 
 **Critical ordering: clamping slides the rect, it never shrinks it.**
 Shrinking would break the 9:8 lock, and a box off 9:8 produces a stretched
-output half that goes unnoticed until export. Because `snapAspect` already
+output half that goes unnoticed until export. Because `boxFromHeight` already
 caps size at `maxBox`, sliding is always sufficient. Size-cap first, then
 translate. Reversed, this ships a subtly squashed video.
 
@@ -322,21 +327,37 @@ The theme: do not build a taxonomy for another tool's error messages.
 
 ## Tests
 
-Two, both earning their place.
+Five files, each earning its place.
 
 1. **`geometry.test.ts`** — aspect holds after every operation; clamping at
-   all four edges and four corners; min/max size; even dimensions;
+   all four edges and four corners; min/max size; integer dimensions (crop
+   rects are deliberately *not* even-rounded — see Coordinate spaces);
    display↔source roundtrip. This is the code whose bugs are *silent* — a
    broken clamp does not throw, it ships a stretched video.
-2. **One ffmpeg integration test** — synthesize a 2s source with known color
-   blocks, run the real export command with known rects, extract the frame at
-   t=1, assert 1080×1920 and that each output half samples the color its box
-   covered. Proves the filter graph is correct *and* that ffmpeg and canvas
-   agree on what a source rect means — the one assumption the whole design
-   rests on.
+2. **`state.test.ts`** — `save()`/`restore()` against a Map-backed
+   `localStorage` stub: a framed box pair survives an unrelated mark-only
+   save, a half-set pair never overwrites a complete one, and malformed or
+   unexpected storage contents (bad JSON, wrong shape, wrong types) are
+   tolerated rather than thrown.
+3. **`format.test.ts`** — `mmss`/`clock`/`slugify` edge cases: zero-padding,
+   values over 59 minutes, negative and fractional input, all-punctuation
+   titles.
+4. **`ffmpeg.test.ts`** — one true integration test: synthesize a 2s source
+   with known color blocks, run the real export command with known rects,
+   extract the frame at t=1, assert 1080×1920 and that each output half
+   samples the color its box covered. Proves the filter graph is correct
+   *and* that ffmpeg and canvas agree on what a source rect means — the one
+   assumption the whole design rests on.
+5. **`ytdlp.test.ts`** — `videoIdFrom`'s extraction branches (query param,
+   path tail, bare-id fallback) and, specifically, that the bare-id
+   fallback's allowlist bypass does not leak into the URL-parsing branch: an
+   11-char path tail on a non-YouTube host is still rejected. Pure and
+   synchronous — no subprocess spawned, no network involved.
 
-Skipped: DOM drag simulation, route tests, any yt-dlp test (network-dependent
-and flaky). `ponytail:` noted in the file.
+Skipped: DOM drag simulation, route tests, anything in `ytdlp.ts` that spawns
+`yt-dlp` (network-dependent and flaky) — `probe`/`fetchWindow` themselves stay
+untested; only the pure `videoIdFrom` above is. `ponytail:` noted in the
+file.
 
 ## Out of scope
 

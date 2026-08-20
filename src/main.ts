@@ -1,6 +1,6 @@
 import * as api from "./api.ts";
 import { mountEditor } from "./editor.ts";
-import { defaultBoxes, SKIP_TRIM_UNDER } from "./geometry.ts";
+import { defaultBoxes, SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
 import { clock, mmss, slugify } from "./format.ts";
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
@@ -75,7 +75,6 @@ async function guard(label: string, fn: () => Promise<void>): Promise<void> {
 async function load(url: string): Promise<void> {
   await guard("Reading video info…", async () => {
     const info = await api.probe(url);
-    const saved = restore(info.videoId, null);
 
     if (info.duration < SKIP_TRIM_UNDER) {
       // A short video skips the trim step entirely, but geometry still
@@ -84,6 +83,13 @@ async function load(url: string): Promise<void> {
       // delivers, and crop rects are stored in the delivered clip's pixels.
       setState({ busy: "Fetching clip…" });
       const win = await api.fetchWindow(info.videoId, 0, info.duration, info.duration);
+      // Mirrors openWindow() below: boxes are stored in the clip's real
+      // fetched pixels, so restoring them requires that resolution, not
+      // probe's informational one — and it must happen before entering
+      // framing, or ensureFraming rolls fresh defaults and save()'s
+      // `framed` gate (now true) writes them straight over the saved pair.
+      const source = { w: win.width, h: win.height };
+      const saved = restore(info.videoId, source);
       setState({
         videoId: info.videoId,
         title: info.title,
@@ -93,12 +99,16 @@ async function load(url: string): Promise<void> {
         clipUrl: win.clipUrl,
         windowStart: win.windowStart,
         windowEnd: win.windowEnd,
-        source: { w: win.width, h: win.height },
+        source,
+        boxTop: saved.boxTop ?? null,
+        boxBottom: saved.boxBottom ?? null,
         phase: "framing",
       });
+      save();
       return;
     }
 
+    const saved = restore(info.videoId, null);
     setState({
       videoId: info.videoId,
       title: info.title,
@@ -204,7 +214,7 @@ function renderTrimming(): Node[] {
 
   const marks = el("span", { textContent: `${clock(s.start)} → ${clock(s.end)}` });
 
-  const long = s.end - s.start > 180;
+  const long = s.end - s.start > SHORTS_MAX_S;
   const warn = long
     ? el("span", {
         textContent: "over 3 min — longer than a YouTube Short",
@@ -406,17 +416,24 @@ function renderFraming(): Node[] {
   // outside the fetched window regardless; this is just the UI affordance.
   const inWindow = s.start >= s.windowStart && s.end <= s.windowEnd;
 
+  // `inWindow` is deliberately not part of this gate: with windowStart
+  // computed as max(0, floor(start - PAD)), `start >= windowStart` holds
+  // unconditionally, and framing's only mark input is bounded by the
+  // clip's own span — so `inWindow` is true in every state the UI can
+  // reach and gating on it would leave this permanently disabled. A forced
+  // re-download is still useful on its own (a cached clip can be
+  // suspect), so only `busy` guards it.
   const refetch = el("button", {
     textContent: "Re-fetch window",
-    disabled: inWindow,
-    title: inWindow ? "Marks are inside the fetched window" : "Marks moved outside the clip",
+    disabled: Boolean(s.busy),
+    title: "Download this window again",
   });
   refetch.onclick = () => void openWindow();
 
   const back = el("button", { textContent: "Back to trim" });
   back.onclick = () => setState({ phase: "trimming" });
 
-  const long = s.end - s.start > 180;
+  const long = s.end - s.start > SHORTS_MAX_S;
   const download = el("button", {
     textContent: "Export",
     disabled: !(s.end > s.start) || !inWindow || Boolean(s.busy),
@@ -474,12 +491,21 @@ function render(): void {
   outPlaceholder.hidden = s.phase !== "idle";
   // The iframe is hidden, never removed, once framing owns the stage —
   // removing it (or any ancestor) is what discards its nested browsing
-  // context and reloads the video (see ensureSourcePlayer above).
+  // context and reloads the video (see ensureSourcePlayer above). Neither
+  // `display:none` nor the iframe's own `hidden` attribute suspends a
+  // nested browsing context or a <video> element, so whichever one is
+  // being hidden is paused explicitly here — otherwise the YouTube player
+  // keeps playing audibly under framing (and the reverse on "Back to
+  // trim"), mixed with the other side's audio.
   if (sourceIframe) sourceIframe.hidden = s.phase !== "trimming";
+  if (s.phase !== "trimming") player?.pause();
   // Same reasoning as sourceIframe above, but a <video> tolerates
   // detach/reattach fine — it just has no reason to move once it lives in
   // the persistent sourceSlot.
-  if (videoEl) videoEl.hidden = s.phase !== "framing";
+  if (videoEl) {
+    videoEl.hidden = s.phase !== "framing";
+    if (s.phase !== "framing") videoEl.pause();
+  }
   if (canvasEl) canvasEl.hidden = s.phase !== "framing";
   // The crop-box overlay is positioned against videoEl and, like it, is
   // built once and never torn down on a phase change (see the comment by

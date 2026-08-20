@@ -3,6 +3,7 @@ type YtErrorEvent = { data: number };
 type YtPlayerInstance = {
   getCurrentTime(): number;
   seekTo(s: number, allow: boolean): void;
+  pauseVideo(): void;
   destroy(): void;
 };
 
@@ -27,6 +28,7 @@ declare global {
 export type YtPlayer = {
   currentTime(): number;
   seekTo(s: number): void;
+  pause(): void;
   destroy(): void;
 };
 
@@ -75,7 +77,12 @@ function loadApi(): Promise<YtApi> {
     }, LOAD_TIMEOUT_MS);
     window.onYouTubeIframeAPIReady = () => {
       clearTimeout(timer);
-      if (window.YT) resolve(window.YT);
+      if (window.YT) {
+        resolve(window.YT);
+      } else {
+        apiReady = null;
+        reject(new Error("YouTube API ready callback fired without window.YT."));
+      }
     };
     const tag = document.createElement("script");
     tag.src = "https://www.youtube.com/iframe_api";
@@ -113,6 +120,14 @@ export async function mountPlayer(host: HTMLElement, videoId: string): Promise<Y
   host.append(slot);
   return new Promise((resolve, reject) => {
     let settled = false;
+    // Hoisted above the try so a synchronously-fired onReady/onError (both
+    // reference `timer`) never sees it in the temporal dead zone. Only the
+    // assignment stays below, right before the ready-timeout branch —
+    // moving that too would leave a synchronous throw from the constructor
+    // with no timer to clear, which is a real (different) bug.
+    // `clearTimeout(undefined)` is a legal no-op, so this is safe even if
+    // onReady/onError fires before the assignment below ever runs.
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
     // Declared (not yet assigned) before the constructor call so the ready
     // timeout below — set up only once construction succeeds — can clean up
@@ -131,6 +146,7 @@ export async function mountPlayer(host: HTMLElement, videoId: string): Promise<Y
             resolve({
               currentTime: () => p.getCurrentTime(),
               seekTo: (s) => p.seekTo(s, true),
+              pause: () => p.pauseVideo(),
               destroy: () => p.destroy(),
             });
           },
@@ -157,7 +173,7 @@ export async function mountPlayer(host: HTMLElement, videoId: string): Promise<Y
       return;
     }
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       p.destroy();

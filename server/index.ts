@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
+import { createReadStream, existsSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { mmss, slugify } from "../src/format.ts";
 import type { Rect } from "../src/geometry.ts";
 import { HttpError } from "./errors.ts";
-import { assertBoxes, clipPath, exportClip, MEDIA_DIR, probeFile } from "./ffmpeg.ts";
+import { assertBoxes, clipPath, exportClip, probeFile, reportCache } from "./ffmpeg.ts";
 import { fetchWindow, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
@@ -72,26 +72,6 @@ export function num(v: unknown, name: string): number {
     throw new HttpError(400, `Expected ${name} to be a finite number.`);
   }
   return v;
-}
-
-// ponytail: no eviction, just visibility. Add an LRU when this gets annoying.
-function cacheSize(dir: string): number {
-  let total = 0;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const p = join(dir, entry.name);
-    total += entry.isDirectory() ? cacheSize(p) : statSync(p).size;
-  }
-  return total;
-}
-
-function reportCache(): void {
-  try {
-    if (!existsSync(MEDIA_DIR)) return;
-    const mb = Math.round(cacheSize(MEDIA_DIR) / 1e6);
-    if (mb > 0) console.warn(`vstack: media cache is ${mb} MB (media/)`);
-  } catch (err) {
-    console.warn("vstack: could not compute media cache size:", err);
-  }
 }
 
 const server = createServer((req, res) => {
@@ -230,7 +210,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 }
 
 await checkBinaries();
-server.listen(PORT, () => {
+// Loopback only: this is a local single-user tool, not deployed (see the
+// design doc), and binding the unspecified address would let any device on
+// the LAN POST /api/window (make this machine download video) or
+// /api/export (pin its CPU).
+server.listen(PORT, "127.0.0.1", () => {
   console.warn(`vstack server on http://localhost:${PORT}`);
   reportCache();
 });

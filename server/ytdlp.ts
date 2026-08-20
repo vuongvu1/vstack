@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { PAD } from "../src/geometry.ts";
 import { HttpError, toolError } from "./errors.ts";
-import { clipName, clipPath, probeFile } from "./ffmpeg.ts";
+import { clipName, clipPath, probeFile, reportCache } from "./ffmpeg.ts";
 
 const run = promisify(execFile);
 const BIG = 64 << 20; // yt-dlp --dump-json on a long video is multi-MB
@@ -133,7 +134,23 @@ export async function fetchWindow(
     // would otherwise put the real output at `<path>.part.mp4` while this
     // code renamed from `<path>.part` — a mismatch that silently masked a
     // successful download as a failed one.
-    const partial = `${path}.part.mp4`;
+    // A per-call random suffix — NOT `process.pid` — keeps two concurrent
+    // fetches of the same window (e.g. a reload mid-fetch followed by
+    // pressing Continue again) from writing the same `.part.mp4`. This was
+    // verified against a real race: `process.pid` is the *Node server's*
+    // pid, constant for the life of the process, and F4's loopback bind
+    // means exactly one such process can ever hold this port — so two
+    // concurrent requests for the same window are two concurrent calls
+    // *inside that one process*, both computing the identical
+    // `${path}.${process.pid}.part.mp4` and stepping on each other's
+    // partial (reproduced live: yt-dlp errored on a file the other
+    // request's yt-dlp had already moved past). Without a per-call
+    // identifier, the first to finish renames over a still-being-written
+    // file and existsSync(path) then serves that corrupt clip forever —
+    // precisely the poisoned cache the .part convention exists to
+    // prevent. Last-writer-wins on the rename is fine once each writer has
+    // its own, complete, partial file.
+    const partial = `${path}.${randomUUID()}.part.mp4`;
     let lastErr: unknown;
     let fetched = false;
     for (const format of FORMATS) {
@@ -184,6 +201,10 @@ export async function fetchWindow(
           `Directory contents: ${dirEntries.join(", ") || "(empty)"}`,
       );
     }
+    // Reported again here, not just at server boot — a long session that
+    // only logged the cache size once would grow it silently until the
+    // next restart.
+    reportCache();
   }
 
   const { width, height } = await probeFile(path);
