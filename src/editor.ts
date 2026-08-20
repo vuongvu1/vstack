@@ -79,6 +79,15 @@ export function mountEditor(opts: {
       node.style.width = `${d.w}px`;
       node.style.height = `${d.h}px`;
     }
+    // Native hit-testing follows paint order, so the later sibling wins where
+    // the boxes overlap. defaultBoxes already overlaps by construction, which
+    // would leave TOP's NE/SE handles — the ones used to shrink it for the
+    // facecam case — unreachable. Put the smaller box on top, favouring TOP on
+    // a tie (both start at maxBox, and TOP is the box normally shrunk first).
+    const areaTop = b.top.w * b.top.h;
+    const areaBottom = b.bottom.w * b.bottom.h;
+    const topOnTop = areaTop <= areaBottom;
+    layer.append(topOnTop ? nodes.bottom : nodes.top, topOnTop ? nodes.top : nodes.bottom);
   }
 
   layer.addEventListener("pointerdown", (e) => {
@@ -125,11 +134,18 @@ export function mountEditor(opts: {
   const onResize = () => place();
   window.addEventListener("resize", onResize);
   opts.media.addEventListener("loadedmetadata", onResize);
+  // window's resize event only fires on a top-level viewport change. The
+  // media element's own rendered box can change for reasons that never touch
+  // the window — a sibling in the bar reflowing `.stage`'s height, e.g. — so
+  // the overlay also has to watch the element it is actually laid out against.
+  const resizeObserver = new ResizeObserver(() => place());
+  resizeObserver.observe(opts.media);
   place();
 
   return () => {
     window.removeEventListener("resize", onResize);
     opts.media.removeEventListener("loadedmetadata", onResize);
+    resizeObserver.disconnect();
     layer.remove();
   };
 }
