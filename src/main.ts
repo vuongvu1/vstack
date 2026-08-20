@@ -1,8 +1,10 @@
 import * as api from "./api.ts";
 import { SKIP_TRIM_UNDER } from "./geometry.ts";
 import { clock } from "./format.ts";
+import { mountPlayer, renderStrip } from "./player.ts";
+import type { YtPlayer } from "./player.ts";
 import type { AppState } from "./state.ts";
-import { getState, restore, setQuiet, setState, subscribe } from "./state.ts";
+import { getState, restore, save, setQuiet, setState, subscribe } from "./state.ts";
 
 const appEl = document.querySelector<HTMLDivElement>("#app");
 if (!appEl) throw new Error("#app missing");
@@ -107,6 +109,93 @@ async function load(url: string): Promise<void> {
   });
 }
 
+let player: YtPlayer | null = null;
+let playerFor = "";
+
+/** Mounts the YouTube iframe once per videoId, directly into the persistent
+ *  `sourceSlot` declared above. `renderTrimming()` calls this on every
+ *  render — the `playerFor` guard is what keeps it a no-op after the first
+ *  call for a given video, since `sourceSlot` must never be emptied or
+ *  re-parented once the iframe is inside it (see the comment on the
+ *  persistent shell above). */
+function ensureSourcePlayer(videoId: string): void {
+  if (playerFor === videoId) return;
+  player?.destroy();
+  player = null;
+  playerFor = videoId;
+  void mountPlayer(sourceSlot, videoId).then((p) => {
+    player = p;
+    const cur = getState();
+    if (cur.start > 0) p.seekTo(cur.start);
+  });
+}
+
+function renderTrimming(): Node[] {
+  const s = getState();
+  ensureSourcePlayer(s.videoId);
+
+  const setStart = el("button", { textContent: "Set Start" });
+  setStart.onclick = () => {
+    if (player) setState({ start: Math.max(0, player.currentTime()) });
+    save();
+  };
+
+  const setEnd = el("button", { textContent: "Set End" });
+  setEnd.onclick = () => {
+    if (player) setState({ end: player.currentTime() });
+    save();
+  };
+
+  const marks = el("span", { textContent: `${clock(s.start)} → ${clock(s.end)}` });
+
+  const long = s.end - s.start > 180;
+  const warn = long
+    ? el("span", {
+        textContent: "over 3 min — longer than a YouTube Short",
+        style: "color:var(--amber-11)",
+      })
+    : el("span");
+
+  const go = el("button", {
+    textContent: "Continue",
+    disabled: !(s.end > s.start),
+  });
+  go.onclick = () => void openWindow();
+
+  return [
+    setStart,
+    setEnd,
+    renderStrip({
+      duration: s.duration,
+      start: s.start,
+      end: s.end,
+      onSeek: (t) => player?.seekTo(t),
+    }),
+    marks,
+    warn,
+    go,
+  ];
+}
+
+async function openWindow(): Promise<void> {
+  const s = getState();
+  await guard("Fetching clip…", async () => {
+    const w = await api.fetchWindow(s.videoId, s.start, s.end, s.duration);
+    const source = { w: w.width, h: w.height };
+    const saved = restore(s.videoId, source);
+    setState({
+      clipUrl: w.clipUrl,
+      windowStart: w.windowStart,
+      windowEnd: w.windowEnd,
+      source,
+      boxTop: saved.boxTop ?? null,
+      boxBottom: saved.boxBottom ?? null,
+      phase: "framing",
+    });
+    save();
+  });
+}
+
 function renderIdle(s: AppState): Node[] {
   const busy = s.busy !== "";
   const input = el("input", {
@@ -138,7 +227,8 @@ function render(): void {
   outPlaceholder.hidden = s.phase !== "idle";
 
   if (s.phase === "idle") barSlot.replaceChildren(...renderIdle(s));
-  else barSlot.replaceChildren(); // Filled in by Tasks 8 and 9.
+  else if (s.phase === "trimming") barSlot.replaceChildren(...renderTrimming());
+  else barSlot.replaceChildren(); // Filled in by Task 9.
 
   const status: Node[] = [];
   if (s.phase !== "idle") {
