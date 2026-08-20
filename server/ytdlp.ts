@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { PAD } from "../src/geometry.ts";
-import { clipPath, probeFile } from "./ffmpeg.ts";
-import { HttpError } from "./index.ts";
+import { HttpError, toolError } from "./errors.ts";
+import { clipName, clipPath, probeFile } from "./ffmpeg.ts";
 
 const run = promisify(execFile);
 const BIG = 64 << 20; // yt-dlp --dump-json on a long video is multi-MB
@@ -51,22 +51,6 @@ export function watchUrl(videoId: string): string {
   return `https://www.youtube.com/watch?v=${videoId}`;
 }
 
-/** Wraps a failed spawn so the route can hand the raw tool output to the
- *  user. yt-dlp's own messages track YouTube's changes better than any
- *  taxonomy of ours would. */
-export function toolError(name: string, err: unknown): Error {
-  if (err === null || err === undefined) {
-    return new Error(`${name} failed: unknown error`);
-  }
-  const e = err as { stderr?: string; message?: string };
-  const tail = (e.stderr ?? e.message ?? "")
-    .trim()
-    .split("\n")
-    .slice(-5)
-    .join("\n");
-  return new Error(`${name} failed:\n${tail}`);
-}
-
 export async function probe(videoId: string): Promise<ProbeResult> {
   let stdout: string;
   let j: Record<string, unknown>;
@@ -105,8 +89,10 @@ export type WindowResult = {
 // download for at least the ANDROID_VR client yt-dlp 2026.07.04 extracts by
 // default — verified directly against `yt-dlp` on the CLI, independent of
 // this codebase. `best` resolves to an HLS-backed itag that downloads fine.
+// Capped at 1080p so a 4K source doesn't pull far more than a 1080-wide
+// output needs; falls back to uncapped `best` if no <=1080 format exists.
 // Revisit once yt-dlp/YouTube compatibility catches up.
-const FORMAT = "best";
+const FORMAT = "best[height<=1080]/best";
 
 /** Fetches (and caches) `[start − PAD, end + PAD]` clamped to the video's
  *  own bounds, then reports the clip's *actual* dimensions via ffprobe —
@@ -133,6 +119,12 @@ export async function fetchWindow(
 
   if (!existsSync(path)) {
     await mkdir(dirname(path), { recursive: true });
+    // Download to a `.part` sibling and rename only on success. --downloader
+    // ffmpeg writes straight to -o with no .part convention of its own, so
+    // without this a killed or failed fetch leaves a truncated mp4 at the
+    // exact cache path — existsSync(path) must never be true for a
+    // half-written clip, or the next request serves it as a broken cache hit.
+    const partial = `${path}.part`;
     try {
       await run(
         "yt-dlp",
@@ -148,31 +140,21 @@ export async function fetchWindow(
           "--no-playlist",
           "--no-warnings",
           "-o",
-          path,
+          partial,
           watchUrl(videoId),
         ],
         { maxBuffer: BIG },
       );
+      await rename(partial, path);
     } catch (err) {
+      await rm(partial, { force: true });
       throw toolError("yt-dlp", err);
-    }
-    // -o plus --merge-output-format mp4 does not guarantee the file lands
-    // exactly at `path` — yt-dlp can append an extension or pick a
-    // different container. The cache key depends on this path being
-    // predictable, so a mismatch fails loudly with what's actually on
-    // disk rather than silently caching under the wrong name.
-    if (!existsSync(path)) {
-      const dir = dirname(path);
-      const found = existsSync(dir) ? readdirSync(dir).join(", ") : "(directory does not exist)";
-      throw new Error(
-        `yt-dlp did not produce the expected file ${path}. Directory contents: ${found}`,
-      );
     }
   }
 
   const { width, height } = await probeFile(path);
   return {
-    clipUrl: `/media/${videoId}/${windowStart}-${windowEnd}.mp4`,
+    clipUrl: `/media/${videoId}/${clipName(windowStart, windowEnd)}`,
     windowStart,
     windowEnd,
     width,

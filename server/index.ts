@@ -4,20 +4,12 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { HttpError } from "./errors.ts";
 import { MEDIA_DIR } from "./ffmpeg.ts";
 import { fetchWindow, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
 const PORT = 8787;
-
-export class HttpError extends Error {
-  status: number;
-
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
 
 const REQUIRED: ReadonlyArray<readonly [string, string, string]> = [
   ["yt-dlp", "--version", "brew install yt-dlp"],
@@ -88,9 +80,13 @@ function cacheSize(dir: string): number {
 }
 
 function reportCache(): void {
-  if (!existsSync(MEDIA_DIR)) return;
-  const mb = Math.round(cacheSize(MEDIA_DIR) / 1e6);
-  if (mb > 0) console.warn(`vstack: media cache is ${mb} MB (media/)`);
+  try {
+    if (!existsSync(MEDIA_DIR)) return;
+    const mb = Math.round(cacheSize(MEDIA_DIR) / 1e6);
+    if (mb > 0) console.warn(`vstack: media cache is ${mb} MB (media/)`);
+  } catch (err) {
+    console.warn("vstack: could not compute media cache size:", err);
+  }
 }
 
 const server = createServer((req, res) => {
@@ -120,11 +116,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
   if (req.url === "/api/window") {
     const body = await json<Record<string, unknown>>(req);
-    const videoId = str(body.videoId, "videoId");
+    const videoId = videoIdFrom(str(body.videoId, "videoId"));
     const start = num(body.start, "start");
     const end = num(body.end, "end");
     const duration = num(body.duration, "duration");
-    if (!videoIdFrom(videoId)) return send(res, 400, { error: "Bad video id." });
+    if (!videoId) return send(res, 400, { error: "Bad video id." });
     if (!(end > start)) return send(res, 400, { error: "End must be after start." });
     return send(res, 200, await fetchWindow(videoId, start, end, duration));
   }
