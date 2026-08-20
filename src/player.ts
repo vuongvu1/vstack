@@ -1,10 +1,12 @@
+type YtErrorEvent = { data: number };
+
 type YtApi = {
   Player: new (
     host: HTMLElement,
     opts: {
       videoId: string;
       playerVars?: Record<string, number | string>;
-      events?: { onReady?: () => void };
+      events?: { onReady?: () => void; onError?: (event: YtErrorEvent) => void };
     },
   ) => { getCurrentTime(): number; seekTo(s: number, allow: boolean): void; destroy(): void };
 };
@@ -22,50 +24,107 @@ export type YtPlayer = {
   destroy(): void;
 };
 
+// Generous, but bounded: a blocked network or a silently-refused embed must
+// eventually surface as an error instead of leaving the busy state spinning
+// (or the controls looking live while doing nothing) forever.
+const LOAD_TIMEOUT_MS = 15_000;
+const READY_TIMEOUT_MS = 15_000;
+
 let apiReady: Promise<YtApi> | null = null;
 
+/** Maps the IFrame API's numeric error codes to a message that names the
+ *  likely cause, since "error 101" means nothing to a user. Codes per
+ *  https://developers.google.com/youtube/iframe_api_reference#onError. */
+function ytErrorMessage(code: number): string {
+  switch (code) {
+    case 2:
+      return `Invalid YouTube video (error ${code}).`;
+    case 5:
+      return `This video cannot be played in this browser (error ${code}).`;
+    case 100:
+      return `This video is unavailable — it may be private or deleted (error ${code}).`;
+    case 101:
+    case 150:
+      return `YouTube will not embed this video (error ${code}). Try another.`;
+    default:
+      return `YouTube player error ${code}.`;
+  }
+}
+
 /** The IFrame API signals readiness through a single global callback, so the
- *  script is injected once and the promise is cached. */
+ *  script is injected once and the promise is cached. A failed load (script
+ *  blocked, or the callback never fires) clears the cache so a later attempt
+ *  can retry instead of being stuck replaying a rejected singleton forever. */
 function loadApi(): Promise<YtApi> {
   if (apiReady) return apiReady;
-  apiReady = new Promise((resolve) => {
+  apiReady = new Promise((resolve, reject) => {
     const YT = window.YT;
     if (YT?.Player) {
       resolve(YT);
       return;
     }
+    const timer = setTimeout(() => {
+      apiReady = null;
+      reject(new Error("Timed out loading the YouTube player API."));
+    }, LOAD_TIMEOUT_MS);
     window.onYouTubeIframeAPIReady = () => {
+      clearTimeout(timer);
       if (window.YT) resolve(window.YT);
     };
     const tag = document.createElement("script");
     tag.src = "https://www.youtube.com/iframe_api";
+    tag.onerror = () => {
+      clearTimeout(timer);
+      apiReady = null;
+      reject(new Error("Could not load the YouTube player API. Check your connection."));
+    };
     document.head.append(tag);
   });
   return apiReady;
 }
 
 /** Mounts a YouTube IFrame player into `host` and resolves once it is ready
- *  to take `seekTo`/`getCurrentTime` calls. Callers own `host`'s lifetime:
- *  this never removes or replaces `host` itself, only appends into it, so a
- *  caller that keeps `host` attached and never re-parents it gets a player
- *  that survives unrelated re-renders. Re-parenting `host` (or any ancestor)
+ *  to take `seekTo`/`getCurrentTime` calls, or rejects with a message naming
+ *  the failure — left unhandled, the API otherwise fails *silently* (no
+ *  `onReady`, no thrown error) for ordinary cases: a private, deleted,
+ *  age-restricted, or embedding-disabled video, or a network that never
+ *  delivers the API at all. Callers own `host`'s lifetime: this never
+ *  removes or replaces `host` itself, only appends into it, so a caller
+ *  that keeps `host` attached and never re-parents it gets a player that
+ *  survives unrelated re-renders. Re-parenting `host` (or any ancestor)
  *  after this resolves discards the iframe's nested browsing context and
  *  reloads the video — there is no supported way to move a live player. */
 export async function mountPlayer(host: HTMLElement, videoId: string): Promise<YtPlayer> {
   const YT = await loadApi();
   const slot = document.createElement("div");
   host.append(slot);
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("Timed out waiting for the YouTube player to become ready."));
+    }, READY_TIMEOUT_MS);
     const p = new YT.Player(slot, {
       videoId,
       playerVars: { rel: 0, modestbranding: 1 },
       events: {
-        onReady: () =>
+        onReady: () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
           resolve({
             currentTime: () => p.getCurrentTime(),
             seekTo: (s) => p.seekTo(s, true),
             destroy: () => p.destroy(),
-          }),
+          });
+        },
+        onError: (event) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error(ytErrorMessage(event.data)));
+        },
       },
     });
   });
@@ -91,7 +150,8 @@ export function renderStrip(opts: {
 
   strip.onclick = (e) => {
     const box = strip.getBoundingClientRect();
-    opts.onSeek(((e.clientX - box.left) / box.width) * opts.duration);
+    const frac = (e.clientX - box.left) / Math.max(1, box.width);
+    opts.onSeek(frac * opts.duration);
   };
   return strip;
 }

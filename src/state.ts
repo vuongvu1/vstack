@@ -77,15 +77,51 @@ type Saved = {
 
 const key = (videoId: string) => `vstack:${videoId}`;
 
+/** Parses and normalizes whatever is stored under a video's key, or `null`
+ *  if there is nothing usable. Shared by `save()` (to preserve fields it
+ *  isn't updating this call) and `restore()` (to read them back out). */
+function readSaved(videoId: string): Saved | null {
+  const raw = localStorage.getItem(key(videoId));
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  // JSON.parse accepts bare primitives too — the literal string "null"
+  // parses successfully to `null` without throwing, as does "42" or a
+  // quoted string, so the shape must be checked before reading fields off
+  // it, not just the parse call itself.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const s = parsed as Partial<Saved>;
+  return {
+    start: s.start ?? 0,
+    end: s.end ?? 0,
+    boxTop: s.boxTop ?? null,
+    boxBottom: s.boxBottom ?? null,
+    sourceW: s.sourceW ?? 0,
+    sourceH: s.sourceH ?? 0,
+  };
+}
+
 export function save(): void {
   if (!state.videoId) return;
+  const prev = readSaved(state.videoId);
+  // Boxes and dimensions only mean anything once /api/window has reported
+  // the clip's real size. Before that, `state.source` still holds probe's
+  // informational dimensions and the boxes are null, so writing them here
+  // unconditionally would erase a pair framed in an earlier session the
+  // moment a mark is touched again during a later trimming visit. Marks,
+  // by contrast, always reflect the current session and always persist.
+  const framed = state.phase === "framing" && state.boxTop !== null && state.boxBottom !== null;
   const saved: Saved = {
     start: state.start,
     end: state.end,
-    boxTop: state.boxTop,
-    boxBottom: state.boxBottom,
-    sourceW: state.source.w,
-    sourceH: state.source.h,
+    boxTop: framed ? state.boxTop : (prev?.boxTop ?? null),
+    boxBottom: framed ? state.boxBottom : (prev?.boxBottom ?? null),
+    sourceW: framed ? state.source.w : (prev?.sourceW ?? 0),
+    sourceH: framed ? state.source.h : (prev?.sourceH ?? 0),
   };
   localStorage.setItem(key(state.videoId), JSON.stringify(saved));
 }
@@ -94,25 +130,13 @@ export function save(): void {
  *  resolution changed — rects are stored in source pixels, so they are
  *  meaningless against different dimensions. */
 export function restore(videoId: string, source: Size | null): Partial<AppState> {
-  const raw = localStorage.getItem(key(videoId));
-  if (!raw) return {};
-  let saved: unknown;
-  try {
-    saved = JSON.parse(raw);
-  } catch {
-    return {};
-  }
-  // JSON.parse accepts bare primitives too — the literal string "null"
-  // parses successfully to `null` without throwing, as does "42" or a
-  // quoted string, so the shape must be checked before reading fields off
-  // it, not just the parse call itself.
-  if (saved === null || typeof saved !== "object" || Array.isArray(saved)) return {};
-  const s = saved as Partial<Saved>;
+  const s = readSaved(videoId);
+  if (!s) return {};
   const sameSource = source !== null && s.sourceW === source.w && s.sourceH === source.h;
   return {
     start: s.start,
     end: s.end,
-    boxTop: sameSource ? (s.boxTop ?? null) : null,
-    boxBottom: sameSource ? (s.boxBottom ?? null) : null,
+    boxTop: sameSource ? s.boxTop : null,
+    boxBottom: sameSource ? s.boxBottom : null,
   };
 }

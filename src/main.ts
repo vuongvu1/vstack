@@ -111,38 +111,77 @@ async function load(url: string): Promise<void> {
 
 let player: YtPlayer | null = null;
 let playerFor = "";
+// The actual mounted <iframe>, captured once mountPlayer resolves. render()
+// toggles `hidden` on this element directly, not on some wrapper around it
+// — an ancestor-level hide would leave the iframe's own `hidden` property
+// false, which is observable (and was flagged in review) even though the
+// iframe would be invisible either way.
+let sourceIframe: HTMLIFrameElement | null = null;
 
 /** Mounts the YouTube iframe once per videoId, directly into the persistent
  *  `sourceSlot` declared above. `renderTrimming()` calls this on every
- *  render — the `playerFor` guard is what keeps it a no-op after the first
- *  call for a given video, since `sourceSlot` must never be emptied or
- *  re-parented once the iframe is inside it (see the comment on the
- *  persistent shell above). */
+ *  render — the `playerFor` guard, set synchronously before any async work
+ *  starts, is what keeps this a no-op after the first call for a given
+ *  video, and what stops a second, different videoId requested before the
+ *  first finishes mounting from racing it (its `.then`/`.catch` bail out
+ *  once `playerFor` no longer matches what they were mounting). `sourceSlot`
+ *  itself must never be emptied or re-parented once the iframe is inside it
+ *  (see the comment on the persistent shell above) — but switching to a
+ *  genuinely different video is not that bug: `player.destroy()` removes
+ *  the old iframe on purpose, the same way loading a second video ever
+ *  would.
+ *
+ *  A failed mount (blocked network, or YouTube refusing to embed the video
+ *  — private, deleted, age-restricted, region-locked, or embedding simply
+ *  disabled, all ordinary cases) surfaces through `state.error` instead of
+ *  leaving Set Start/Set End/Continue clickable while silently doing
+ *  nothing forever. */
 function ensureSourcePlayer(videoId: string): void {
   if (playerFor === videoId) return;
+  playerFor = videoId;
   player?.destroy();
   player = null;
-  playerFor = videoId;
-  void mountPlayer(sourceSlot, videoId).then((p) => {
-    player = p;
-    const cur = getState();
-    if (cur.start > 0) p.seekTo(cur.start);
-  });
+  sourceIframe = null;
+
+  void mountPlayer(sourceSlot, videoId)
+    .then((p) => {
+      if (playerFor !== videoId) return; // superseded before this resolved
+      player = p;
+      sourceIframe = sourceSlot.querySelector("iframe");
+      const cur = getState();
+      if (cur.start > 0) p.seekTo(cur.start);
+      render(); // player just went null -> ready; refresh the disabled state
+    })
+    .catch((err: unknown) => {
+      if (playerFor !== videoId) return;
+      // Clear the gate so a future attempt for this same video (e.g. a
+      // retry control, or just calling load() again) is not wedged forever
+      // by one failed mount.
+      playerFor = "";
+      setState({ error: err instanceof Error ? err.message : String(err) });
+    });
+}
+
+function clampMark(seconds: number, duration: number): number {
+  return Math.min(Math.max(0, seconds), duration);
 }
 
 function renderTrimming(): Node[] {
   const s = getState();
   ensureSourcePlayer(s.videoId);
+  const ready = player !== null;
 
-  const setStart = el("button", { textContent: "Set Start" });
+  const setStart = el("button", { textContent: "Set Start", disabled: !ready });
   setStart.onclick = () => {
-    if (player) setState({ start: Math.max(0, player.currentTime()) });
+    if (!player) return;
+    setState({ start: clampMark(player.currentTime(), s.duration) });
     save();
   };
 
-  const setEnd = el("button", { textContent: "Set End" });
+  const setEnd = el("button", { textContent: "Set End", disabled: !ready });
   setEnd.onclick = () => {
-    if (player) setState({ end: player.currentTime() });
+    if (!player) return;
+    setState({ end: clampMark(player.currentTime(), s.duration) });
     save();
   };
 
@@ -158,7 +197,7 @@ function renderTrimming(): Node[] {
 
   const go = el("button", {
     textContent: "Continue",
-    disabled: !(s.end > s.start),
+    disabled: !ready || !(s.end > s.start),
   });
   go.onclick = () => void openWindow();
 
@@ -225,6 +264,10 @@ function render(): void {
   // clean containers instead of layering real content under leftover text.
   sourcePlaceholder.hidden = s.phase !== "idle";
   outPlaceholder.hidden = s.phase !== "idle";
+  // The iframe is hidden, never removed, once framing owns the stage —
+  // removing it (or any ancestor) is what discards its nested browsing
+  // context and reloads the video (see ensureSourcePlayer above).
+  if (sourceIframe) sourceIframe.hidden = s.phase !== "trimming";
 
   if (s.phase === "idle") barSlot.replaceChildren(...renderIdle(s));
   else if (s.phase === "trimming") barSlot.replaceChildren(...renderTrimming());
