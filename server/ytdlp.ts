@@ -1,5 +1,11 @@
 import { execFile } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 import { promisify } from "node:util";
+import { PAD } from "../src/geometry.ts";
+import { clipPath, probeFile } from "./ffmpeg.ts";
+import { HttpError } from "./index.ts";
 
 const run = promisify(execFile);
 const BIG = 64 << 20; // yt-dlp --dump-json on a long video is multi-MB
@@ -81,5 +87,95 @@ export async function probe(videoId: string): Promise<ProbeResult> {
     height: Number(j.height ?? 0),
     title: String(j.title ?? videoId),
     isLive: Boolean(j.is_live),
+  };
+}
+
+export type WindowResult = {
+  clipUrl: string;
+  windowStart: number;
+  windowEnd: number;
+  width: number;
+  height: number;
+};
+
+// ponytail: `bestvideo[height<=1080]+bestaudio/best[height<=1080]/best`
+// (the ≥1080p-preferring selector we'd rather use — the crop is a sub-rect
+// of the source scaled up to 1080 wide, so a 720p source means a 1.33x
+// upscale) resolves to a progressive itag whose googlevideo CDN URL 403s on
+// download for at least the ANDROID_VR client yt-dlp 2026.07.04 extracts by
+// default — verified directly against `yt-dlp` on the CLI, independent of
+// this codebase. `best` resolves to an HLS-backed itag that downloads fine.
+// Revisit once yt-dlp/YouTube compatibility catches up.
+const FORMAT = "best";
+
+/** Fetches (and caches) `[start − PAD, end + PAD]` clamped to the video's
+ *  own bounds, then reports the clip's *actual* dimensions via ffprobe —
+ *  yt-dlp picks a format, so the fetched resolution can differ from what
+ *  --dump-json advertised, and crop rects are stored in source pixels. */
+export async function fetchWindow(
+  videoId: string,
+  start: number,
+  end: number,
+  duration: number,
+): Promise<WindowResult> {
+  const windowStart = Math.max(0, Math.floor(start - PAD));
+  const windowEnd = Math.min(
+    Math.ceil(end + PAD),
+    Math.ceil(duration) || Number.POSITIVE_INFINITY,
+  );
+  if (windowEnd <= windowStart) {
+    throw new HttpError(
+      400,
+      `Requested window [${windowStart}, ${windowEnd}] is empty for a ${duration}s video.`,
+    );
+  }
+  const path = clipPath(videoId, windowStart, windowEnd);
+
+  if (!existsSync(path)) {
+    await mkdir(dirname(path), { recursive: true });
+    try {
+      await run(
+        "yt-dlp",
+        [
+          "-f",
+          FORMAT,
+          "--download-sections",
+          `*${windowStart}-${windowEnd}`,
+          "--downloader",
+          "ffmpeg",
+          "--merge-output-format",
+          "mp4",
+          "--no-playlist",
+          "--no-warnings",
+          "-o",
+          path,
+          watchUrl(videoId),
+        ],
+        { maxBuffer: BIG },
+      );
+    } catch (err) {
+      throw toolError("yt-dlp", err);
+    }
+    // -o plus --merge-output-format mp4 does not guarantee the file lands
+    // exactly at `path` — yt-dlp can append an extension or pick a
+    // different container. The cache key depends on this path being
+    // predictable, so a mismatch fails loudly with what's actually on
+    // disk rather than silently caching under the wrong name.
+    if (!existsSync(path)) {
+      const dir = dirname(path);
+      const found = existsSync(dir) ? readdirSync(dir).join(", ") : "(directory does not exist)";
+      throw new Error(
+        `yt-dlp did not produce the expected file ${path}. Directory contents: ${found}`,
+      );
+    }
+  }
+
+  const { width, height } = await probeFile(path);
+  return {
+    clipUrl: `/media/${videoId}/${windowStart}-${windowEnd}.mp4`,
+    windowStart,
+    windowEnd,
+    width,
+    height,
   };
 }

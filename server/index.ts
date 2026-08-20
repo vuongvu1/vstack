@@ -1,8 +1,11 @@
 import { execFile } from "node:child_process";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { join } from "node:path";
 import { promisify } from "node:util";
-import { probe, videoIdFrom } from "./ytdlp.ts";
+import { MEDIA_DIR } from "./ffmpeg.ts";
+import { fetchWindow, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
 const PORT = 8787;
@@ -59,6 +62,37 @@ export function send(res: ServerResponse, code: number, body: unknown): void {
   res.end(text);
 }
 
+/** Request bodies are untrusted JSON. A TypeScript annotation is a
+ *  compile-time claim about a value that arrives from the wire, so every
+ *  field crossing this boundary is checked, not just declared. */
+export function str(v: unknown, name: string): string {
+  if (typeof v !== "string") throw new HttpError(400, `Expected ${name} to be a string.`);
+  return v;
+}
+
+export function num(v: unknown, name: string): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) {
+    throw new HttpError(400, `Expected ${name} to be a finite number.`);
+  }
+  return v;
+}
+
+// ponytail: no eviction, just visibility. Add an LRU when this gets annoying.
+function cacheSize(dir: string): number {
+  let total = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    total += entry.isDirectory() ? cacheSize(p) : statSync(p).size;
+  }
+  return total;
+}
+
+function reportCache(): void {
+  if (!existsSync(MEDIA_DIR)) return;
+  const mb = Math.round(cacheSize(MEDIA_DIR) / 1e6);
+  if (mb > 0) console.warn(`vstack: media cache is ${mb} MB (media/)`);
+}
+
 const server = createServer((req, res) => {
   void route(req, res).catch((err: Error) => {
     console.error(err);
@@ -71,8 +105,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.method !== "POST") return send(res, 405, { error: "POST only" });
 
   if (req.url === "/api/probe") {
-    const { url } = await json<{ url?: unknown }>(req);
-    if (typeof url !== "string") return send(res, 400, { error: "Expected a JSON body with a url string." });
+    const body = await json<Record<string, unknown>>(req);
+    const url = str(body.url, "url");
     const videoId = videoIdFrom(url);
     if (!videoId) return send(res, 400, { error: "Not a YouTube video URL." });
     const result = await probe(videoId);
@@ -84,10 +118,22 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return send(res, 200, result);
   }
 
+  if (req.url === "/api/window") {
+    const body = await json<Record<string, unknown>>(req);
+    const videoId = str(body.videoId, "videoId");
+    const start = num(body.start, "start");
+    const end = num(body.end, "end");
+    const duration = num(body.duration, "duration");
+    if (!videoIdFrom(videoId)) return send(res, 400, { error: "Bad video id." });
+    if (!(end > start)) return send(res, 400, { error: "End must be after start." });
+    return send(res, 200, await fetchWindow(videoId, start, end, duration));
+  }
+
   return send(res, 404, { error: `No route ${req.url}` });
 }
 
 await checkBinaries();
 server.listen(PORT, () => {
   console.warn(`vstack server on http://localhost:${PORT}`);
+  reportCache();
 });
