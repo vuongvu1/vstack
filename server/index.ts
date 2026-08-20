@@ -1,11 +1,16 @@
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
+import { mmss, slugify } from "../src/format.ts";
+import type { Rect } from "../src/geometry.ts";
 import { HttpError } from "./errors.ts";
-import { MEDIA_DIR } from "./ffmpeg.ts";
+import { assertBoxes, clipPath, exportClip, MEDIA_DIR, probeFile } from "./ffmpeg.ts";
 import { fetchWindow, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
@@ -123,6 +128,91 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!videoId) return send(res, 400, { error: "Bad video id." });
     if (!(end > start)) return send(res, 400, { error: "End must be after start." });
     return send(res, 200, await fetchWindow(videoId, start, end, duration));
+  }
+
+  if (req.url === "/api/export") {
+    const raw = await json<Record<string, unknown>>(req);
+    const videoId = videoIdFrom(str(raw.videoId, "videoId"));
+    const windowStart = num(raw.windowStart, "windowStart");
+    const windowEnd = num(raw.windowEnd, "windowEnd");
+    const start = num(raw.start, "start");
+    const end = num(raw.end, "end");
+    const title = str(raw.title, "title");
+    // Shape is checked here; legality (integers, 9:8 ratio, in-bounds) is
+    // checked below via assertBoxes/isValidBox, which safely reject null,
+    // non-objects, and non-integers instead of throwing a TypeError.
+    const boxTop = raw.boxTop as Rect;
+    const boxBottom = raw.boxBottom as Rect;
+
+    if (!videoId) return send(res, 400, { error: "Bad video id." });
+    if (!(end > start)) return send(res, 400, { error: "End must be after start." });
+    if (start < windowStart || end > windowEnd) {
+      return send(res, 400, { error: "start/end must be within the fetched window." });
+    }
+
+    // Window bounds in, never a path: the cache filename is reconstructed
+    // here from videoId + window bounds, so there is no client-supplied
+    // path to validate for traversal.
+    const input = clipPath(videoId, windowStart, windowEnd);
+    if (!existsSync(input)) {
+      return send(res, 404, {
+        error:
+          `Window ${windowStart}-${windowEnd} for ${videoId} is not cached. ` +
+          "Re-fetch it via /api/window before exporting.",
+      });
+    }
+    const source = await probeFile(input);
+
+    // Validated up front so a bad box is a clean 400 from this route rather
+    // than the plain Error assertBoxes throws (which the top-level handler
+    // would otherwise map to a 500 — right for a genuine ffmpeg failure,
+    // wrong for a client-supplied box).
+    try {
+      assertBoxes(boxTop, boxBottom, { w: source.width, h: source.height });
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    }
+
+    const dir = await mkdtemp(join(tmpdir(), "vstack-out-"));
+    const name = `${slugify(title)}-${mmss(start)}-${mmss(end)}.mp4`;
+    const out = join(dir, name);
+
+    try {
+      await exportClip({
+        input,
+        start: start - windowStart,
+        duration: end - start,
+        top: boxTop,
+        bottom: boxBottom,
+        source: { w: source.width, h: source.height },
+        out,
+      });
+      const { size } = statSync(out);
+      res.writeHead(200, {
+        "content-type": "video/mp4",
+        "content-length": size,
+        "content-disposition": `attachment; filename="${name}"`,
+      });
+      await pipeline(createReadStream(out), res);
+    } catch (err) {
+      // exportClip failures land here before any header is written, so the
+      // top-level handler's send() is still safe. A failure *during*
+      // streaming happens after headers are already sent, and a JSON error
+      // body at that point would corrupt the response — so that case is
+      // handled here instead of being rethrown.
+      if (res.headersSent) {
+        console.error("vstack: export stream failed after headers were sent:", err);
+        res.destroy();
+        return;
+      }
+      throw err;
+    } finally {
+      // Runs only after the try above has fully settled — including after
+      // `await pipeline(...)` resolves or rejects — so this never deletes
+      // the file out from under an in-flight response.
+      await rm(dir, { recursive: true, force: true });
+    }
+    return;
   }
 
   return send(res, 404, { error: `No route ${req.url}` });
