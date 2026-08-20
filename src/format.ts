@@ -16,7 +16,9 @@ export function slugify(s: string): string {
       .toLowerCase()
       .normalize("NFKD")
       .replace(/[^\da-z]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 60) || "clip"
+      .slice(0, 60)
+      // Trim AFTER slicing: trimming first lets the cut land on a collapsed
+      // separator and reintroduce the dash we just removed.
+      .replace(/^-+|-+$/g, "") || "clip"
   );
 }

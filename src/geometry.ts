@@ -125,6 +125,9 @@ export function fromDisplay(rect: Rect, scale: number): Rect {
 /** One definition of a legal rect, shared by the client editor and the
  *  server's pre-ffmpeg validation. */
 export function isValidBox(rect: Rect, source: Size): boolean {
+  // Guarded because this validates values arriving from untrusted JSON at
+  // runtime, whatever the parameter type claims at compile time.
+  if (typeof rect !== "object" || rect === null) return false;
   const ints = [rect.x, rect.y, rect.w, rect.h].every(Number.isInteger);
   return (
     ints &&

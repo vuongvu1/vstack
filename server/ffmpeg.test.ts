@@ -104,4 +104,34 @@ describe("exportClip", () => {
     expect(bottom.r).toBeLessThan(80);
     expect(bottom.g).toBeLessThan(80);
   });
+
+  it("rejects a negative start", async () => {
+    const out = join(dir, "out-neg-start.mp4");
+    await expect(
+      exportClip({
+        input: src,
+        start: -1,
+        duration: 1,
+        top: TOP,
+        bottom: BOTTOM,
+        source: SOURCE,
+        out,
+      }),
+    ).rejects.toThrow(/start/i);
+  });
+
+  it("rejects a zero or negative duration", async () => {
+    const out = join(dir, "out-zero-duration.mp4");
+    await expect(
+      exportClip({
+        input: src,
+        start: 0,
+        duration: 0,
+        top: TOP,
+        bottom: BOTTOM,
+        source: SOURCE,
+        out,
+      }),
+    ).rejects.toThrow(/duration/i);
+  });
 });

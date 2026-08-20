@@ -92,6 +92,12 @@ export function assertBoxes(top: Rect, bottom: Rect, source: Size): void {
 
 export async function exportClip(opts: ExportOpts): Promise<string> {
   assertBoxes(opts.top, opts.bottom, opts.source);
+  if (!Number.isFinite(opts.start) || opts.start < 0) {
+    throw new Error(`Invalid start ${opts.start}: must be a non-negative number of seconds.`);
+  }
+  if (!Number.isFinite(opts.duration) || opts.duration <= 0) {
+    throw new Error(`Invalid duration ${opts.duration}: must be a positive number of seconds.`);
+  }
   try {
     await run(
       "ffmpeg",
@@ -116,9 +122,7 @@ export async function exportClip(opts: ExportOpts): Promise<string> {
       { maxBuffer: 16 << 20 },
     );
   } catch (err) {
-    const e = err as { stderr?: string; message?: string };
-    const tail = (e.stderr ?? e.message ?? "").trim().split("\n").slice(-5).join("\n");
-    throw new Error(`ffmpeg failed:\n${tail}`);
+    throw toolError("ffmpeg", err);
   }
   return opts.out;
 }

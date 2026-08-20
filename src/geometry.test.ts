@@ -13,7 +13,7 @@ import {
   resizeFromCorner,
   toDisplay,
 } from "./geometry.ts";
-import type { Corner, Size } from "./geometry.ts";
+import type { Corner, Rect, Size } from "./geometry.ts";
 
 const HD: Size = { w: 1920, h: 1080 };
 const SD: Size = { w: 1280, h: 720 };
@@ -192,6 +192,14 @@ describe("isValidBox", () => {
   it("rejects a rect below MIN_BOX_H", () => {
     const h = MIN_BOX_H - 1;
     expect(isValidBox({ x: 0, y: 0, w: Math.round(h * BOX_RATIO), h }, HD)).toBe(false);
+  });
+
+  it("rejects a missing rect instead of throwing", () => {
+    const missing = undefined as unknown as Rect;
+    expect(() => isValidBox(missing, HD)).not.toThrow();
+    expect(isValidBox(missing, HD)).toBe(false);
+    const nulled = null as unknown as Rect;
+    expect(isValidBox(nulled, HD)).toBe(false);
   });
 
   it("accepts what the constructors produce", () => {
