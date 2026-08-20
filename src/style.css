@@ -74,3 +74,39 @@ button:disabled { opacity: 0.4; cursor: default; }
   border-radius: 6px;
   background: var(--blue-9);
 }
+
+.boxes { position: absolute; pointer-events: none; }
+.boxes > .box { pointer-events: auto; }
+
+.box {
+  position: absolute;
+  border: 2px solid;
+  cursor: move;
+  touch-action: none;
+}
+
+.box-top { border-color: var(--blue-9); background: color-mix(in srgb, var(--blue-9) 12%, transparent); }
+.box-bottom { border-color: var(--amber-9); background: color-mix(in srgb, var(--amber-9) 12%, transparent); }
+
+.box-label {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+.box-top .box-label { color: var(--blue-11); }
+.box-bottom .box-label { color: var(--amber-11); }
+
+.handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  background: var(--gray-12);
+  border-radius: 3px;
+}
+.handle-nw { top: -7px; left: -7px; cursor: nwse-resize; }
+.handle-ne { top: -7px; right: -7px; cursor: nesw-resize; }
+.handle-sw { bottom: -7px; left: -7px; cursor: nesw-resize; }
+.handle-se { bottom: -7px; right: -7px; cursor: nwse-resize; }

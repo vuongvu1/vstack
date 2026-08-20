@@ -1,4 +1,5 @@
 import * as api from "./api.ts";
+import { mountEditor } from "./editor.ts";
 import { defaultBoxes, SKIP_TRIM_UNDER } from "./geometry.ts";
 import { clock } from "./format.ts";
 import { mountPlayer, renderStrip } from "./player.ts";
@@ -270,6 +271,7 @@ async function openWindow(): Promise<void> {
 let videoEl: HTMLVideoElement | null = null;
 let canvasEl: HTMLCanvasElement | null = null;
 let stopPreview: (() => void) | null = null;
+let stopEditor: (() => void) | null = null;
 let framingFor = "";
 
 /** Idempotent per clipUrl: re-renders during framing (busy toggles, marks
@@ -310,6 +312,25 @@ function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement }
       top: cur.boxTop ?? defaultBoxes(cur.source).top,
       bottom: cur.boxBottom ?? defaultBoxes(cur.source).bottom,
     };
+  });
+
+  stopEditor?.();
+  stopEditor = mountEditor({
+    host: sourceSlot,
+    media: videoEl,
+    source: () => getState().source,
+    boxes: () => {
+      const cur = getState();
+      const fallback = defaultBoxes(cur.source);
+      return { top: cur.boxTop ?? fallback.top, bottom: cur.boxBottom ?? fallback.bottom };
+    },
+    // Dragging must not trigger a full re-render — that would rebuild the
+    // video element mid-drag. The editor moves its own nodes and the rAF
+    // loop reads the new rect; state is written without notifying.
+    onChange: (which, rect) => {
+      setQuiet(which === "top" ? { boxTop: rect } : { boxBottom: rect });
+    },
+    onCommit: () => save(),
   });
 
   return { video: videoEl, canvas: canvasEl };
