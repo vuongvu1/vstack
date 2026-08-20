@@ -1,7 +1,7 @@
 import * as api from "./api.ts";
 import { mountEditor } from "./editor.ts";
 import { defaultBoxes, SKIP_TRIM_UNDER } from "./geometry.ts";
-import { clock } from "./format.ts";
+import { clock, mmss, slugify } from "./format.ts";
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
@@ -272,6 +272,13 @@ let videoEl: HTMLVideoElement | null = null;
 let canvasEl: HTMLCanvasElement | null = null;
 let stopPreview: (() => void) | null = null;
 let stopEditor: (() => void) | null = null;
+// mountEditor appends its own `.boxes` overlay directly into sourceSlot (see
+// the comment on its host param) and, like the iframe/video/canvas above, is
+// built once and torn down only on a genuine clip change — never on a phase
+// change. render() must hide it explicitly when leaving framing, the same
+// way it hides videoEl/canvasEl, or the overlay (positioned against a now-
+// hidden, zero-size video) is left showing over the trimming view.
+let boxesLayer: HTMLDivElement | null = null;
 let framingFor = "";
 
 /** Idempotent per clipUrl: re-renders during framing (busy toggles, marks
@@ -332,16 +339,107 @@ function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement }
     },
     onCommit: () => save(),
   });
+  boxesLayer = sourceSlot.querySelector<HTMLDivElement>(".boxes");
 
   return { video: videoEl, canvas: canvasEl };
 }
 
+/** Downloads the exported clip. `exportClip` returns a Blob; the object URL
+ *  is handed to a real <a download> rather than window.open/location, which
+ *  browsers are free to treat as a navigation instead of a save. The anchor
+ *  must be attached before `.click()` (Firefox ignores clicks on detached
+ *  elements) and the object URL must outlive the click — revoking
+ *  synchronously races the browser's own read of it in some browsers, so
+ *  revocation is deferred instead of immediate. */
+async function doExport(): Promise<void> {
+  const s = getState();
+  if (!s.boxTop || !s.boxBottom) return;
+  await guard("Rendering… (a 30s clip takes ~5–10s)", async () => {
+    const blob = await api.exportClip({
+      videoId: s.videoId,
+      windowStart: s.windowStart,
+      windowEnd: s.windowEnd,
+      start: s.start,
+      end: s.end,
+      title: s.title,
+      boxTop: s.boxTop as NonNullable<typeof s.boxTop>,
+      boxBottom: s.boxBottom as NonNullable<typeof s.boxBottom>,
+    });
+    const url = URL.createObjectURL(blob);
+    const a = el("a", {
+      href: url,
+      download: `${slugify(s.title)}-${mmss(s.start)}-${mmss(s.end)}.mp4`,
+    });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  });
+}
+
+/** The framing transport: marks (free within the fetched window's pad),
+ *  re-fetch (once they wander outside it), back-to-trim, and export. Returns
+ *  bar-slot children only — the <video>/<canvas> themselves are owned by
+ *  ensureFraming() and live permanently in the persistent sourceSlot/outSlot
+ *  (see the module-level comment on the persistent shell), so this function
+ *  builds no wrapper of its own around them. */
 function renderFraming(): Node[] {
   const s = getState();
-  ensureFraming();
+  const { video } = ensureFraming();
+
+  const setStart = el("button", { textContent: "Set Start" });
+  setStart.onclick = () => {
+    // video.currentTime is clip-relative; marks are in the original video's
+    // timeline, and the clip begins at windowStart.
+    setState({ start: s.windowStart + video.currentTime });
+    save();
+  };
+
+  const setEnd = el("button", { textContent: "Set End" });
+  setEnd.onclick = () => {
+    setState({ end: s.windowStart + video.currentTime });
+    save();
+  };
+
+  // Nudging a mark within the fetched window is free — PAD already covers
+  // it, no refetch needed. Outside it, the server will reject start/end as
+  // outside the fetched window regardless; this is just the UI affordance.
+  const inWindow = s.start >= s.windowStart && s.end <= s.windowEnd;
+
+  const refetch = el("button", {
+    textContent: "Re-fetch window",
+    disabled: inWindow,
+    title: inWindow ? "Marks are inside the fetched window" : "Marks moved outside the clip",
+  });
+  refetch.onclick = () => void openWindow();
+
+  const back = el("button", { textContent: "Back to trim" });
+  back.onclick = () => setState({ phase: "trimming" });
+
+  const long = s.end - s.start > 180;
+  const download = el("button", {
+    textContent: "Export",
+    disabled: !(s.end > s.start) || !inWindow || Boolean(s.busy),
+  });
+  download.onclick = () => void doExport();
+
   return [
+    setStart,
+    setEnd,
     el("span", { textContent: `${clock(s.start)} → ${clock(s.end)}` }),
-    el("span", { textContent: `source ${s.source.w}x${s.source.h}` }),
+    el("span", {
+      textContent: `source ${s.source.w}x${s.source.h}`,
+      style: "color:var(--gray-11)",
+    }),
+    long
+      ? el("span", {
+          textContent: "over 3 min — longer than a YouTube Short",
+          style: "color:var(--amber-11)",
+        })
+      : el("span"),
+    refetch,
+    back,
+    download,
   ];
 }
 
@@ -383,6 +481,12 @@ function render(): void {
   // the persistent sourceSlot.
   if (videoEl) videoEl.hidden = s.phase !== "framing";
   if (canvasEl) canvasEl.hidden = s.phase !== "framing";
+  // The crop-box overlay is positioned against videoEl and, like it, is
+  // built once and never torn down on a phase change (see the comment by
+  // its declaration) — only hidden, so "Back to trim" doesn't leave it
+  // showing over the trimming view, and returning to framing gets it back
+  // without losing drag state or its ResizeObserver.
+  if (boxesLayer) boxesLayer.hidden = s.phase !== "framing";
 
   if (s.phase === "idle") barSlot.replaceChildren(...renderIdle(s));
   else if (s.phase === "trimming") barSlot.replaceChildren(...renderTrimming());
