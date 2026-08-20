@@ -97,6 +97,15 @@ function reportCache(): void {
 const server = createServer((req, res) => {
   void route(req, res).catch((err: Error) => {
     console.error(err);
+    // Headers already sent means the response is committed: writeHead would
+    // throw ERR_HTTP_HEADERS_SENT inside this callback, which nothing awaits,
+    // and Node's default unhandled-rejection behaviour would kill the process.
+    // Abort the socket instead — the client sees a truncated body, which is
+    // the honest signal.
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
     const status = err instanceof HttpError ? err.status : 500;
     send(res, status, { error: err.message });
   });
@@ -207,10 +216,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       }
       throw err;
     } finally {
-      // Runs only after the try above has fully settled — including after
-      // `await pipeline(...)` resolves or rejects — so this never deletes
-      // the file out from under an in-flight response.
-      await rm(dir, { recursive: true, force: true });
+      // force:true only suppresses ENOENT. A throwing finally overrides even a
+      // clean completion, escaping this try/catch entirely — so this cleanup
+      // must swallow its own errors rather than propagate them.
+      await rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
+        console.error("vstack: temp dir cleanup failed:", err);
+      });
     }
     return;
   }
