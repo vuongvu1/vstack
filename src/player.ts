@@ -145,7 +145,14 @@ export async function mountPlayer(host: HTMLElement, videoId: string): Promise<Y
       });
     } catch (err) {
       settled = true;
-      slot.remove(); // construction threw before creating anything to destroy
+      // The constructor can throw *after* it has already substituted `slot`
+      // for a real (still unconfigured, empty-src) <iframe> — observed for a
+      // malformed videoId, which fails the API's own format validation only
+      // partway through construction. `slot.remove()` is a no-op once that
+      // swap has happened (it is already detached), so the replacement
+      // iframe, if one exists, is removed straight from `host` as well.
+      slot.remove();
+      host.querySelector("iframe")?.remove();
       reject(err instanceof Error ? err : new Error(String(err)));
       return;
     }
