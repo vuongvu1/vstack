@@ -15,6 +15,15 @@ export type ProbeResult = {
 
 const ID_RE = /^[A-Za-z0-9_-]{11}$/;
 
+const HOSTS = new Set([
+  "youtube.com",
+  "www.youtube.com",
+  "m.youtube.com",
+  "music.youtube.com",
+  "youtu.be",
+  "www.youtu.be",
+]);
+
 /** Accepts watch?v=, youtu.be/, /shorts/, /live/ and /embed/ forms.
  *  Returns null for anything that is not an 11-char YouTube id, so a bad
  *  URL is rejected before any process is spawned. */
@@ -25,6 +34,7 @@ export function videoIdFrom(url: string): string | null {
   } catch {
     return ID_RE.test(url.trim()) ? url.trim() : null;
   }
+  if (!HOSTS.has(parsed.hostname)) return null;
   const fromQuery = parsed.searchParams.get("v");
   const last = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
   const candidate = fromQuery ?? last;
@@ -39,6 +49,9 @@ export function watchUrl(videoId: string): string {
  *  user. yt-dlp's own messages track YouTube's changes better than any
  *  taxonomy of ours would. */
 export function toolError(name: string, err: unknown): Error {
+  if (err === null || err === undefined) {
+    return new Error(`${name} failed: unknown error`);
+  }
   const e = err as { stderr?: string; message?: string };
   const tail = (e.stderr ?? e.message ?? "")
     .trim()
@@ -50,16 +63,17 @@ export function toolError(name: string, err: unknown): Error {
 
 export async function probe(videoId: string): Promise<ProbeResult> {
   let stdout: string;
+  let j: Record<string, unknown>;
   try {
     ({ stdout } = await run(
       "yt-dlp",
       ["--dump-json", "--no-warnings", "--no-playlist", watchUrl(videoId)],
       { maxBuffer: BIG },
     ));
+    j = JSON.parse(stdout) as Record<string, unknown>;
   } catch (err) {
     throw toolError("yt-dlp", err);
   }
-  const j = JSON.parse(stdout) as Record<string, unknown>;
   return {
     videoId,
     duration: Number(j.duration ?? 0),

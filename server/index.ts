@@ -36,11 +36,18 @@ async function checkBinaries(): Promise<void> {
 export async function json<T>(req: IncomingMessage): Promise<T> {
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c as Buffer);
+  let parsed: unknown;
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+    parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
     throw new HttpError(400, "Body is not valid JSON.");
   }
+  // `null` and arrays are valid JSON but not request bodies; destructuring
+  // either downstream would throw a TypeError as a 500.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new HttpError(400, "Body must be a JSON object.");
+  }
+  return parsed as T;
 }
 
 export function send(res: ServerResponse, code: number, body: unknown): void {
