@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, rename, rm } from "node:fs/promises";
+import { mkdir, readdir, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { PAD } from "../src/geometry.ts";
@@ -82,17 +82,21 @@ export type WindowResult = {
   height: number;
 };
 
-// ponytail: `bestvideo[height<=1080]+bestaudio/best[height<=1080]/best`
-// (the ≥1080p-preferring selector we'd rather use — the crop is a sub-rect
-// of the source scaled up to 1080 wide, so a 720p source means a 1.33x
-// upscale) resolves to a progressive itag whose googlevideo CDN URL 403s on
-// download for at least the ANDROID_VR client yt-dlp 2026.07.04 extracts by
-// default — verified directly against `yt-dlp` on the CLI, independent of
-// this codebase. `best` resolves to an HLS-backed itag that downloads fine.
-// Capped at 1080p so a 4K source doesn't pull far more than a 1080-wide
-// output needs; falls back to uncapped `best` if no <=1080 format exists.
-// Revisit once yt-dlp/YouTube compatibility catches up.
-const FORMAT = "best[height<=1080]/best";
+/** Tried in order — complementary, not redundant. Some videos' only muxed
+ *  rendition is progressive itag 18, which 403s for the ANDROID_VR client
+ *  yt-dlp 2026.07.04 extracts by default; those download fine over DASH
+ *  (video-only + audio-only itags). Other videos are the exact reverse:
+ *  DASH 403s, the muxed progressive itag downloads fine. yt-dlp's own `/`
+ *  fallback inside a single selector cannot cover this, because the 403
+ *  happens at *download* time, after yt-dlp has already committed to a
+ *  format — so the retry has to live here instead. Both cap at 1080p so a
+ *  4K source doesn't pull far more than a 1080-wide output needs.
+ *  Verified directly against `yt-dlp` on the CLI, independent of this
+ *  codebase. Revisit once yt-dlp/YouTube compatibility catches up. */
+const FORMATS = [
+  "bv*[height<=1080]+ba[ext=m4a]/bv*[height<=1080]+ba",
+  "best[height<=1080]/best",
+];
 
 /** Fetches (and caches) `[start − PAD, end + PAD]` clamped to the video's
  *  own bounds, then reports the clip's *actual* dimensions via ffprobe —
@@ -124,31 +128,61 @@ export async function fetchWindow(
     // without this a killed or failed fetch leaves a truncated mp4 at the
     // exact cache path — existsSync(path) must never be true for a
     // half-written clip, or the next request serves it as a broken cache hit.
-    const partial = `${path}.part`;
-    try {
-      await run(
-        "yt-dlp",
-        [
-          "-f",
-          FORMAT,
-          "--download-sections",
-          `*${windowStart}-${windowEnd}`,
-          "--downloader",
-          "ffmpeg",
-          "--merge-output-format",
-          "mp4",
-          "--no-playlist",
-          "--no-warnings",
-          "-o",
-          partial,
-          watchUrl(videoId),
-        ],
-        { maxBuffer: BIG },
+    // Must end in .mp4: with --merge-output-format mp4, yt-dlp appends the
+    // container extension whenever -o does not already carry it, which
+    // would otherwise put the real output at `<path>.part.mp4` while this
+    // code renamed from `<path>.part` — a mismatch that silently masked a
+    // successful download as a failed one.
+    const partial = `${path}.part.mp4`;
+    let lastErr: unknown;
+    let fetched = false;
+    for (const format of FORMATS) {
+      try {
+        await run(
+          "yt-dlp",
+          [
+            "-f",
+            format,
+            "--download-sections",
+            `*${windowStart}-${windowEnd}`,
+            "--downloader",
+            "ffmpeg",
+            "--merge-output-format",
+            "mp4",
+            "--no-playlist",
+            "--no-warnings",
+            "-o",
+            partial,
+            watchUrl(videoId),
+          ],
+          { maxBuffer: BIG },
+        );
+        await rename(partial, path);
+        console.warn(
+          `vstack: fetched ${videoId} ${windowStart}-${windowEnd} using format "${format}"`,
+        );
+        fetched = true;
+        break;
+      } catch (err) {
+        lastErr = err;
+        // Each attempt cleans up its own partial before the next one starts
+        // — otherwise a stale partial from a failed attempt could be renamed
+        // as if a later attempt had succeeded.
+        await rm(partial, { force: true });
+      }
+    }
+    if (!fetched) throw toolError("yt-dlp", lastErr);
+
+    // Check the assumption rather than trusting it: a silent mismatch
+    // between where yt-dlp actually wrote the file and where this code
+    // looked for it is exactly what hid the .part/.part.mp4 bug above, and
+    // would hide the next one just as quietly.
+    if (!existsSync(path)) {
+      const dirEntries = await readdir(dirname(path)).catch(() => []);
+      throw new Error(
+        `yt-dlp reported success but ${path} does not exist. ` +
+          `Directory contents: ${dirEntries.join(", ") || "(empty)"}`,
       );
-      await rename(partial, path);
-    } catch (err) {
-      await rm(partial, { force: true });
-      throw toolError("yt-dlp", err);
     }
   }
 

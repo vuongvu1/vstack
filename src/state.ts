@@ -6,6 +6,10 @@ export type AppState = {
   phase: Phase;
   error: string;
   busy: string;
+  // The URL field's live text, kept here (not just in the DOM) so a
+  // busy-triggered render that rebuilds the idle bar doesn't lose what the
+  // user typed. Never persisted — save()/restore() don't touch it.
+  url: string;
   videoId: string;
   title: string;
   duration: number;
@@ -23,6 +27,7 @@ const initial: AppState = {
   phase: "idle",
   error: "",
   busy: "",
+  url: "",
   videoId: "",
   title: "",
   duration: 0,
@@ -91,18 +96,23 @@ export function save(): void {
 export function restore(videoId: string, source: Size | null): Partial<AppState> {
   const raw = localStorage.getItem(key(videoId));
   if (!raw) return {};
-  let saved: Saved;
+  let saved: unknown;
   try {
-    saved = JSON.parse(raw) as Saved;
+    saved = JSON.parse(raw);
   } catch {
     return {};
   }
-  const sameSource =
-    source !== null && saved.sourceW === source.w && saved.sourceH === source.h;
+  // JSON.parse accepts bare primitives too — the literal string "null"
+  // parses successfully to `null` without throwing, as does "42" or a
+  // quoted string, so the shape must be checked before reading fields off
+  // it, not just the parse call itself.
+  if (saved === null || typeof saved !== "object" || Array.isArray(saved)) return {};
+  const s = saved as Partial<Saved>;
+  const sameSource = source !== null && s.sourceW === source.w && s.sourceH === source.h;
   return {
-    start: saved.start,
-    end: saved.end,
-    boxTop: sameSource ? saved.boxTop : null,
-    boxBottom: sameSource ? saved.boxBottom : null,
+    start: s.start,
+    end: s.end,
+    boxTop: sameSource ? (s.boxTop ?? null) : null,
+    boxBottom: sameSource ? (s.boxBottom ?? null) : null,
   };
 }
