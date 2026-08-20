@@ -1,8 +1,9 @@
 import * as api from "./api.ts";
-import { SKIP_TRIM_UNDER } from "./geometry.ts";
+import { defaultBoxes, SKIP_TRIM_UNDER } from "./geometry.ts";
 import { clock } from "./format.ts";
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
+import { startPreview } from "./preview.ts";
 import type { AppState } from "./state.ts";
 import { getState, restore, save, setQuiet, setState, subscribe } from "./state.ts";
 
@@ -260,6 +261,69 @@ async function openWindow(): Promise<void> {
   });
 }
 
+// The <video> and <canvas> for the framing phase, built once and appended
+// directly into the persistent sourceSlot/outSlot declared above — never
+// into a wrapper of their own (see the module-level comment on the
+// persistent shell). A fresh <video> per clipUrl would restart playback on
+// every unrelated re-render during framing, so both are created exactly
+// once and, on a genuine clip change, only their source is swapped.
+let videoEl: HTMLVideoElement | null = null;
+let canvasEl: HTMLCanvasElement | null = null;
+let stopPreview: (() => void) | null = null;
+let framingFor = "";
+
+/** Idempotent per clipUrl: re-renders during framing (busy toggles, marks
+ *  changing, etc.) call this again, and framingFor is what keeps it from
+ *  restarting the rAF loop or re-rolling default boxes on every one of
+ *  them. */
+function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement } {
+  const s = getState();
+  if (videoEl && canvasEl && framingFor === s.clipUrl) {
+    return { video: videoEl, canvas: canvasEl };
+  }
+  framingFor = s.clipUrl;
+  stopPreview?.();
+
+  if (!videoEl) {
+    videoEl = el("video", { controls: true, preload: "auto" });
+    sourceSlot.append(videoEl);
+  }
+  videoEl.src = s.clipUrl;
+
+  if (!canvasEl) {
+    canvasEl = el("canvas");
+    outSlot.append(canvasEl);
+  }
+
+  if (!s.boxTop || !s.boxBottom) {
+    const { top, bottom } = defaultBoxes(s.source);
+    // setQuiet, not setState: this runs during render, and notifying from
+    // inside a render is re-entrant. The rAF preview loop below reads state
+    // fresh every frame, so a quiet update still reaches the canvas.
+    setQuiet({ boxTop: top, boxBottom: bottom });
+    save();
+  }
+
+  stopPreview = startPreview(canvasEl, videoEl, () => {
+    const cur = getState();
+    return {
+      top: cur.boxTop ?? defaultBoxes(cur.source).top,
+      bottom: cur.boxBottom ?? defaultBoxes(cur.source).bottom,
+    };
+  });
+
+  return { video: videoEl, canvas: canvasEl };
+}
+
+function renderFraming(): Node[] {
+  const s = getState();
+  ensureFraming();
+  return [
+    el("span", { textContent: `${clock(s.start)} → ${clock(s.end)}` }),
+    el("span", { textContent: `source ${s.source.w}x${s.source.h}` }),
+  ];
+}
+
 function renderIdle(s: AppState): Node[] {
   const busy = s.busy !== "";
   const input = el("input", {
@@ -293,10 +357,15 @@ function render(): void {
   // removing it (or any ancestor) is what discards its nested browsing
   // context and reloads the video (see ensureSourcePlayer above).
   if (sourceIframe) sourceIframe.hidden = s.phase !== "trimming";
+  // Same reasoning as sourceIframe above, but a <video> tolerates
+  // detach/reattach fine — it just has no reason to move once it lives in
+  // the persistent sourceSlot.
+  if (videoEl) videoEl.hidden = s.phase !== "framing";
+  if (canvasEl) canvasEl.hidden = s.phase !== "framing";
 
   if (s.phase === "idle") barSlot.replaceChildren(...renderIdle(s));
   else if (s.phase === "trimming") barSlot.replaceChildren(...renderTrimming());
-  else barSlot.replaceChildren(); // Filled in by Task 9.
+  else barSlot.replaceChildren(...renderFraming());
 
   const status: Node[] = [];
   if (s.phase !== "idle") {
