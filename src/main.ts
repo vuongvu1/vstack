@@ -4,13 +4,6 @@ import { clock } from "./format.ts";
 import type { AppState } from "./state.ts";
 import { getState, restore, setQuiet, setState, subscribe } from "./state.ts";
 
-// TEMP TEST SCAFFOLD — verifying guard()'s finally still releases inFlight
-// when render() throws. Removed immediately after the test in this round.
-let __testThrowOnce = false;
-(window as unknown as { __armTestThrow: () => void }).__armTestThrow = () => {
-  __testThrowOnce = true;
-};
-
 const appEl = document.querySelector<HTMLDivElement>("#app");
 if (!appEl) throw new Error("#app missing");
 // Rebound so `app`'s declared type is HTMLDivElement outright: control-flow
