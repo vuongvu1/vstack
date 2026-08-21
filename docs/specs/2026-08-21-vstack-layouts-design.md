@@ -97,11 +97,19 @@ would floor at 142×80 — too narrow to hit its handles.
 Rename to `MIN_BOX_SIDE = 142` and floor both axes:
 
 ```ts
-effectiveMinH(source, ratio) = min(max(142, 142 / ratio), maxBox(source, ratio).h)
+effectiveMinH(source, ratio) =
+  min(ceil(max(142, 142 / ratio)), maxBox(source, ratio).h)
 ```
 
 For 9:8 this evaluates to exactly 142, so current behaviour and tests are
-untouched. For 9:16 it yields 142×253; for 9:4, 320×142.
+untouched. For 9:16 it yields a box of 142×253; for 9:4, 320×142.
+
+The `ceil` is load-bearing: what matters is that the floor is an **integer**.
+`142 / 0.5625 = 252.444`, and `boxFromHeight` rounds its clamped height — so a
+floor left fractional makes the smallest constructible 9:16 box `h = 252`
+while `isValidBox`, reading the same fractional floor, rejects it. The
+validator would refuse its own constructor's output, at one ratio only.
+Verified empirically before this spec was finalised.
 
 ## Module changes
 
@@ -114,10 +122,16 @@ geometry ← layout ← { state, editor, preview, main } and { ffmpeg, index }
 
 ### `src/layout.ts` (new)
 
-Holds `Row`, `Layout`, `LAYOUTS`, `layoutById`, `cellsOf`. `layoutById` is a
-table lookup returning `null` for an unknown id, so a `layoutId` arriving from
-the wire is never interpolated into anything — the same posture as
-`/api/export` taking window bounds instead of a file path.
+Holds `Row`, `Layout`, `LAYOUTS`, `DEFAULT_LAYOUT_ID`, `layoutById`,
+`cellsOf`, `ratioOf` and `defaultBoxes`. `layoutById` is a table lookup
+returning `null` for an unknown id, so a `layoutId` arriving from the wire is
+never interpolated into anything — the same posture as `/api/export` taking
+window bounds instead of a file path.
+
+`defaultBoxes` lives here rather than in `geometry.ts` because it is the one
+box constructor that needs to know about layouts, and `geometry.ts` importing
+`Layout` would make the dependency a cycle. The layering above is what decides
+this: `geometry.ts` never learns what a layout is.
 
 ### `src/geometry.ts`
 
@@ -127,7 +141,10 @@ the wire is never interpolated into anything — the same posture as
   `isValidBox`.
 - Unchanged, being ratio-free by nature: `clampToBounds`, `moveBy`,
   `displayScale`, `toDisplay`, `fromDisplay`.
-- `defaultBoxes(source, layout) → Rect[]`: every cell gets `maxBox` at its own
+- `defaultBoxes` **moves out** of this module into `layout.ts` (see the
+  layering note there) and becomes:
+
+  `defaultBoxes(source, layout) → Rect[]`: every cell gets `maxBox` at its own
   ratio. Boxes are then **grouped by cell ratio** and each group is spread
   independently, along whichever source axis has more slack for that group's
   box size (`source.w - w` vs `source.h - h`, x winning an exact tie), centred
