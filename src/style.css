@@ -10,6 +10,10 @@
 @import "@radix-ui/colors/amber-alpha.css";
 @import "@radix-ui/colors/red.css";
 @import "@radix-ui/colors/red-alpha.css";
+@import "@radix-ui/colors/grass.css";
+@import "@radix-ui/colors/grass-alpha.css";
+@import "@radix-ui/colors/violet.css";
+@import "@radix-ui/colors/violet-alpha.css";
 
 /* Radix Themes' own token layer, hand-rolled — the React package can't be
    used here, but its scales are what make the components read as Radix. */
@@ -227,8 +231,10 @@ input:disabled { background: var(--slate-a2); color: var(--slate-11); }
   touch-action: none;
 }
 
-.box-top { border-color: var(--blue-9); background: color-mix(in srgb, var(--blue-9) 12%, transparent); }
-.box-bottom { border-color: var(--amber-9); background: color-mix(in srgb, var(--amber-9) 12%, transparent); }
+.box-c0 { border-color: var(--blue-9); background: color-mix(in srgb, var(--blue-9) 12%, transparent); }
+.box-c1 { border-color: var(--amber-9); background: color-mix(in srgb, var(--amber-9) 12%, transparent); }
+.box-c2 { border-color: var(--grass-9); background: color-mix(in srgb, var(--grass-9) 12%, transparent); }
+.box-c3 { border-color: var(--violet-9); background: color-mix(in srgb, var(--violet-9) 12%, transparent); }
 
 .box-label {
   position: absolute;
@@ -239,8 +245,38 @@ input:disabled { background: var(--slate-a2); color: var(--slate-11); }
   letter-spacing: 0.06em;
   text-shadow: 0 1px 2px var(--slate-1);
 }
-.box-top .box-label { color: var(--blue-11); }
-.box-bottom .box-label { color: var(--amber-11); }
+.box-c0 .box-label { color: var(--blue-11); }
+.box-c1 .box-label { color: var(--amber-11); }
+.box-c2 .box-label { color: var(--grass-11); }
+.box-c3 .box-label { color: var(--violet-11); }
+
+/* The layout picker. Nine text labels would swamp the bar, and for a tool
+   whose whole job is visual composition the diagram IS the label. */
+.layouts { display: flex; gap: var(--space-1); align-items: center; }
+
+.layout-pick {
+  --pick-w: 20px;
+  width: var(--pick-w);
+  height: calc(var(--pick-w) * 16 / 9);
+  position: relative;
+  padding: 0;
+  border: 1px solid var(--slate-a7);
+  border-radius: var(--radius-1);
+  background: var(--slate-a3);
+  cursor: pointer;
+}
+
+.layout-pick:hover { border-color: var(--slate-a8); }
+.layout-pick:focus-visible { outline: 2px solid var(--blue-8); outline-offset: 2px; }
+.layout-pick[aria-pressed="true"] { border-color: var(--blue-9); background: var(--blue-a4); }
+
+.layout-cell {
+  position: absolute;
+  background: var(--slate-a8);
+  border-radius: 1px;
+}
+
+.layout-pick[aria-pressed="true"] .layout-cell { background: var(--blue-9); }
 
 /* Slider thumb. A flat `slate-12` handle is near-black on the light theme
    and disappears against dark video frames; white + border + shadow stays

@@ -1,9 +1,16 @@
 import * as api from "./api.ts";
 import { mountEditor } from "./editor.ts";
-import { SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
+import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
 import { clock, mmss, slugify } from "./format.ts";
-import { DEFAULT_LAYOUT, DEFAULT_LAYOUT_ID, cellsOf, defaultBoxes, layoutById } from "./layout.ts";
+import {
+  DEFAULT_LAYOUT,
+  DEFAULT_LAYOUT_ID,
+  LAYOUTS,
+  cellsOf,
+  defaultBoxes,
+  layoutById,
+} from "./layout.ts";
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
@@ -296,32 +303,44 @@ let stopEditor: (() => void) | null = null;
 // hidden, zero-size video) is left showing over the trimming view.
 let boxesLayer: HTMLDivElement | null = null;
 let framingFor = "";
+// The layout the mounted editor and preview loop were built for. Their
+// node count and cell list are layout-derived, so a layout change has to
+// rebuild them — while leaving videoEl, canvasEl and every other child of
+// sourceSlot/outSlot exactly where they are. Emptying either slot is the
+// hazard this whole shell exists to avoid.
+let editorFor = "";
 
-/** Idempotent per clipUrl: re-renders during framing (busy toggles, marks
- *  changing, etc.) call this again, and framingFor is what keeps it from
- *  restarting the rAF loop or re-rolling default boxes on every one of
- *  them. */
+/** Idempotent per clipUrl *and* per layoutId: re-renders during framing
+ *  (busy toggles, marks changing, etc.) call this again, and framingFor /
+ *  editorFor are what keep it from restarting the rAF loop, re-rolling
+ *  default boxes or reloading the video on every one of them. A layout
+ *  change rebuilds the editor and preview (their node count and cell list
+ *  are layout-derived) without touching videoEl or canvasEl. */
 function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement } {
   const s = getState();
-  if (videoEl && canvasEl && framingFor === s.clipUrl) {
+  const layout = layoutById(s.layoutId) ?? DEFAULT_LAYOUT;
+  const cells = cellsOf(layout);
+  const sameClip = videoEl !== null && canvasEl !== null && framingFor === s.clipUrl;
+  const sameLayout = editorFor === layout.id;
+  if (sameClip && sameLayout && videoEl && canvasEl) {
     return { video: videoEl, canvas: canvasEl };
   }
   framingFor = s.clipUrl;
+  editorFor = layout.id;
   stopPreview?.();
 
   if (!videoEl) {
     videoEl = el("video", { controls: true, preload: "auto" });
     sourceSlot.append(videoEl);
   }
-  videoEl.src = s.clipUrl;
+  // Only on a genuine clip change: assigning the same src reloads the
+  // element and restarts playback, which a layout switch must not do.
+  if (!sameClip) videoEl.src = s.clipUrl;
 
   if (!canvasEl) {
     canvasEl = el("canvas");
     outSlot.append(canvasEl);
   }
-
-  const layout = layoutById(s.layoutId) ?? DEFAULT_LAYOUT;
-  const cells = cellsOf(layout);
 
   if (s.boxes.length !== cells.length) {
     // setQuiet, not setState: this runs during render, and notifying from
@@ -400,6 +419,50 @@ async function doExport(): Promise<void> {
   });
 }
 
+/** One button per layout, each drawing its own cells. The diagram is
+ *  generated from `cellsOf`, so a picker swatch cannot drift from what the
+ *  layout actually composes — which a hand-drawn icon set would. */
+function renderLayoutPicker(currentId: string): Node {
+  const picks = LAYOUTS.map((layout) => {
+    const selected = layout.id === currentId;
+    const pick = el("button", {
+      className: "layout-pick",
+      title: layout.label,
+      ariaLabel: layout.label,
+      disabled: Boolean(getState().busy),
+    });
+    pick.setAttribute("aria-pressed", String(selected));
+    for (const cell of cellsOf(layout)) {
+      // Percentages, plus a 1px inset so neighbouring cells read as
+      // separate blocks instead of one filled rectangle.
+      pick.append(
+        el("span", {
+          className: "layout-cell",
+          style:
+            `left: calc(${(cell.x / OUTPUT.w) * 100}% + 1px);` +
+            `top: calc(${(cell.y / OUTPUT.h) * 100}% + 1px);` +
+            `width: calc(${(cell.w / OUTPUT.w) * 100}% - 2px);` +
+            `height: calc(${(cell.h / OUTPUT.h) * 100}% - 2px);`,
+        }),
+      );
+    }
+    pick.onclick = () => {
+      if (layout.id === currentId) return;
+      // Boxes are cleared, not carried over: cell ratios differ between
+      // layouts, so a box from the old one is illegal in the new one.
+      // ensureFraming rolls this layout's defaults on the next render.
+      //
+      // ponytail: a boxesByLayout map would preserve a framing per layout
+      // and make flipping between them to compare non-destructive. Add it
+      // if that gets annoying.
+      setState({ layoutId: layout.id, boxes: [] });
+      save();
+    };
+    return pick;
+  });
+  return el("div", { className: "layouts" }, ...picks);
+}
+
 /** The framing transport: marks (free within the fetched window's pad),
  *  re-fetch (once they wander outside it), back-to-trim, and export. Returns
  *  bar-slot children only — the <video>/<canvas> themselves are owned by
@@ -457,6 +520,7 @@ function renderFraming(): Node[] {
   return [
     setStart,
     setEnd,
+    renderLayoutPicker(s.layoutId),
     el("span", { className: "badge", textContent: `${clock(s.start)} → ${clock(s.end)}` }),
     el("span", {
       className: "badge",
