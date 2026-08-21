@@ -3,7 +3,7 @@ import { mountEditor } from "./editor.ts";
 import { SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
 import { clock, mmss, slugify } from "./format.ts";
-import { DEFAULT_LAYOUT, DEFAULT_LAYOUT_ID, cellsOf, defaultBoxes, layoutById, ratioOf } from "./layout.ts";
+import { DEFAULT_LAYOUT, DEFAULT_LAYOUT_ID, cellsOf, defaultBoxes, layoutById } from "./layout.ts";
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
@@ -331,28 +331,21 @@ function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement }
     save();
   }
 
-  const empty = { x: 0, y: 0, w: 0, h: 0 };
-  stopPreview = startPreview(canvasEl, videoEl, () => {
-    const [top, bottom] = currentBoxes();
-    return { top: top ?? empty, bottom: bottom ?? empty };
-  });
+  stopPreview = startPreview(canvasEl, videoEl, cells, currentBoxes);
 
   stopEditor?.();
   stopEditor = mountEditor({
     host: sourceSlot,
     media: videoEl,
     source: () => getState().source,
-    ratios: () => cellsOf(DEFAULT_LAYOUT).map(ratioOf),
-    boxes: () => {
-      const [top, bottom] = currentBoxes();
-      return { top: top ?? empty, bottom: bottom ?? empty };
-    },
+    cells: () => cells,
+    boxes: currentBoxes,
     // Dragging must not trigger a full re-render — that would rebuild the
     // video element mid-drag. The editor moves its own nodes and the rAF
     // loop reads the new rect; state is written without notifying.
-    onChange: (which, rect) => {
-      const next = [...getState().boxes];
-      next[which === "top" ? 0 : 1] = rect;
+    onChange: (index, rect) => {
+      const next = [...currentBoxes()];
+      next[index] = rect;
       setQuiet({ boxes: next });
     },
     onCommit: () => save(),

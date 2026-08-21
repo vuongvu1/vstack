@@ -1,11 +1,11 @@
 import { displayScale, moveBy, resizeFromCorner, toDisplay } from "./geometry.ts";
+import { ratioOf } from "./layout.ts";
 import type { Corner, Rect, Size } from "./geometry.ts";
 
-type Which = "top" | "bottom";
 const CORNERS: Corner[] = ["nw", "ne", "sw", "se"];
 
 type Drag = {
-  which: Which;
+  index: number;
   corner: Corner | null; // null = move the whole box
   originX: number;
   originY: number;
@@ -22,30 +22,31 @@ export function mountEditor(opts: {
   host: HTMLElement;
   media: HTMLVideoElement;
   source: () => Size;
-  boxes: () => { top: Rect; bottom: Rect };
-  /** Parallel to the layout's cells: index 0 is the first cell. Task 5
-   *  turns `Which` into that same index; for now 0 is top, 1 is bottom. */
-  ratios: () => number[];
-  onChange(which: Which, rect: Rect): void;
+  /** Output-space cells in cellsOf order. Fixed for this mount — main.ts
+   *  remounts the editor when the layout changes, because the node count
+   *  is derived from it. */
+  cells: () => Rect[];
+  boxes: () => Rect[];
+  onChange(index: number, rect: Rect): void;
   onCommit(): void;
 }): () => void {
   const layer = document.createElement("div");
   layer.className = "boxes";
   opts.host.append(layer);
 
-  const nodes: Record<Which, HTMLDivElement> = {
-    top: makeBox("top"),
-    bottom: makeBox("bottom"),
-  };
-  layer.append(nodes.top, nodes.bottom);
+  const cells = opts.cells();
+  const nodes = cells.map((_, i) => makeBox(i));
+  layer.append(...nodes);
 
-  function makeBox(which: Which): HTMLDivElement {
+  function makeBox(index: number): HTMLDivElement {
     const box = document.createElement("div");
-    box.className = `box box-${which}`;
-    box.dataset.which = which;
+    // box-c0..c3 carry the per-index colour; four is the maximum cell count
+    // any layout declares.
+    box.className = `box box-c${index}`;
+    box.dataset.index = String(index);
     const label = document.createElement("span");
     label.className = "box-label";
-    label.textContent = which.toUpperCase();
+    label.textContent = String(index + 1);
     box.append(label);
     for (const c of CORNERS) {
       const h = document.createElement("div");
@@ -67,45 +68,53 @@ export function mountEditor(opts: {
 
   function place(): void {
     const s = scale();
-    const b = opts.boxes();
+    const bs = opts.boxes();
     const rect = opts.media.getBoundingClientRect();
     const hostRect = opts.host.getBoundingClientRect();
     layer.style.left = `${rect.left - hostRect.left}px`;
     layer.style.top = `${rect.top - hostRect.top}px`;
     layer.style.width = `${rect.width}px`;
     layer.style.height = `${rect.height}px`;
-    for (const which of ["top", "bottom"] as const) {
-      const d = toDisplay(b[which], s);
-      const node = nodes[which];
+    nodes.forEach((node, i) => {
+      const box = bs[i];
+      if (!box) {
+        node.hidden = true;
+        return;
+      }
+      node.hidden = false;
+      const d = toDisplay(box, s);
       node.style.left = `${d.x}px`;
       node.style.top = `${d.y}px`;
       node.style.width = `${d.w}px`;
       node.style.height = `${d.h}px`;
-    }
+    });
     // Native hit-testing follows paint order, so the later sibling wins where
-    // the boxes overlap. defaultBoxes already overlaps by construction, which
-    // would leave TOP's NE/SE handles — the ones used to shrink it for the
-    // facecam case — unreachable. Put the smaller box on top, favouring TOP on
-    // a tie (both start at maxBox, and TOP is the box normally shrunk first).
-    const areaTop = b.top.w * b.top.h;
-    const areaBottom = b.bottom.w * b.bottom.h;
-    const topOnTop = areaTop <= areaBottom;
-    layer.append(topOnTop ? nodes.bottom : nodes.top, topOnTop ? nodes.top : nodes.bottom);
+    // the boxes overlap. defaultBoxes overlaps by construction, which would
+    // leave the covered box's handles — the ones used to shrink it for the
+    // facecam case — unreachable. Append largest first so the smallest ends
+    // up on top, and break an exact tie toward the lower index: a 2x2 grid
+    // starts as four equal-area boxes, and without the tie-break cell 1's
+    // handles sit under cell 4's.
+    const area = (i: number) => {
+      const b = bs[i];
+      return b ? b.w * b.h : 0;
+    };
+    const order = nodes.map((_, i) => i).sort((a, b) => area(b) - area(a) || b - a);
+    for (const i of order) {
+      const node = nodes[i];
+      if (node) layer.append(node);
+    }
   }
 
   layer.addEventListener("pointerdown", (e) => {
     const target = e.target as HTMLElement;
     const boxNode = target.closest<HTMLElement>(".box");
     if (!boxNode) return;
-    const which = boxNode.dataset.which as Which;
+    const index = Number(boxNode.dataset.index);
+    const startRect = opts.boxes()[index];
+    if (!Number.isInteger(index) || !startRect) return;
     const corner = (target.dataset.corner as Corner | undefined) ?? null;
-    drag = {
-      which,
-      corner,
-      originX: e.clientX,
-      originY: e.clientY,
-      startRect: opts.boxes()[which],
-    };
+    drag = { index, corner, originX: e.clientX, originY: e.clientY, startRect };
     layer.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
@@ -117,15 +126,15 @@ export function mountEditor(opts: {
     const dx = (e.clientX - drag.originX) / s;
     const dy = (e.clientY - drag.originY) / s;
     const source = opts.source();
-    // A layout always has at least two cells, so this index is always
-    // present; `?? 1.125` is only here because noUncheckedIndexedAccess
-    // requires a value, and 9:8 is the shape that existed before layouts.
-    const ratio = opts.ratios()[drag.which === "top" ? 0 : 1] ?? 1.125;
+    const cell = cells[drag.index];
+    // pointerdown only sets `drag` for an index that has both a node and a
+    // box, and nodes are built from `cells`, so this is always present.
+    if (!cell) return;
     const next =
       drag.corner === null
         ? moveBy(drag.startRect, dx, dy, source)
-        : resizeFromCorner(drag.startRect, drag.corner, dx, dy, source, ratio);
-    opts.onChange(drag.which, next);
+        : resizeFromCorner(drag.startRect, drag.corner, dx, dy, source, ratioOf(cell));
+    opts.onChange(drag.index, next);
     place();
   });
 
