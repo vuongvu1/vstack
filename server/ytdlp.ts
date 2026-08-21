@@ -83,20 +83,44 @@ export type WindowResult = {
   height: number;
 };
 
-/** Tried in order — complementary, not redundant. Some videos' only muxed
- *  rendition is progressive itag 18, which 403s for the ANDROID_VR client
- *  yt-dlp 2026.07.04 extracts by default; those download fine over DASH
- *  (video-only + audio-only itags). Other videos are the exact reverse:
- *  DASH 403s, the muxed progressive itag downloads fine. yt-dlp's own `/`
- *  fallback inside a single selector cannot cover this, because the 403
- *  happens at *download* time, after yt-dlp has already committed to a
- *  format — so the retry has to live here instead. Both cap at 1080p so a
- *  4K source doesn't pull far more than a 1080-wide output needs.
+const DASH = "bv*[height<=1080]+ba[ext=m4a]/bv*[height<=1080]+ba";
+
+/** One rung of the download ladder: a format selector, and optionally the
+ *  yt-dlp extractor client to ask for formats as. `client` omitted means
+ *  yt-dlp's default, which on 2026.07.04 is ANDROID_VR. */
+type Attempt = { format: string; client?: string };
+
+/** Tried in order — complementary, not redundant. yt-dlp's own `/` fallback
+ *  inside a single selector cannot cover these, because the 403 happens at
+ *  *download* time, after yt-dlp has committed to a format — so the retry
+ *  has to live here. Every rung caps at 1080p so a 4K source doesn't pull
+ *  far more than a 1080-wide output needs.
+ *
+ *  Rung 1 (web_embedded) is first because it is the only client measured to
+ *  deliver 1080p on *both* test videos. The default ANDROID_VR client 403s
+ *  at download time on both, so leading with it meant every fetch paid two
+ *  doomed attempts — minutes of throttled transfer — before reaching a rung
+ *  that works.
+ *
+ *  Rungs 2 and 3 are kept as fallbacks, not because they are better, but
+ *  because web_embedded is one client and YouTube breaks clients one at a
+ *  time; rung 3 in particular still covers videos whose only muxed
+ *  rendition is progressive itag 18.
+ *
+ *  Clients ruled out by measurement against 1Q12mcu4JTs (a 4h video with no
+ *  HLS rendition at all — every PROTO is https, so `best` can only reach
+ *  itag 18): `mweb` downloads, but exposes *only* 640x360, and crop rects
+ *  are stored in source pixels, so a 360p clip silently degrades every
+ *  export; `tv_embedded` advertises 1080p then 403s; `android`, `tv_simply`
+ *  cap at 360p; `web`, `web_safari`, `ios` return no usable formats; `tv`
+ *  demands a reload; `web_creator` demands sign-in.
+ *
  *  Verified directly against `yt-dlp` on the CLI, independent of this
  *  codebase. Revisit once yt-dlp/YouTube compatibility catches up. */
-const FORMATS = [
-  "bv*[height<=1080]+ba[ext=m4a]/bv*[height<=1080]+ba",
-  "best[height<=1080]/best",
+const ATTEMPTS: Attempt[] = [
+  { format: DASH, client: "web_embedded" },
+  { format: DASH },
+  { format: "best[height<=1080]/best" },
 ];
 
 /** Fetches (and caches) `[start − PAD, end + PAD]` clamped to the video's
@@ -151,13 +175,25 @@ export async function fetchWindow(
     // prevent. Last-writer-wins on the rename is fine once each writer has
     // its own, complete, partial file.
     const partial = `${path}.${randomUUID()}.part.mp4`;
-    let lastErr: unknown;
+    // Every selector's failure is kept, not just the last one. The formats
+    // fail for *different* reasons — DASH 403 vs progressive-itag-18 403 —
+    // so reporting only the final attempt hides the half that says whether
+    // this video is genuinely unsupported or the extractor has gone stale.
+    // Diagnosing a real 403 meant re-running both selectors by hand on the
+    // CLI purely to recover the error this loop had already seen.
+    const failures: string[] = [];
     let fetched = false;
-    for (const format of FORMATS) {
+    for (const { format, client } of ATTEMPTS) {
+      // Spelled out per rung rather than appended conditionally to a shared
+      // array, so one rung's args can never leak into the next iteration.
+      const clientArgs = client
+        ? ["--extractor-args", `youtube:player_client=${client}`]
+        : [];
       try {
         await run(
           "yt-dlp",
           [
+            ...clientArgs,
             "-f",
             format,
             "--download-sections",
@@ -176,19 +212,33 @@ export async function fetchWindow(
         );
         await rename(partial, path);
         console.warn(
-          `vstack: fetched ${videoId} ${windowStart}-${windowEnd} using format "${format}"`,
+          `vstack: fetched ${videoId} ${windowStart}-${windowEnd} using ` +
+            `format "${format}"${client ? ` (player_client=${client})` : ""}`,
         );
         fetched = true;
         break;
       } catch (err) {
-        lastErr = err;
+        // The selector goes in the tool name so toolError's stderr-tail
+        // handling is reused verbatim rather than reimplemented here.
+        failures.push(
+          toolError(
+            `yt-dlp -f ${format}${client ? ` (player_client=${client})` : ""}`,
+            err,
+          ).message,
+        );
         // Each attempt cleans up its own partial before the next one starts
         // — otherwise a stale partial from a failed attempt could be renamed
         // as if a later attempt had succeeded.
         await rm(partial, { force: true });
       }
     }
-    if (!fetched) throw toolError("yt-dlp", lastErr);
+    if (!fetched) {
+      throw new Error(
+        `Could not fetch ${videoId} [${windowStart}-${windowEnd}] — ` +
+          `all ${ATTEMPTS.length} download attempts failed.\n\n` +
+          failures.join("\n\n"),
+      );
+    }
 
     // Check the assumption rather than trusting it: a silent mismatch
     // between where yt-dlp actually wrote the file and where this code
