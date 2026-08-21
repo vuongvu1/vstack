@@ -117,6 +117,20 @@ export function layoutById(id: string): Layout | null {
   return LAYOUTS.find((l) => l.id === id) ?? null;
 }
 
+/** `layoutById(id) ?? DEFAULT_LAYOUT`, named and shared so every caller that
+ *  wants *a* layout rather than *this exact id or nothing* falls back the
+ *  same way. Before this existed, `main.ts` repeated the idiom at three call
+ *  sites while `state.ts`'s `save()` fell back to a synthesised zero-cell
+ *  layout instead — two different answers to "what does an unknown id mean"
+ *  in the same codebase. Unreachable today (`restore` only ever returns a
+ *  known id or `DEFAULT_LAYOUT_ID`, and the picker only ever sets a known
+ *  id), but "unreachable" is exactly the kind of guard that silently stops
+ *  being true after a refactor, so it is worth resolving one way on
+ *  purpose. */
+export function resolveLayout(id: string): Layout {
+  return layoutById(id) ?? DEFAULT_LAYOUT;
+}
+
 /** Output-space cells in reading order: row by row, left to right.
  *
  *  This order is load-bearing in four places, and they must agree: it is the

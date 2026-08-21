@@ -1,6 +1,6 @@
 import { isValidBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
-import { DEFAULT_LAYOUT_ID, cellsOf, layoutById, ratioOf } from "./layout.ts";
+import { DEFAULT_LAYOUT_ID, cellsOf, layoutById, ratioOf, resolveLayout } from "./layout.ts";
 
 export type Phase = "idle" | "trimming" | "framing";
 
@@ -134,24 +134,36 @@ export function save(): void {
   // The count check is what covers the half-built case: ensureFraming
   // passes through states where some cells have boxes and some don't, and
   // writing one of those would truncate a complete stored set.
-  const cells = cellsOf(layoutById(state.layoutId) ?? { id: "", label: "", rows: [] });
-  const framed =
-    state.phase === "framing" && cells.length > 0 && state.boxes.length === cells.length;
+  //
+  // resolveLayout, not layoutById directly: an unknown state.layoutId is
+  // unreachable today (restore() and the layout picker only ever produce a
+  // known id or DEFAULT_LAYOUT_ID) but is worth resolving on purpose rather
+  // than by accident, and the same way the rest of the app already does —
+  // main.ts's ensureFraming/currentBoxes/doExport all treat an unknown id as
+  // DEFAULT_LAYOUT. Every entry in LAYOUTS (and DEFAULT_LAYOUT itself) has
+  // at least two cells, so `cells.length` below can never be 0 any more —
+  // this replaces an earlier `cells.length > 0` guard that existed only to
+  // stop a *synthesised empty* layout's 0 cells from vacuously matching 0
+  // boxes, a case resolveLayout cannot produce. `layout.id`, not the raw
+  // `state.layoutId`, is what gets persisted when framed, mirroring why
+  // doExport reports `layout.id` rather than the field it read: if an
+  // unknown id is ever reached, the app is already behaving as
+  // DEFAULT_LAYOUT throughout (its cells, its default boxes), so the saved
+  // record should say so — persisting the unknown id instead would write a
+  // record that fails its own layout's cell count on the very next restore().
+  const layout = resolveLayout(state.layoutId);
+  const cells = cellsOf(layout);
+  const framed = state.phase === "framing" && state.boxes.length === cells.length;
   const saved: Saved = {
     start: state.start,
     end: state.end,
-    layoutId: framed ? state.layoutId : (prev?.layoutId ?? DEFAULT_LAYOUT_ID),
+    layoutId: framed ? layout.id : (prev?.layoutId ?? DEFAULT_LAYOUT_ID),
     boxes: framed ? state.boxes : (prev?.boxes ?? []),
     sourceW: framed ? state.source.w : (prev?.sourceW ?? 0),
     sourceH: framed ? state.source.h : (prev?.sourceH ?? 0),
   };
   localStorage.setItem(key(state.videoId), JSON.stringify(saved));
 }
-
-// ponytail: `cellsOf` on a synthesised empty layout is how an unknown
-// `state.layoutId` yields `cells.length === 0` and therefore `framed ===
-// false`, rather than needing a second branch. If that reads too clever
-// later, split it.
 
 /** Restores marks, layout and boxes for a video. Boxes are dropped if the
  *  source resolution changed — rects are stored in source pixels, so they

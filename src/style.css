@@ -266,7 +266,29 @@ input:disabled { background: var(--slate-a2); color: var(--slate-11); }
   cursor: pointer;
 }
 
-.layout-pick:hover { border-color: var(--slate-a8); }
+/* :not(:disabled) isn't just for parity with the generic button rule below
+   — it's what wins the specificity fight against it. The bare `button`
+   selector's `button:hover:not(:disabled)` rule is (0,2,1) — type + hover +
+   :not(:disabled) — which beats a plain `.layout-pick:hover`'s (0,2,0), so
+   an unselected swatch's hover fell through to the generic rule's
+   `--blue-a4`, the exact background `[aria-pressed="true"]` below uses for
+   "selected". Matching `:not(:disabled)` here brings this rule to (0,3,0),
+   which wins outright on the class/pseudo-class column regardless of the
+   third. `--slate-a4` (not `--blue-a4`) is what keeps hover legible as
+   "hovering", not "selecting" — it's what `.btn-gray` already uses for the
+   same reason.
+
+   :not([aria-pressed="true"]) is the other half of that fix: at (0,3,0) this
+   rule is now MORE specific than `[aria-pressed="true"]`'s own (0,2,0), so
+   without this exclusion hovering the *already-selected* swatch would win
+   the cascade and dim it to slate — the opposite bug, a selected swatch
+   that looks unselected under the pointer. Excluding it here leaves that
+   case to fall through to the generic button rule and the selected-state
+   rule below, which already agree on `--blue-a4`. */
+.layout-pick:hover:not(:disabled):not([aria-pressed="true"]) {
+  border-color: var(--slate-a8);
+  background: var(--slate-a4);
+}
 .layout-pick:focus-visible { outline: 2px solid var(--blue-8); outline-offset: 2px; }
 .layout-pick[aria-pressed="true"] { border-color: var(--blue-9); background: var(--blue-a4); }
 

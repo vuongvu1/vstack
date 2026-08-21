@@ -4,12 +4,11 @@ import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
 import { clock, mmss, slugify } from "./format.ts";
 import {
-  DEFAULT_LAYOUT,
   DEFAULT_LAYOUT_ID,
   LAYOUTS,
   cellsOf,
   defaultBoxes,
-  layoutById,
+  resolveLayout,
 } from "./layout.ts";
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
@@ -318,7 +317,7 @@ let editorFor = "";
  *  are layout-derived) without touching videoEl or canvasEl. */
 function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement } {
   const s = getState();
-  const layout = layoutById(s.layoutId) ?? DEFAULT_LAYOUT;
+  const layout = resolveLayout(s.layoutId);
   const cells = cellsOf(layout);
   const sameClip = videoEl !== null && canvasEl !== null && framingFor === s.clipUrl;
   const sameLayout = editorFor === layout.id;
@@ -357,7 +356,7 @@ function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement }
     host: sourceSlot,
     media: videoEl,
     source: () => getState().source,
-    cells: () => cells,
+    cells,
     boxes: currentBoxes,
     // Dragging must not trigger a full re-render — that would rebuild the
     // video element mid-drag. The editor moves its own nodes and the rAF
@@ -379,7 +378,7 @@ function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement }
  *  allocate a fallback unless it actually needs one. */
 function currentBoxes(): Rect[] {
   const cur = getState();
-  const layout = layoutById(cur.layoutId) ?? DEFAULT_LAYOUT;
+  const layout = resolveLayout(cur.layoutId);
   const cells = cellsOf(layout);
   return cur.boxes.length === cells.length ? cur.boxes : defaultBoxes(cur.source, layout);
 }
@@ -393,7 +392,7 @@ function currentBoxes(): Rect[] {
  *  revocation is deferred instead of immediate. */
 async function doExport(): Promise<void> {
   const s = getState();
-  const layout = layoutById(s.layoutId) ?? DEFAULT_LAYOUT;
+  const layout = resolveLayout(s.layoutId);
   const boxes = s.boxes;
   if (boxes.length !== cellsOf(layout).length) return;
   await guard("Rendering… (a 30s clip takes ~5–10s)", async () => {
@@ -421,15 +420,20 @@ async function doExport(): Promise<void> {
 
 /** One button per layout, each drawing its own cells. The diagram is
  *  generated from `cellsOf`, so a picker swatch cannot drift from what the
- *  layout actually composes — which a hand-drawn icon set would. */
-function renderLayoutPicker(currentId: string): Node {
+ *  layout actually composes — which a hand-drawn icon set would.
+ *
+ *  Takes `busy` from the caller rather than reading `getState().busy`
+ *  itself: `renderFraming` already holds the render's own snapshot `s`, and
+ *  a second independent read here is exactly how a render pass can end up
+ *  observing two different moments of state and disagreeing with itself. */
+function renderLayoutPicker(currentId: string, busy: boolean): Node {
   const picks = LAYOUTS.map((layout) => {
     const selected = layout.id === currentId;
     const pick = el("button", {
       className: "layout-pick",
       title: layout.label,
       ariaLabel: layout.label,
-      disabled: Boolean(getState().busy),
+      disabled: busy,
     });
     pick.setAttribute("aria-pressed", String(selected));
     for (const cell of cellsOf(layout)) {
@@ -457,10 +461,27 @@ function renderLayoutPicker(currentId: string): Node {
       // if that gets annoying.
       setState({ layoutId: layout.id, boxes: [] });
       save();
+      // setState() above re-renders synchronously, and render() replaces
+      // barSlot's children wholesale — which destroys the very button that
+      // was just clicked and drops focus to <body>. The picker's whole
+      // point is repeated selection, so losing focus here costs a keyboard
+      // user several tabs to get back to the swatch they were just on. The
+      // new bar already reflects the selection by this point, so the
+      // now-pressed swatch can be found and re-focused directly.
+      barSlot.querySelector<HTMLElement>('.layout-pick[aria-pressed="true"]')?.focus();
     };
     return pick;
   });
-  return el("div", { className: "layouts" }, ...picks);
+  const wrap = el("div", { className: "layouts", ariaLabel: "Layout" }, ...picks);
+  // role, via setAttribute rather than the ElProps object: `ariaLabel`
+  // above and `aria-pressed` on each swatch both rely on ARIAMixin
+  // reflection, but plain `role` reflection (Element.role mirroring the
+  // `role` content attribute) landed in browsers well after those did.
+  // Object.assign-ing a `role` property on a browser that predates it would
+  // silently create an inert JS property instead of the attribute assistive
+  // tech reads — setAttribute has always worked, reflection or not.
+  wrap.setAttribute("role", "group");
+  return wrap;
 }
 
 /** The framing transport: marks (free within the fetched window's pad),
@@ -520,7 +541,7 @@ function renderFraming(): Node[] {
   return [
     setStart,
     setEnd,
-    renderLayoutPicker(s.layoutId),
+    renderLayoutPicker(s.layoutId, Boolean(s.busy)),
     el("span", { className: "badge", textContent: `${clock(s.start)} → ${clock(s.end)}` }),
     el("span", {
       className: "badge",

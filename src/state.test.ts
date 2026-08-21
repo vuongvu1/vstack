@@ -84,6 +84,54 @@ describe("save", () => {
     });
   });
 
+  it("self-heals a legacy boxTop/boxBottom record to `boxes` on the next save", () => {
+    // A record written before layouts existed has no `boxes` field at all —
+    // only the old pair. `readSaved`'s migration turns that pair into
+    // `boxes` in memory on *every* read, including save()'s own `prev`
+    // lookup below, so a plain mark-only save during a later trimming visit
+    // writes the migrated shape straight back to storage. There is no
+    // dedicated upgrade step; the record self-heals as a side effect of the
+    // very first save that touches it.
+    const videoId = "self-heal";
+    localStorage.setItem(
+      `vstack:${videoId}`,
+      JSON.stringify({
+        start: 1,
+        end: 10,
+        boxTop: { x: 0, y: 0, w: 180, h: 160 },
+        boxBottom: { x: 5, y: 5, w: 180, h: 160 },
+        sourceW: 1920,
+        sourceH: 1080,
+      }),
+    );
+
+    setState({
+      videoId,
+      phase: "trimming",
+      start: 2,
+      end: 20,
+      layoutId: DEFAULT_LAYOUT_ID,
+      boxes: [],
+      source: { w: 3840, h: 2160 },
+    });
+    save();
+
+    // toEqual is exact-shape, so this also proves boxTop/boxBottom are gone
+    // from the written record, not merely that `boxes` was added alongside
+    // them.
+    expect(readRaw(videoId)).toEqual({
+      start: 2,
+      end: 20,
+      layoutId: DEFAULT_LAYOUT_ID,
+      boxes: [
+        { x: 0, y: 0, w: 180, h: 160 },
+        { x: 5, y: 5, w: 180, h: 160 },
+      ],
+      sourceW: 1920,
+      sourceH: 1080,
+    });
+  });
+
   it("writes through real boxes and dimensions once framing has them all", () => {
     const videoId = "framed";
     setState({
@@ -248,6 +296,40 @@ describe("restore", () => {
       boxes: [
         { x: 0, y: 0, w: 180, h: 160 },
         { x: 1, y: 1, w: 180, h: 160 },
+      ],
+    });
+  });
+
+  it("prefers `boxes` over a stale boxTop/boxBottom pair when a record carries both", () => {
+    // readSaved's migration only fires when `boxes === undefined` — a
+    // record that somehow still carries a leftover pair alongside a real
+    // `boxes` array (e.g. hand-edited storage, or a future bug that stops
+    // clearing the old fields) must not let the stale pair win.
+    const videoId = "both-present";
+    localStorage.setItem(
+      `vstack:${videoId}`,
+      JSON.stringify({
+        start: 2,
+        end: 20,
+        layoutId: "1-1",
+        boxes: [
+          { x: 3, y: 3, w: 180, h: 160 },
+          { x: 4, y: 4, w: 180, h: 160 },
+        ],
+        boxTop: { x: 999, y: 999, w: 180, h: 160 },
+        boxBottom: { x: 998, y: 998, w: 180, h: 160 },
+        sourceW: 1920,
+        sourceH: 1080,
+      }),
+    );
+
+    expect(restore(videoId, { w: 1920, h: 1080 })).toEqual({
+      start: 2,
+      end: 20,
+      layoutId: "1-1",
+      boxes: [
+        { x: 3, y: 3, w: 180, h: 160 },
+        { x: 4, y: 4, w: 180, h: 160 },
       ],
     });
   });

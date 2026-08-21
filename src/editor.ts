@@ -24,8 +24,12 @@ export function mountEditor(opts: {
   source: () => Size;
   /** Output-space cells in cellsOf order. Fixed for this mount — main.ts
    *  remounts the editor when the layout changes, because the node count
-   *  is derived from it. */
-  cells: () => Rect[];
+   *  is derived from it. A plain array, not a getter: unlike `boxes` (read
+   *  every drag frame, because a box moves within a mount) this is read
+   *  exactly once, at mount, and a getter here would advertise a liveness
+   *  the mount never honours — the node count is fixed at construction, so
+   *  a live cell list would drift out of sync with it. */
+  cells: Rect[];
   boxes: () => Rect[];
   onChange(index: number, rect: Rect): void;
   onCommit(): void;
@@ -34,7 +38,7 @@ export function mountEditor(opts: {
   layer.className = "boxes";
   opts.host.append(layer);
 
-  const cells = opts.cells();
+  const cells = opts.cells;
   const nodes = cells.map((_, i) => makeBox(i));
   layer.append(...nodes);
 
