@@ -1,6 +1,6 @@
 import { isValidBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
-import { DEFAULT_LAYOUT, cellsOf, ratioOf } from "./layout.ts";
+import { DEFAULT_LAYOUT_ID, cellsOf, layoutById, ratioOf } from "./layout.ts";
 
 export type Phase = "idle" | "trimming" | "framing";
 
@@ -21,8 +21,11 @@ export type AppState = {
   windowStart: number;
   windowEnd: number;
   source: Size;
-  boxTop: Rect | null;
-  boxBottom: Rect | null;
+  layoutId: string;
+  /** One crop rect per cell of `layoutId`, in `cellsOf` order. Empty means
+   *  "not framed yet" — the only other legal length is the layout's cell
+   *  count, which is what `save`'s gate and `restore` both check. */
+  boxes: Rect[];
 };
 
 const initial: AppState = {
@@ -39,8 +42,8 @@ const initial: AppState = {
   windowStart: 0,
   windowEnd: 0,
   source: { w: 0, h: 0 },
-  boxTop: null,
-  boxBottom: null,
+  layoutId: DEFAULT_LAYOUT_ID,
+  boxes: [],
 };
 
 let state: AppState = { ...initial };
@@ -71,11 +74,16 @@ export function subscribe(fn: () => void): void {
 type Saved = {
   start: number;
   end: number;
-  boxTop: Rect | null;
-  boxBottom: Rect | null;
+  layoutId: string;
+  boxes: Rect[];
   sourceW: number;
   sourceH: number;
 };
+
+/** The pre-layouts stored shape. Records in a real user's localStorage
+ *  predate this feature, and dropping them would silently un-frame every
+ *  video already framed. */
+type Legacy = { boxTop?: Rect | null; boxBottom?: Rect | null };
 
 const key = (videoId: string) => `vstack:${videoId}`;
 
@@ -96,12 +104,18 @@ function readSaved(videoId: string): Saved | null {
   // quoted string, so the shape must be checked before reading fields off
   // it, not just the parse call itself.
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  const s = parsed as Partial<Saved>;
+  const s = parsed as Partial<Saved> & Legacy;
+
+  // Migration: a record with no `boxes` but with the old pair is a
+  // pre-layouts save, and the pair it holds is by definition a 1-1 framing.
+  const migrated: Rect[] | null =
+    s.boxes === undefined && s.boxTop && s.boxBottom ? [s.boxTop, s.boxBottom] : null;
+
   return {
     start: s.start ?? 0,
     end: s.end ?? 0,
-    boxTop: s.boxTop ?? null,
-    boxBottom: s.boxBottom ?? null,
+    layoutId: s.layoutId ?? DEFAULT_LAYOUT_ID,
+    boxes: migrated ?? (Array.isArray(s.boxes) ? s.boxes : []),
     sourceW: s.sourceW ?? 0,
     sourceH: s.sourceH ?? 0,
   };
@@ -112,46 +126,68 @@ export function save(): void {
   const prev = readSaved(state.videoId);
   // Boxes and dimensions only mean anything once /api/window has reported
   // the clip's real size. Before that, `state.source` still holds probe's
-  // informational dimensions and the boxes are null, so writing them here
-  // unconditionally would erase a pair framed in an earlier session the
+  // informational dimensions and `boxes` is empty, so writing them here
+  // unconditionally would erase a set framed in an earlier session the
   // moment a mark is touched again during a later trimming visit. Marks,
   // by contrast, always reflect the current session and always persist.
-  const framed = state.phase === "framing" && state.boxTop !== null && state.boxBottom !== null;
+  //
+  // The count check is what covers the half-built case: ensureFraming
+  // passes through states where some cells have boxes and some don't, and
+  // writing one of those would truncate a complete stored set.
+  const cells = cellsOf(layoutById(state.layoutId) ?? { id: "", label: "", rows: [] });
+  const framed =
+    state.phase === "framing" && cells.length > 0 && state.boxes.length === cells.length;
   const saved: Saved = {
     start: state.start,
     end: state.end,
-    boxTop: framed ? state.boxTop : (prev?.boxTop ?? null),
-    boxBottom: framed ? state.boxBottom : (prev?.boxBottom ?? null),
+    layoutId: framed ? state.layoutId : (prev?.layoutId ?? DEFAULT_LAYOUT_ID),
+    boxes: framed ? state.boxes : (prev?.boxes ?? []),
     sourceW: framed ? state.source.w : (prev?.sourceW ?? 0),
     sourceH: framed ? state.source.h : (prev?.sourceH ?? 0),
   };
   localStorage.setItem(key(state.videoId), JSON.stringify(saved));
 }
 
-/** Restores marks and boxes for a video. Boxes are dropped if the source
- *  resolution changed — rects are stored in source pixels, so they are
- *  meaningless against different dimensions — or if they fail `isValidBox`,
- *  the same check the server runs before ffmpeg. A rect that matches
- *  dimensions but fails aspect or min-height would otherwise restore and
- *  preview cleanly and die only at export time. localStorage is untrusted
- *  input like any other: `Saved`'s field types are a compile-time claim,
- *  not a runtime guarantee, so marks are coerced through `Number.isFinite`
- *  too — a stray string in storage must not silently make it into a
- *  numeric comparison (`"50" > 5` is `true`) and enable Continue. */
+// ponytail: `cellsOf` on a synthesised empty layout is how an unknown
+// `state.layoutId` yields `cells.length === 0` and therefore `framed ===
+// false`, rather than needing a second branch. If that reads too clever
+// later, split it.
+
+/** Restores marks, layout and boxes for a video. Boxes are dropped if the
+ *  source resolution changed — rects are stored in source pixels, so they
+ *  are meaningless against different dimensions — if their count doesn't
+ *  match the layout's cells, or if any fails `isValidBox` against *its own
+ *  cell's* ratio, the same check the server runs before ffmpeg. A rect that
+ *  matches dimensions but is a legal 9:8 box aimed at a 540x960 cell would
+ *  otherwise restore and preview cleanly and die only at export time.
+ *
+ *  A known layoutId survives all of that: losing the boxes to a re-fetch at
+ *  a different resolution should not also cost the layout choice.
+ *
+ *  localStorage is untrusted input like any other: `Saved`'s field types are
+ *  a compile-time claim, not a runtime guarantee, so marks are coerced
+ *  through `Number.isFinite` too — a stray string in storage must not
+ *  silently make it into a numeric comparison (`"50" > 5` is `true`) and
+ *  enable Continue. */
 export function restore(videoId: string, source: Size | null): Partial<AppState> {
   const s = readSaved(videoId);
   if (!s) return {};
+  const layout = layoutById(s.layoutId);
+  const cells = layout ? cellsOf(layout) : [];
   const sameSource = source !== null && s.sourceW === source.w && s.sourceH === source.h;
-  const cells = cellsOf(DEFAULT_LAYOUT);
-  const validBox = (box: Rect | null, cellIndex: number): Rect | null => {
-    const cell = cells[cellIndex];
-    if (source === null || !sameSource || box === null || cell === undefined) return null;
-    return isValidBox(box, source, ratioOf(cell)) ? box : null;
-  };
+  const usable =
+    source !== null &&
+    sameSource &&
+    cells.length > 0 &&
+    s.boxes.length === cells.length &&
+    cells.every((cell, i) => {
+      const box = s.boxes[i];
+      return box !== undefined && isValidBox(box, source, ratioOf(cell));
+    });
   return {
     start: Number.isFinite(s.start) ? s.start : initial.start,
     end: Number.isFinite(s.end) ? s.end : initial.end,
-    boxTop: validBox(s.boxTop, 0),
-    boxBottom: validBox(s.boxBottom, 1),
+    layoutId: layout ? layout.id : DEFAULT_LAYOUT_ID,
+    boxes: usable ? s.boxes : [],
   };
 }

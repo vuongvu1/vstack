@@ -1,8 +1,9 @@
 import * as api from "./api.ts";
 import { mountEditor } from "./editor.ts";
 import { SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
+import type { Rect } from "./geometry.ts";
 import { clock, mmss, slugify } from "./format.ts";
-import { DEFAULT_LAYOUT, DEFAULT_LAYOUT_ID, cellsOf, defaultBoxes, ratioOf } from "./layout.ts";
+import { DEFAULT_LAYOUT, DEFAULT_LAYOUT_ID, cellsOf, defaultBoxes, layoutById, ratioOf } from "./layout.ts";
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
@@ -101,8 +102,8 @@ async function load(url: string): Promise<void> {
         windowStart: win.windowStart,
         windowEnd: win.windowEnd,
         source,
-        boxTop: saved.boxTop ?? null,
-        boxBottom: saved.boxBottom ?? null,
+        layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
+        boxes: saved.boxes ?? [],
         phase: "framing",
       });
       save();
@@ -269,8 +270,8 @@ async function openWindow(): Promise<void> {
       windowStart: w.windowStart,
       windowEnd: w.windowEnd,
       source,
-      boxTop: saved.boxTop ?? null,
-      boxBottom: saved.boxBottom ?? null,
+      layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
+      boxes: saved.boxes ?? [],
       phase: "framing",
     });
     save();
@@ -319,22 +320,21 @@ function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement }
     outSlot.append(canvasEl);
   }
 
-  if (!s.boxTop || !s.boxBottom) {
-    const [top, bottom] = defaultBoxes(s.source, DEFAULT_LAYOUT);
+  const layout = layoutById(s.layoutId) ?? DEFAULT_LAYOUT;
+  const cells = cellsOf(layout);
+
+  if (s.boxes.length !== cells.length) {
     // setQuiet, not setState: this runs during render, and notifying from
     // inside a render is re-entrant. The rAF preview loop below reads state
     // fresh every frame, so a quiet update still reaches the canvas.
-    setQuiet({ boxTop: top ?? null, boxBottom: bottom ?? null });
+    setQuiet({ boxes: defaultBoxes(s.source, layout) });
     save();
   }
 
+  const empty = { x: 0, y: 0, w: 0, h: 0 };
   stopPreview = startPreview(canvasEl, videoEl, () => {
-    const cur = getState();
-    const [top, bottom] = defaultBoxes(cur.source, DEFAULT_LAYOUT);
-    return {
-      top: cur.boxTop ?? top ?? { x: 0, y: 0, w: 0, h: 0 },
-      bottom: cur.boxBottom ?? bottom ?? { x: 0, y: 0, w: 0, h: 0 },
-    };
+    const [top, bottom] = currentBoxes();
+    return { top: top ?? empty, bottom: bottom ?? empty };
   });
 
   stopEditor?.();
@@ -344,24 +344,32 @@ function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement }
     source: () => getState().source,
     ratios: () => cellsOf(DEFAULT_LAYOUT).map(ratioOf),
     boxes: () => {
-      const cur = getState();
-      const [top, bottom] = defaultBoxes(cur.source, DEFAULT_LAYOUT);
-      return {
-        top: cur.boxTop ?? top ?? { x: 0, y: 0, w: 0, h: 0 },
-        bottom: cur.boxBottom ?? bottom ?? { x: 0, y: 0, w: 0, h: 0 },
-      };
+      const [top, bottom] = currentBoxes();
+      return { top: top ?? empty, bottom: bottom ?? empty };
     },
     // Dragging must not trigger a full re-render — that would rebuild the
     // video element mid-drag. The editor moves its own nodes and the rAF
     // loop reads the new rect; state is written without notifying.
     onChange: (which, rect) => {
-      setQuiet(which === "top" ? { boxTop: rect } : { boxBottom: rect });
+      const next = [...getState().boxes];
+      next[which === "top" ? 0 : 1] = rect;
+      setQuiet({ boxes: next });
     },
     onCommit: () => save(),
   });
   boxesLayer = sourceSlot.querySelector<HTMLDivElement>(".boxes");
 
   return { video: videoEl, canvas: canvasEl };
+}
+
+/** The current boxes, or this layout's defaults if the list isn't built yet.
+ *  Read fresh on every preview frame and every drag, so it must not
+ *  allocate a fallback unless it actually needs one. */
+function currentBoxes(): Rect[] {
+  const cur = getState();
+  const layout = layoutById(cur.layoutId) ?? DEFAULT_LAYOUT;
+  const cells = cellsOf(layout);
+  return cur.boxes.length === cells.length ? cur.boxes : defaultBoxes(cur.source, layout);
 }
 
 /** Downloads the exported clip. `exportClip` returns a Blob; the object URL
@@ -373,9 +381,9 @@ function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement }
  *  revocation is deferred instead of immediate. */
 async function doExport(): Promise<void> {
   const s = getState();
-  if (!s.boxTop || !s.boxBottom) return;
-  const boxTop = s.boxTop;
-  const boxBottom = s.boxBottom;
+  const layout = layoutById(s.layoutId) ?? DEFAULT_LAYOUT;
+  const boxes = s.boxes;
+  if (boxes.length !== cellsOf(layout).length) return;
   await guard("Rendering… (a 30s clip takes ~5–10s)", async () => {
     const blob = await api.exportClip({
       videoId: s.videoId,
@@ -384,8 +392,8 @@ async function doExport(): Promise<void> {
       start: s.start,
       end: s.end,
       title: s.title,
-      layoutId: DEFAULT_LAYOUT_ID,
-      boxes: [boxTop, boxBottom],
+      layoutId: layout.id,
+      boxes,
     });
     const url = URL.createObjectURL(blob);
     const a = el("a", {
