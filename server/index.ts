@@ -210,6 +210,23 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 }
 
 await checkBinaries();
+// listen() reports failure through an 'error' event, not a throw, so with no
+// handler Node prints an unhandled-'error' stack dump and buries the single
+// line that matters. EADDRINUSE is the common case by far — a second
+// `pnpm server` started while one is already up — and for a loopback-bound
+// single-user tool that is a duplicate launch, not a conflict worth
+// resolving, so say which command finds the existing one.
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(
+      `vstack: port ${PORT} is already in use — a vstack server is probably ` +
+        `already running. Fix: lsof -nP -iTCP:${PORT} -sTCP:LISTEN`,
+    );
+  } else {
+    console.error(`vstack: could not listen on port ${PORT}:`, err);
+  }
+  process.exit(1);
+});
 // Loopback only: this is a local single-user tool, not deployed (see the
 // design doc), and binding the unspecified address would let any device on
 // the LAN POST /api/window (make this machine download video) or
