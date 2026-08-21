@@ -1,5 +1,11 @@
 # vstack — design
 
+> **Superseded in part.** The two-box top/bottom model described below was
+> replaced by nine layout presets composing 2–4 regions. See
+> `docs/specs/2026-08-21-vstack-layouts-design.md`. Everything else here —
+> the three phases, the fetch/window/export routes, the caching scheme — is
+> still accurate.
+
 Turn a region pair from a YouTube video into a 1080×1920 vertical short.
 
 Two 9:8 crop boxes are placed on the source frame; the output stacks them
