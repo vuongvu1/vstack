@@ -9,6 +9,7 @@ import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import { mmss, slugify } from "../src/format.ts";
 import type { Rect } from "../src/geometry.ts";
+import { layoutById } from "../src/layout.ts";
 import { HttpError } from "./errors.ts";
 import { assertBoxes, clipPath, exportClip, probeFile, reportCache } from "./ffmpeg.ts";
 import { fetchWindow, probe, videoIdFrom } from "./ytdlp.ts";
@@ -127,17 +128,24 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const start = num(raw.start, "start");
     const end = num(raw.end, "end");
     const title = str(raw.title, "title");
-    // Shape is checked here; legality (integers, 9:8 ratio, in-bounds) is
-    // checked below via assertBoxes/isValidBox, which safely reject null,
-    // non-objects, and non-integers instead of throwing a TypeError.
-    const boxTop = raw.boxTop as Rect;
-    const boxBottom = raw.boxBottom as Rect;
+    const layoutId = str(raw.layoutId, "layoutId");
+    // Shape is checked here; legality (integers, per-cell ratio, in-bounds)
+    // is checked below via assertBoxes/isValidBox, which safely reject null,
+    // non-arrays, non-objects and non-integers instead of throwing a
+    // TypeError.
+    const boxes = raw.boxes as Rect[];
 
     if (!videoId) return send(res, 400, { error: "Bad video id." });
     if (!(end > start)) return send(res, 400, { error: "End must be after start." });
     if (start < windowStart || end > windowEnd) {
       return send(res, 400, { error: "start/end must be within the fetched window." });
     }
+
+    // A table lookup, so nothing from the request body is ever interpolated
+    // into the filter graph — the same posture as taking window bounds
+    // instead of a file path.
+    const layout = layoutById(layoutId);
+    if (!layout) return send(res, 400, { error: `Unknown layout ${layoutId}.` });
 
     // Window bounds in, never a path: the cache filename is reconstructed
     // here from videoId + window bounds, so there is no client-supplied
@@ -157,7 +165,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // would otherwise map to a 500 — right for a genuine ffmpeg failure,
     // wrong for a client-supplied box).
     try {
-      assertBoxes(boxTop, boxBottom, { w: source.width, h: source.height });
+      assertBoxes(layout, boxes, { w: source.width, h: source.height });
     } catch (err) {
       throw new HttpError(400, err instanceof Error ? err.message : String(err));
     }
@@ -171,8 +179,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         input,
         start: start - windowStart,
         duration: end - start,
-        top: boxTop,
-        bottom: boxBottom,
+        layout,
+        boxes,
         source: { w: source.width, h: source.height },
         out,
       });

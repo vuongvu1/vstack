@@ -6,6 +6,8 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { boxFromHeight } from "../src/geometry.ts";
 import type { Rect, Size } from "../src/geometry.ts";
+import { DEFAULT_LAYOUT, cellsOf, layoutById } from "../src/layout.ts";
+import type { Layout } from "../src/layout.ts";
 import { assertBoxes, buildFilter, exportClip, probeFile } from "./ffmpeg.ts";
 
 const run = promisify(execFile);
@@ -19,6 +21,7 @@ const BOTTOM: Rect = { x: 1020, y: 100, ...size };      // 1020..1919 -> all blu
 
 let dir = "";
 let src = "";
+let bands = "";
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "vstack-"));
@@ -29,6 +32,20 @@ beforeAll(async () => {
     "-f", "lavfi", "-i", "color=c=blue:s=960x1080:d=2:r=10",
     "-filter_complex", "[0:v][1:v]hstack=inputs=2[v]",
     "-map", "[v]", "-pix_fmt", "yuv420p", "-y", src,
+  ]);
+
+  // Three horizontal bands, 1920x360 each: red on top, green in the middle,
+  // blue at the bottom. A 9:4 crop is 675x300 at h=300, which fits inside a
+  // single 360px band — that is what makes a per-cell colour assertion
+  // possible for a 3-cell layout.
+  bands = join(dir, "bands.mp4");
+  await run("ffmpeg", [
+    "-v", "error",
+    "-f", "lavfi", "-i", "color=c=red:s=1920x360:d=2:r=10",
+    "-f", "lavfi", "-i", "color=c=green:s=1920x360:d=2:r=10",
+    "-f", "lavfi", "-i", "color=c=blue:s=1920x360:d=2:r=10",
+    "-filter_complex", "[0:v][1:v][2:v]vstack=inputs=3[v]",
+    "-map", "[v]", "-pix_fmt", "yuv420p", "-y", bands,
   ]);
 });
 
@@ -49,32 +66,78 @@ async function pixelAt(path: string, t: number, x: number, y: number) {
   return { r: buf[i] ?? 0, g: buf[i + 1] ?? 0, b: buf[i + 2] ?? 0 };
 }
 
+/** `layoutById` returns `Layout | null` by design. Tests know their ids
+ *  exist, so they throw rather than reach for `!`. */
+function byId(id: string): Layout {
+  const layout = layoutById(id);
+  if (!layout) throw new Error(`test asked for unknown layout ${id}`);
+  return layout;
+}
+
 describe("buildFilter", () => {
-  it("crops each box and stacks them, both legs scaled to 1080x960", () => {
-    const f = buildFilter(TOP, BOTTOM);
+  it("crops each box and composes them, every leg scaled to its cell", () => {
+    const f = buildFilter(DEFAULT_LAYOUT, [TOP, BOTTOM]);
+    expect(f).toContain("split=2");
     expect(f).toContain("crop=900:800:0:100");
     expect(f).toContain("crop=900:800:1020:100");
     expect(f).toContain("scale=1080:960:flags=lanczos");
-    expect(f).toContain("vstack=inputs=2");
-    expect(f).toContain("split=2");
+    // 1-1 is the regression fence: two 1080x960 cells at y 0 and y 960,
+    // which is exactly what vstack produced before layouts existed.
+    expect(f).toContain("xstack=inputs=2:layout=0_0|0_960");
+  });
+
+  it("scales each leg to its own cell for a mixed layout", () => {
+    const layout = byId("2h-2v");
+    const cells = cellsOf(layout);
+    const boxes = cells.map((c) => ({ x: 0, y: 0, ...boxFromHeight(300, SOURCE, c.w / c.h) }));
+    const f = buildFilter(layout, boxes);
+    expect(f).toContain("split=4");
+    expect(f).toContain("scale=540:960:flags=lanczos");
+    expect(f).toContain("scale=1080:480:flags=lanczos");
+    expect(f).toContain("xstack=inputs=4:layout=0_0|540_0|0_960|0_1440");
+  });
+
+  it("refuses a box count that does not match the layout", () => {
+    expect(() => buildFilter(byId("2v-1"), [TOP, BOTTOM])).toThrow(/3 boxes/);
   });
 });
 
 describe("assertBoxes", () => {
   it("accepts valid boxes", () => {
-    expect(() => assertBoxes(TOP, BOTTOM, SOURCE)).not.toThrow();
+    expect(() => assertBoxes(DEFAULT_LAYOUT, [TOP, BOTTOM], SOURCE)).not.toThrow();
   });
 
   it("rejects a box off the aspect lock", () => {
-    expect(() => assertBoxes({ ...TOP, w: 888 }, BOTTOM, SOURCE)).toThrow(/top box/i);
+    expect(() => assertBoxes(DEFAULT_LAYOUT, [{ ...TOP, w: 888 }, BOTTOM], SOURCE)).toThrow(
+      /box 1/i,
+    );
   });
 
   it("rejects a box hanging over the edge", () => {
-    expect(() => assertBoxes(TOP, { ...BOTTOM, x: 1900 }, SOURCE)).toThrow(/bottom box/i);
+    expect(() => assertBoxes(DEFAULT_LAYOUT, [TOP, { ...BOTTOM, x: 1900 }], SOURCE)).toThrow(
+      /box 2/i,
+    );
   });
 
   it("rejects NaN", () => {
-    expect(() => assertBoxes({ ...TOP, x: Number.NaN }, BOTTOM, SOURCE)).toThrow();
+    expect(() => assertBoxes(DEFAULT_LAYOUT, [{ ...TOP, x: Number.NaN }, BOTTOM], SOURCE)).toThrow();
+  });
+
+  it("rejects the wrong number of boxes", () => {
+    expect(() => assertBoxes(byId("2v-1"), [TOP, BOTTOM], SOURCE)).toThrow(/3 boxes/);
+    expect(() => assertBoxes(DEFAULT_LAYOUT, [TOP], SOURCE)).toThrow(/2 boxes/);
+  });
+
+  it("rejects a non-array instead of throwing a TypeError", () => {
+    const notAnArray = null as unknown as Rect[];
+    expect(() => assertBoxes(DEFAULT_LAYOUT, notAnArray, SOURCE)).toThrow(/boxes/i);
+  });
+
+  it("rejects a perfect 9:8 box aimed at a 9:16 cell", () => {
+    // The silent-failure mode layouts introduce: 2h-1's first two cells are
+    // 540x960, so a flawless 9:8 crop there would export stretched.
+    const layout = byId("2h-1");
+    expect(() => assertBoxes(layout, [TOP, BOTTOM, TOP], SOURCE)).toThrow(/box 1/i);
   });
 });
 
@@ -85,8 +148,8 @@ describe("exportClip", () => {
       input: src,
       start: 0.5,
       duration: 1,
-      top: TOP,
-      bottom: BOTTOM,
+      layout: DEFAULT_LAYOUT,
+      boxes: [TOP, BOTTOM],
       source: SOURCE,
       out,
     });
@@ -112,8 +175,8 @@ describe("exportClip", () => {
         input: src,
         start: -1,
         duration: 1,
-        top: TOP,
-        bottom: BOTTOM,
+        layout: DEFAULT_LAYOUT,
+        boxes: [TOP, BOTTOM],
         source: SOURCE,
         out,
       }),
@@ -127,11 +190,54 @@ describe("exportClip", () => {
         input: src,
         start: 0,
         duration: 0,
-        top: TOP,
-        bottom: BOTTOM,
+        layout: DEFAULT_LAYOUT,
+        boxes: [TOP, BOTTOM],
         source: SOURCE,
         out,
       }),
     ).rejects.toThrow(/duration/i);
+  });
+
+  it("composes a 3-cell layout into the right cells in the right order", async () => {
+    // This is what proves xstack's `layout=` ordering, the way the vstack
+    // leg-swap assertion proved it when there were only two cells. Swap two
+    // entries in the layout string and these three assertions fail.
+    const layout = byId("2v-1");
+    const wide = boxFromHeight(300, SOURCE, 2.25); // 675x300
+    const half = boxFromHeight(300, SOURCE, 1.125); // 338x300
+    const boxes: Rect[] = [
+      { x: 0, y: 30, ...wide }, //  30..329  -> inside the red band
+      { x: 0, y: 390, ...wide }, // 390..689 -> inside the green band
+      { x: 0, y: 750, ...half }, // 750..1049 -> inside the blue band
+    ];
+
+    const out = join(dir, "out-3cell.mp4");
+    await exportClip({
+      input: bands,
+      start: 0.5,
+      duration: 1,
+      layout,
+      boxes,
+      source: SOURCE,
+      out,
+    });
+
+    expect(await probeFile(out)).toEqual({ width: 1080, height: 1920 });
+
+    // Cell centres: 1080x480 at y 0, 1080x480 at y 480, 1080x960 at y 960.
+    const first = await pixelAt(out, 0.4, 540, 240);
+    expect(first.r).toBeGreaterThan(150);
+    expect(first.g).toBeLessThan(80);
+    expect(first.b).toBeLessThan(80);
+
+    const second = await pixelAt(out, 0.4, 540, 720);
+    expect(second.g).toBeGreaterThan(80);
+    expect(second.r).toBeLessThan(80);
+    expect(second.b).toBeLessThan(80);
+
+    const third = await pixelAt(out, 0.4, 540, 1440);
+    expect(third.b).toBeGreaterThan(150);
+    expect(third.r).toBeLessThan(80);
+    expect(third.g).toBeLessThan(80);
   });
 });

@@ -2,7 +2,7 @@ import * as api from "./api.ts";
 import { mountEditor } from "./editor.ts";
 import { SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
 import { clock, mmss, slugify } from "./format.ts";
-import { DEFAULT_LAYOUT, cellsOf, defaultBoxes, ratioOf } from "./layout.ts";
+import { DEFAULT_LAYOUT, DEFAULT_LAYOUT_ID, cellsOf, defaultBoxes, ratioOf } from "./layout.ts";
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
@@ -374,6 +374,8 @@ function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement }
 async function doExport(): Promise<void> {
   const s = getState();
   if (!s.boxTop || !s.boxBottom) return;
+  const boxTop = s.boxTop;
+  const boxBottom = s.boxBottom;
   await guard("Rendering… (a 30s clip takes ~5–10s)", async () => {
     const blob = await api.exportClip({
       videoId: s.videoId,
@@ -382,8 +384,8 @@ async function doExport(): Promise<void> {
       start: s.start,
       end: s.end,
       title: s.title,
-      boxTop: s.boxTop as NonNullable<typeof s.boxTop>,
-      boxBottom: s.boxBottom as NonNullable<typeof s.boxBottom>,
+      layoutId: DEFAULT_LAYOUT_ID,
+      boxes: [boxTop, boxBottom],
     });
     const url = URL.createObjectURL(blob);
     const a = el("a", {

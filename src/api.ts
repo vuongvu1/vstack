@@ -84,8 +84,8 @@ export async function exportClip(body: {
   start: number;
   end: number;
   title: string;
-  boxTop: Rect;
-  boxBottom: Rect;
+  layoutId: string;
+  boxes: Rect[];
 }): Promise<Blob> {
   return (await post("/api/export", body)).blob();
 }

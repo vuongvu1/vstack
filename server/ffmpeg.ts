@@ -3,9 +3,10 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { HALF, isValidBox } from "../src/geometry.ts";
+import { isValidBox } from "../src/geometry.ts";
 import type { Rect, Size } from "../src/geometry.ts";
-import { DEFAULT_LAYOUT, cellsOf, ratioOf } from "../src/layout.ts";
+import { cellsOf, ratioOf } from "../src/layout.ts";
+import type { Layout } from "../src/layout.ts";
 import { toolError } from "./errors.ts";
 
 const run = promisify(execFile);
@@ -81,44 +82,76 @@ export type ExportOpts = {
   input: string;
   start: number;
   duration: number;
-  top: Rect;
-  bottom: Rect;
+  layout: Layout;
+  boxes: Rect[];
   source: Size;
   out: string;
 };
 
-/** One decode, split two ways, each leg cropped and scaled to a half, then
- *  stacked. Two -i of the same file would decode it twice. */
-export function buildFilter(top: Rect, bottom: Rect): string {
-  const leg = (r: Rect) =>
-    `crop=${r.w}:${r.h}:${r.x}:${r.y},scale=${HALF.w}:${HALF.h}:flags=lanczos`;
+/** One decode, split N ways, each leg cropped and scaled to its cell, then
+ *  composed. Two -i of the same file would decode it twice.
+ *
+ *  A single xstack rather than hstack-per-row-then-vstack: it needs no
+ *  special case for single-column rows, and its `layout=` string comes
+ *  straight out of cellsOf, so the composition can't drift from the cells
+ *  the preview and the editor use. For the 1-1 layout it emits
+ *  `layout=0_0|0_960`, which is pixel-identical to the vstack this
+ *  replaced. */
+export function buildFilter(layout: Layout, boxes: Rect[]): string {
+  const cells = cellsOf(layout);
+  const legs = cells.map((cell, i) => {
+    const r = boxes[i];
+    // Thrown, not defaulted: a missing box means the caller and the layout
+    // disagree, and a zero-size fallback would emit a filter graph ffmpeg
+    // fails on unreadably. assertBoxes normally catches this first.
+    if (r === undefined) {
+      throw new Error(
+        `buildFilter: layout ${layout.id} needs ${cells.length} boxes, got ${boxes.length}.`,
+      );
+    }
+    return (
+      `[c${i}]crop=${r.w}:${r.h}:${r.x}:${r.y},` +
+      `scale=${cell.w}:${cell.h}:flags=lanczos[s${i}]`
+    );
+  });
+  const inputs = cells.map((_, i) => `[c${i}]`).join("");
+  const scaled = cells.map((_, i) => `[s${i}]`).join("");
+  const positions = cells.map((c) => `${c.x}_${c.y}`).join("|");
   return [
-    "[0:v]split=2[a][b]",
-    `[a]${leg(top)}[t]`,
-    `[b]${leg(bottom)}[u]`,
-    "[t][u]vstack=inputs=2[v]",
+    `[0:v]split=${cells.length}${inputs}`,
+    ...legs,
+    `${scaled}xstack=inputs=${cells.length}:layout=${positions}[v]`,
   ].join(";");
 }
 
 /** Numbers are the one thing interpolated into the filter string, and a NaN
  *  or out-of-bounds rect makes ffmpeg fail unreadably. Same isValidBox the
- *  client editor uses, so there is one definition of a legal rect. */
-export function assertBoxes(top: Rect, bottom: Rect, source: Size): void {
-  const cells = cellsOf(DEFAULT_LAYOUT);
-  const pairs = [["top", top, cells[0]], ["bottom", bottom, cells[1]]] as const;
-  for (const [name, rect, cell] of pairs) {
-    if (cell === undefined || !isValidBox(rect, source, ratioOf(cell))) {
+ *  client editor uses, so there is one definition of a legal rect — checked
+ *  per box against *its own cell's* ratio, because a flawless 9:8 rect is
+ *  still illegal for a 540x960 cell and would export stretched. */
+export function assertBoxes(layout: Layout, boxes: Rect[], source: Size): void {
+  const cells = cellsOf(layout);
+  if (!Array.isArray(boxes) || boxes.length !== cells.length) {
+    throw new Error(
+      `Layout ${layout.id} needs ${cells.length} boxes, got ` +
+        `${Array.isArray(boxes) ? String(boxes.length) : typeof boxes}.`,
+    );
+  }
+  cells.forEach((cell, i) => {
+    const rect = boxes[i];
+    const ratio = ratioOf(cell);
+    if (rect === undefined || !isValidBox(rect, source, ratio)) {
       throw new Error(
-        `Invalid ${name} box ${JSON.stringify(rect)} for source ` +
-          `${source.w}x${source.h}: must be integers, 9:8 (w = round(h * 9/8)), ` +
-          `and fully inside the frame.`,
+        `Invalid box ${i + 1} ${JSON.stringify(rect)} for source ` +
+          `${source.w}x${source.h}: must be integers, ${cell.w}:${cell.h} ` +
+          `(w = round(h * ${ratio})), and fully inside the frame.`,
       );
     }
-  }
+  });
 }
 
 export async function exportClip(opts: ExportOpts): Promise<string> {
-  assertBoxes(opts.top, opts.bottom, opts.source);
+  assertBoxes(opts.layout, opts.boxes, opts.source);
   if (!Number.isFinite(opts.start) || opts.start < 0) {
     throw new Error(`Invalid start ${opts.start}: must be a non-negative number of seconds.`);
   }
@@ -136,7 +169,7 @@ export async function exportClip(opts: ExportOpts): Promise<string> {
         "-ss", String(opts.start),
         // -t (duration) not -to, which is ambiguous after a seek.
         "-t", String(opts.duration),
-        "-filter_complex", buildFilter(opts.top, opts.bottom),
+        "-filter_complex", buildFilter(opts.layout, opts.boxes),
         "-map", "[v]",
         // The ? makes audio optional so a silent source still exports.
         "-map", "0:a?",
