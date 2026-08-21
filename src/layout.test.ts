@@ -199,13 +199,18 @@ describe("defaultBoxes", () => {
   });
 
   it("gives every box the maximum size for its cell", () => {
+    // Safe across every source in SOURCES, unconditionally: defaultBoxes
+    // assigns size = maxBox(source, ratio) and only ever clampToBounds's
+    // it afterwards, which slides but never resizes. No position is
+    // asserted here, so nothing about source shape can break this one.
     for (const l of LAYOUTS) {
       const cells = cellsOf(l);
-      const s: Size = { w: 1920, h: 1080 };
-      const boxes = defaultBoxes(s, l);
-      cells.forEach((cell, i) => {
-        expect(boxes[i]).toMatchObject(maxBox(s, ratioOf(cell)));
-      });
+      for (const s of SOURCES) {
+        const boxes = defaultBoxes(s, l);
+        cells.forEach((cell, i) => {
+          expect(boxes[i]).toMatchObject(maxBox(s, ratioOf(cell)));
+        });
+      }
     }
   });
 
@@ -215,19 +220,31 @@ describe("defaultBoxes", () => {
     // spread axis would be wrong for one group or the other in the mixed
     // layouts, and spreading 9:4 boxes on x — where they are already as wide
     // as the source — would leave them all at x = 0, perfectly coincident.
-    const s: Size = { w: 1920, h: 1080 };
     for (const l of LAYOUTS) {
       const cells = cellsOf(l);
-      const boxes = defaultBoxes(s, l);
-      for (let i = 0; i < cells.length; i++) {
-        for (let j = i + 1; j < cells.length; j++) {
-          const ci = cells[i];
-          const cj = cells[j];
-          const bi = boxes[i];
-          const bj = boxes[j];
-          if (!ci || !cj || !bi || !bj) throw new Error("hole");
-          if (ratioOf(ci) !== ratioOf(cj)) continue; // different groups may overlap
-          expect(`${bi.x},${bi.y}`).not.toBe(`${bj.x},${bj.y}`);
+      for (const s of SOURCES) {
+        const boxes = defaultBoxes(s, l);
+        for (let i = 0; i < cells.length; i++) {
+          for (let j = i + 1; j < cells.length; j++) {
+            const ci = cells[i];
+            const cj = cells[j];
+            const bi = boxes[i];
+            const bj = boxes[j];
+            if (!ci || !cj || !bi || !bj) throw new Error("hole");
+            if (ratioOf(ci) !== ratioOf(cj)) continue; // different groups may overlap
+            // Separation is only possible where the group has slack on at
+            // least one axis. TALL (720x1280) against a 9:16 cell is the one
+            // case among these fixtures where it doesn't: maxBox(TALL, 9/16)
+            // is 720x1280, the whole source, so slackX and slackY are both
+            // 0 and every box in that group is forced to {0,0} — the
+            // assertion below is about the spread logic having room to work,
+            // not about an impossible placement, so skip where there's no
+            // room to spread into.
+            const size = maxBox(s, ratioOf(ci));
+            const noSlack = s.w - size.w === 0 && s.h - size.h === 0;
+            if (noSlack) continue;
+            expect(`${bi.x},${bi.y}`).not.toBe(`${bj.x},${bj.y}`);
+          }
         }
       }
     }
