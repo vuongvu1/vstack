@@ -6,9 +6,11 @@ Local single-user tool. Not deployed. Vite + vanilla TS frontend, zero-dependenc
 `node:http` backend that shells out to `yt-dlp` and `ffmpeg`.
 
 Read `docs/specs/2026-08-20-vstack-design.md` before changing behaviour — the
-phases, routes and caching scheme it describes are still accurate — plus
-`docs/specs/2026-08-21-vstack-layouts-design.md`, which covers the layout
-system and supersedes the two-box model the 2026-08-20 doc describes.
+three phases, `/api/probe`, `/api/window` and the caching scheme it describes
+are still accurate — plus `docs/specs/2026-08-21-vstack-layouts-design.md`,
+which covers the layout system, supersedes the two-box model the 2026-08-20
+doc describes, and is the authority on `/api/export`'s current body
+(`layoutId` + `boxes`, not that doc's `boxTop`/`boxBottom`).
 `docs/plans/2026-08-20-vstack.md` is the historical build plan and carries
 inline "as built" corrections; treat it as a record, not as instructions.
 
@@ -101,13 +103,13 @@ Two invariants are mutation-tested and should stay that way: swapping two entrie
 - No `enum`, `namespace`, `any`, default exports, or barrel files.
 - No `console.log`/`.info` — `.error`/`.warn` only.
 - `strict` and `noUncheckedIndexedAccess` are on: indexing yields `T | undefined`, guard with `?? fallback` rather than `!`.
-- Visual values come from the `@radix-ui/colors` custom properties imported in `style.css` — light `slate`/`blue`/`amber`/`red` plus each one's `-alpha` companion. The light files define their tokens on `:root`, so no wrapper class is needed (the dark files need `class="dark"`; switching back means restoring it). Import the alpha scale alongside every solid one: soft buttons, badges and card borders sit on both the page background and a white card, and an opaque `blue-3` bands at that boundary where `blue-a3` does not.
+- Visual values come from the `@radix-ui/colors` custom properties imported in `style.css` — light `slate`/`blue`/`amber`/`red`/`grass`/`violet` plus each one's `-alpha` companion. `grass` and `violet` were added to tint crop boxes 3 and 4; `red` was already spoken for as the error/callout colour, so it couldn't be reused for a third or fourth box. The light files define their tokens on `:root`, so no wrapper class is needed (the dark files need `class="dark"`; switching back means restoring it). Import the alpha scale alongside every solid one: soft buttons, badges and card borders sit on both the page background and a white card, and an opaque `blue-3` bands at that boundary where `blue-a3` does not.
 - `style.css` hand-rolls Radix *Themes*' token layer (`--radius-1..4`, `--space-1..6`, `--shadow-2/3`, `--control-height`) and its component recipes (Card, Button solid/soft/soft-gray, TextField surface, Badge, Callout, Slider track/thumb). The React package can't be used here, so the metrics are transcribed, not imported — keep new UI on these tokens rather than fresh literals. Button variants are classes: bare `<button>` is soft accent, `.btn-solid` is the one phase-advancing action, `.btn-gray` steps back.
 - `ponytail:` comments mark deliberate simplifications and name the upgrade path.
 
 ## Testing posture
 
-`geometry.ts` is the only module with exhaustive coverage, deliberately — its bugs are silent. `server/ffmpeg.test.ts` shells out to real ffmpeg and asserts output pixels; it is the only thing proving the preview/export agreement from the ffmpeg side. `state.test.ts` covers the save-gating that guards against erasing framed boxes. `ytdlp.test.ts` covers `videoIdFrom`, the trust boundary that decides whether a subprocess spawns.
+`geometry.ts` and `layout.ts` are the two modules with exhaustive coverage, deliberately — their bugs are silent. `layout.test.ts` asserts the nine presets tile 1080×1920 exactly, that only the three documented cell shapes occur, and that `defaultBoxes` returns per-cell-valid boxes: a mis-tiled layout survives preview and only shows up as a seam in an exported clip. `server/ffmpeg.test.ts` shells out to real ffmpeg and asserts output pixels; it is the only thing proving the preview/export agreement from the ffmpeg side. `state.test.ts` covers the save-gating that guards against erasing framed boxes. `ytdlp.test.ts` covers `videoIdFrom`, the trust boundary that decides whether a subprocess spawns.
 
 DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by design — vitest runs `environment: "node"` here and those behaviours are verified by hand.
 

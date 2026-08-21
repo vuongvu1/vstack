@@ -2,9 +2,11 @@
 
 > **Superseded in part.** The two-box top/bottom model described below was
 > replaced by nine layout presets composing 2–4 regions. See
-> `docs/specs/2026-08-21-vstack-layouts-design.md`. Everything else here —
-> the three phases, the fetch/window/export routes, the caching scheme — is
-> still accurate.
+> `docs/specs/2026-08-21-vstack-layouts-design.md`. The three phases,
+> `/api/probe`, `/api/window` and the caching scheme below are still
+> accurate. `/api/export`'s body is not: `boxTop`/`boxBottom` became
+> `layoutId`/`boxes` (reflected in the Routes table below) — the new spec is
+> the authority on their current shape.
 
 Turn a region pair from a YouTube video into a 1080×1920 vertical short.
 
@@ -128,7 +130,7 @@ vstack/
 |---|---|---|---|
 | `POST /api/probe` | `{url}` | `{videoId, duration, width, height, title, isLive}` | `yt-dlp --dump-json`, no video bytes, ~1s |
 | `POST /api/window` | `{videoId, start, end, duration}` | `{clipUrl, windowStart, windowEnd, width, height}` | `--download-sections`, stream copy, cached |
-| `POST /api/export` | `{videoId, windowStart, windowEnd, start, end, title, boxTop, boxBottom}` | the mp4, as the response body | one ffmpeg pass |
+| `POST /api/export` | `{videoId, windowStart, windowEnd, start, end, title, layoutId, boxes}` | the mp4, as the response body | one ffmpeg pass |
 
 No job queue, no polling, no SSE. Single-user local: the export request
 blocks, the UI shows a spinner, the browser saves the response via
