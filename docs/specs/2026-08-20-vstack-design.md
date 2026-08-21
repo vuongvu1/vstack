@@ -7,6 +7,17 @@
 > accurate. `/api/export`'s body is not: `boxTop`/`boxBottom` became
 > `layoutId`/`boxes` (reflected in the Routes table below) — the new spec is
 > the authority on their current shape.
+>
+> Four more spots below are two-box-era and equally superseded by that same
+> doc — each is flagged in place so landing on it directly doesn't read as
+> current: the persisted `State {…}` shape under Phase machine (`boxTop`/
+> `boxBottom` are gone; it's `layoutId`/`boxes` now), the entire
+> `## geometry.ts` section (`HALF`, `BOX_RATIO` and `MIN_BOX_H` no longer
+> exist, `defaultBoxes` no longer returns `{top, bottom}`, and `maxBox`/
+> `boxFromHeight`/`resizeFromCorner`/`isValidBox` all gained a `ratio`
+> parameter), the `## Export` filter graph (`vstack=inputs=2` is now an
+> `xstack` over 2–4 legs), and the "Any split other than 9:8 + 9:8" line
+> under Out of scope.
 
 Turn a region pair from a YouTube video into a 1080×1920 vertical short.
 
@@ -175,6 +186,9 @@ CSS grid, two columns. Left sizes to the source aspect, right is a fixed 9:16
 box. Both get `min-height: 0` so they shrink rather than overflow — the usual
 grid footgun with media children.
 
+> **Superseded** — see the note at the top of this file. This is the
+> pre-layouts shape.
+
 State `{videoId, start, end, boxTop, boxBottom, sourceW, sourceH}` persists to
 `localStorage` keyed by video id. Five lines, and it survives the constant tab
 refreshes of development. `sourceW`/`sourceH` are stored so restored rects can
@@ -220,6 +234,9 @@ exactness: with `w = round(h × 9/8)` the aspect error is 0, whereas
 even-rounding leaves a ±2px slop that has to be tolerated in validation.
 
 ## geometry.ts
+
+> **Superseded** — see the note at the top of this file. `geometry.ts` is now
+> ratio-parameterised; nothing below this line reflects the shipped module.
 
 ```ts
 export const OUTPUT = { w: 1080, h: 1920 };
@@ -278,6 +295,9 @@ no audio track and needs none.
 `ponytail:` always-on rAF, gate on `!video.paused` if battery ever matters.
 
 ## Export
+
+> **Superseded** — see the note at the top of this file. The shipped filter
+> graph composes 2–4 legs with `xstack`, not a fixed two-leg `vstack`.
 
 ```
 ffmpeg -i media/<id>/<a>-<b>.mp4 -ss <start-clipStart> -t <end-start> \
@@ -376,7 +396,9 @@ Stated so the implementation plan cannot quietly grow:
 - Multi-clip timeline.
 - Deployment, multi-user, auth. Local single-user only.
 - Non-YouTube sources. yt-dlp supports many; none designed for or tested.
-- Any split other than 9:8 + 9:8. No 3-way, no other ratios.
+- Any split other than 9:8 + 9:8. No 3-way, no other ratios. *(Superseded —
+  see the note at the top of this file; nine presets ship 2–4 regions across
+  three ratios.)*
 - Server-side progress reporting. Spinner only.
 
 ## Note
