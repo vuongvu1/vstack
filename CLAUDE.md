@@ -87,7 +87,8 @@ Two invariants are mutation-tested and should stay that way: swapping `buildFilt
 - No `enum`, `namespace`, `any`, default exports, or barrel files.
 - No `console.log`/`.info` — `.error`/`.warn` only.
 - `strict` and `noUncheckedIndexedAccess` are on: indexing yields `T | undefined`, guard with `?? fallback` rather than `!`.
-- Visual values come from the `@radix-ui/colors` custom properties imported in `style.css`. `index.html` carries `class="dark"` — without it every token resolves to nothing.
+- Visual values come from the `@radix-ui/colors` custom properties imported in `style.css` — light `slate`/`blue`/`amber`/`red` plus each one's `-alpha` companion. The light files define their tokens on `:root`, so no wrapper class is needed (the dark files need `class="dark"`; switching back means restoring it). Import the alpha scale alongside every solid one: soft buttons, badges and card borders sit on both the page background and a white card, and an opaque `blue-3` bands at that boundary where `blue-a3` does not.
+- `style.css` hand-rolls Radix *Themes*' token layer (`--radius-1..4`, `--space-1..6`, `--shadow-2/3`, `--control-height`) and its component recipes (Card, Button solid/soft/soft-gray, TextField surface, Badge, Callout, Slider track/thumb). The React package can't be used here, so the metrics are transcribed, not imported — keep new UI on these tokens rather than fresh literals. Button variants are classes: bare `<button>` is soft accent, `.btn-solid` is the one phase-advancing action, `.btn-gray` steps back.
 - `ponytail:` comments mark deliberate simplifications and name the upgrade path.
 
 ## Testing posture

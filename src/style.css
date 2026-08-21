@@ -1,38 +1,79 @@
-@import "@radix-ui/colors/gray-dark.css";
-@import "@radix-ui/colors/blue-dark.css";
-@import "@radix-ui/colors/amber-dark.css";
+/* Radix light scales. The alpha companions are not optional: soft buttons,
+   badges and card borders composite over whatever is behind them (page
+   background in the bar, white panel in a card), and an opaque `blue-3`
+   would band visibly at those boundaries where `blue-a3` does not. */
+@import "@radix-ui/colors/slate.css";
+@import "@radix-ui/colors/slate-alpha.css";
+@import "@radix-ui/colors/blue.css";
+@import "@radix-ui/colors/blue-alpha.css";
+@import "@radix-ui/colors/amber.css";
+@import "@radix-ui/colors/amber-alpha.css";
+@import "@radix-ui/colors/red.css";
+@import "@radix-ui/colors/red-alpha.css";
+
+/* Radix Themes' own token layer, hand-rolled — the React package can't be
+   used here, but its scales are what make the components read as Radix. */
+:root {
+  --radius-1: 3px;
+  --radius-2: 4px;
+  --radius-3: 6px;
+  --radius-4: 8px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --shadow-2: 0 0 0 1px var(--slate-a3), 0 1px 2px 0 var(--slate-a2);
+  --shadow-3: 0 0 0 1px var(--slate-a3), 0 2px 3px -2px var(--slate-a3),
+    0 3px 12px -4px rgba(0, 0, 0, 0.04);
+
+  --control-height: 32px;
+}
 
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background: var(--gray-1);
-  color: var(--gray-12);
+  background: #fff;
+  color: var(--slate-12);
   font: 14px/1.5 system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 #app {
   display: grid;
   grid-template-rows: 1fr auto;
-  gap: 16px;
+  gap: var(--space-4);
   height: 100vh;
-  padding: 16px;
+  padding: var(--space-4);
 }
 
 .stage {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 16px;
+  gap: var(--space-4);
   min-height: 0;
 }
 
 .stage > * { min-height: 0; min-width: 0; }
 
+/* Card, surface variant */
+.source,
+.out {
+  background: var(--slate-2);
+  border-radius: var(--radius-4);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+}
+
 .source { position: relative; display: grid; place-items: center; }
 .source > video, .source > iframe { max-width: 100%; max-height: 100%; display: block; }
 
-.out { aspect-ratio: 9 / 16; height: 100%; background: var(--gray-1); }
+.out { aspect-ratio: 9 / 16; height: 100%; }
 .out > canvas { width: 100%; height: 100%; display: block; }
 
 /* Author-origin `display: block` on the media children above beats the UA's
@@ -45,33 +86,134 @@ body {
 .source > [hidden],
 .out > [hidden] { display: none; }
 
-.bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.source > p,
+.out > p {
+  margin: 0;
+  color: var(--slate-11);
+  font-size: 13px;
+}
 
+/* Card, holding the phase controls */
+.bar {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+  padding: var(--space-3);
+  background: #fff;
+  border-radius: var(--radius-4);
+  box-shadow: var(--shadow-3);
+}
+
+/* Button, size 2. Soft accent is the default — every phase promotes exactly
+   one advancing action to solid, so the eye has a single target. */
 button {
   font: inherit;
-  padding: 6px 12px;
-  border: 1px solid var(--gray-7);
-  border-radius: 6px;
-  background: var(--gray-3);
-  color: var(--gray-12);
+  font-weight: 500;
+  height: var(--control-height);
+  padding: 0 var(--space-3);
+  border: none;
+  border-radius: var(--radius-2);
+  background: var(--blue-a3);
+  color: var(--blue-11);
   cursor: pointer;
+  white-space: nowrap;
 }
-button:disabled { opacity: 0.4; cursor: default; }
+button:hover:not(:disabled) { background: var(--blue-a4); }
+button:active:not(:disabled) { background: var(--blue-a5); }
+button:focus-visible { outline: 2px solid var(--blue-8); outline-offset: 1px; }
+button:disabled { opacity: 0.5; cursor: default; }
 
+/* Button, solid variant */
+.btn-solid {
+  background: var(--blue-9);
+  color: #fff;
+}
+.btn-solid:hover:not(:disabled) { background: var(--blue-10); }
+.btn-solid:active:not(:disabled) { background: var(--blue-10); }
+
+/* Button, soft gray — for the actions that step back rather than forward */
+.btn-gray {
+  background: var(--slate-a3);
+  color: var(--slate-12);
+}
+.btn-gray:hover:not(:disabled) { background: var(--slate-a4); }
+.btn-gray:active:not(:disabled) { background: var(--slate-a5); }
+.btn-gray:focus-visible { outline-color: var(--slate-8); }
+
+/* TextField, surface variant. The border is an inset shadow, not a border,
+   so the focus ring can thicken to 2px without shifting layout by a pixel. */
+input {
+  font: inherit;
+  height: var(--control-height);
+  padding: 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-2);
+  background: #fff;
+  color: var(--slate-12);
+  box-shadow: inset 0 0 0 1px var(--slate-a7);
+}
+input::placeholder { color: var(--slate-9); }
+input:focus { outline: none; box-shadow: inset 0 0 0 2px var(--blue-8); }
+input:disabled { background: var(--slate-a2); color: var(--slate-11); }
+
+/* Badge, soft variant */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-1);
+  background: var(--slate-a3);
+  color: var(--slate-11);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.badge-warn { background: var(--amber-a3); color: var(--amber-11); }
+.badge-info { background: var(--blue-a3); color: var(--blue-11); }
+/* Titles are arbitrary-length; `inline-block` (not the base `inline-flex`)
+   is what makes text-overflow apply, and the explicit line-height keeps it
+   on the same baseline as the flex badges beside it. */
+.badge-title {
+  display: inline-block;
+  max-width: 44ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 20px;
+}
+
+/* Callout, soft variant. `pre` keeps the tool stderr tail readable. */
+.callout {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-3);
+  background: var(--red-a2);
+  color: var(--red-11);
+  box-shadow: inset 0 0 0 1px var(--red-a6);
+  font: inherit;
+  white-space: pre-wrap;
+}
+
+.status { display: grid; gap: var(--space-2); justify-items: start; }
+.status:empty { display: none; }
+.status-row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
+
+/* Slider track + range */
 .strip {
   position: relative;
   flex: 1 1 240px;
   height: 12px;
   min-width: 160px;
-  border-radius: 6px;
-  background: var(--gray-4);
+  border-radius: var(--radius-3);
+  background: var(--slate-a4);
   cursor: pointer;
 }
 
 .strip-range {
   position: absolute;
   inset-block: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-3);
   background: var(--blue-9);
 }
 
@@ -95,16 +237,21 @@ button:disabled { opacity: 0.4; cursor: default; }
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
+  text-shadow: 0 1px 2px var(--slate-1);
 }
 .box-top .box-label { color: var(--blue-11); }
 .box-bottom .box-label { color: var(--amber-11); }
 
+/* Slider thumb. A flat `slate-12` handle is near-black on the light theme
+   and disappears against dark video frames; white + border + shadow stays
+   visible over any source content. */
 .handle {
   position: absolute;
   width: 14px;
   height: 14px;
-  background: var(--gray-12);
-  border-radius: 3px;
+  background: #fff;
+  border-radius: var(--radius-1);
+  box-shadow: 0 0 0 1px var(--slate-a7), 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 .handle-nw { top: -7px; left: -7px; cursor: nwse-resize; }
 .handle-ne { top: -7px; right: -7px; cursor: nesw-resize; }

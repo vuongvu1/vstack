@@ -46,7 +46,7 @@ const outPlaceholder = el("p", { textContent: "Output preview." });
 const sourceSlot = el("div", { className: "source" }, sourcePlaceholder);
 const outSlot = el("div", { className: "out" }, outPlaceholder);
 const barSlot = el("div", { className: "bar" });
-const statusSlot = el("div");
+const statusSlot = el("div", { className: "status" });
 app.append(el("div", { className: "stage" }, sourceSlot, outSlot), barSlot, statusSlot);
 
 // Defense in depth alongside disabling the controls that start a load:
@@ -212,17 +212,21 @@ function renderTrimming(): Node[] {
     save();
   };
 
-  const marks = el("span", { textContent: `${clock(s.start)} → ${clock(s.end)}` });
+  const marks = el("span", {
+    className: "badge",
+    textContent: `${clock(s.start)} → ${clock(s.end)}`,
+  });
 
   const long = s.end - s.start > SHORTS_MAX_S;
   const warn = long
     ? el("span", {
+        className: "badge badge-warn",
         textContent: "over 3 min — longer than a YouTube Short",
-        style: "color:var(--amber-11)",
       })
     : el("span");
 
   const go = el("button", {
+    className: "btn-solid",
     textContent: "Continue",
     disabled: !ready || !(s.end > s.start),
   });
@@ -231,7 +235,7 @@ function renderTrimming(): Node[] {
   const controls: Node[] = [setStart, setEnd];
   if (failed) {
     // One attempt per click, never automatic — see ensureSourcePlayer.
-    const retry = el("button", { textContent: "Retry" });
+    const retry = el("button", { className: "btn-gray", textContent: "Retry" });
     retry.onclick = () => {
       playerFailed = "";
       setState({ error: "" });
@@ -430,11 +434,12 @@ function renderFraming(): Node[] {
   });
   refetch.onclick = () => void openWindow();
 
-  const back = el("button", { textContent: "Back to trim" });
+  const back = el("button", { className: "btn-gray", textContent: "Back to trim" });
   back.onclick = () => setState({ phase: "trimming" });
 
   const long = s.end - s.start > SHORTS_MAX_S;
   const download = el("button", {
+    className: "btn-solid",
     textContent: "Export",
     disabled: !(s.end > s.start) || !inWindow || Boolean(s.busy),
   });
@@ -443,15 +448,15 @@ function renderFraming(): Node[] {
   return [
     setStart,
     setEnd,
-    el("span", { textContent: `${clock(s.start)} → ${clock(s.end)}` }),
+    el("span", { className: "badge", textContent: `${clock(s.start)} → ${clock(s.end)}` }),
     el("span", {
-      textContent: `source ${s.source.w}x${s.source.h}`,
-      style: "color:var(--gray-11)",
+      className: "badge",
+      textContent: `source ${s.source.w}×${s.source.h}`,
     }),
     long
       ? el("span", {
+          className: "badge badge-warn",
           textContent: "over 3 min — longer than a YouTube Short",
-          style: "color:var(--amber-11)",
         })
       : el("span"),
     refetch,
@@ -469,7 +474,7 @@ function renderIdle(s: AppState): Node[] {
     value: s.url,
     disabled: busy,
   });
-  const go = el("button", { textContent: "Load", disabled: busy });
+  const go = el("button", { className: "btn-solid", textContent: "Load", disabled: busy });
   go.onclick = () => void load(input.value);
   // Quiet: an input event on every keystroke must not trigger render(),
   // which would rebuild this very input from scratch and drop focus/cursor
@@ -519,16 +524,16 @@ function render(): void {
   else barSlot.replaceChildren(...renderFraming());
 
   const status: Node[] = [];
+  const meta: Node[] = [];
   if (s.phase !== "idle") {
-    status.push(
-      el("p", {
-        textContent: `${s.title} — ${clock(s.duration)} — ${s.source.w}x${s.source.h}`,
-      }),
-    );
-    status.push(el("p", { textContent: `phase: ${s.phase}` }));
+    meta.push(el("span", { className: "badge badge-title", textContent: s.title }));
+    meta.push(el("span", { className: "badge", textContent: clock(s.duration) }));
+    meta.push(el("span", { className: "badge", textContent: `${s.source.w}×${s.source.h}` }));
+    meta.push(el("span", { className: "badge", textContent: s.phase }));
   }
-  if (s.busy) status.push(el("p", { textContent: s.busy }));
-  if (s.error) status.push(el("pre", { textContent: s.error, style: "color:var(--amber-11)" }));
+  if (s.busy) meta.push(el("span", { className: "badge badge-info", textContent: s.busy }));
+  if (meta.length > 0) status.push(el("div", { className: "status-row" }, ...meta));
+  if (s.error) status.push(el("pre", { className: "callout", textContent: s.error }));
   statusSlot.replaceChildren(...status);
 }
 
