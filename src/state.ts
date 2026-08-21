@@ -1,5 +1,6 @@
 import { isValidBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
+import { DEFAULT_LAYOUT, cellsOf, ratioOf } from "./layout.ts";
 
 export type Phase = "idle" | "trimming" | "framing";
 
@@ -141,12 +142,16 @@ export function restore(videoId: string, source: Size | null): Partial<AppState>
   const s = readSaved(videoId);
   if (!s) return {};
   const sameSource = source !== null && s.sourceW === source.w && s.sourceH === source.h;
-  const validBox = (box: Rect | null): Rect | null =>
-    source !== null && sameSource && box !== null && isValidBox(box, source) ? box : null;
+  const cells = cellsOf(DEFAULT_LAYOUT);
+  const validBox = (box: Rect | null, cellIndex: number): Rect | null => {
+    const cell = cells[cellIndex];
+    if (source === null || !sameSource || box === null || cell === undefined) return null;
+    return isValidBox(box, source, ratioOf(cell)) ? box : null;
+  };
   return {
     start: Number.isFinite(s.start) ? s.start : initial.start,
     end: Number.isFinite(s.end) ? s.end : initial.end,
-    boxTop: validBox(s.boxTop),
-    boxBottom: validBox(s.boxBottom),
+    boxTop: validBox(s.boxTop, 0),
+    boxBottom: validBox(s.boxBottom, 1),
   };
 }

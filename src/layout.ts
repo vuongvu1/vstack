@@ -1,5 +1,5 @@
-import { OUTPUT } from "./geometry.ts";
-import type { Rect } from "./geometry.ts";
+import { OUTPUT, clampToBounds, maxBox } from "./geometry.ts";
+import type { Rect, Size } from "./geometry.ts";
 
 /** One row of a layout: the full output width, `h` output px tall, split
  *  into `cols` equal cells.
@@ -139,4 +139,57 @@ export function cellsOf(layout: Layout): Rect[] {
  *  0.5625 (9:16, 540x960) and 2.25 (9:4, 1080x480). */
 export function ratioOf(cell: Rect): number {
   return cell.w / cell.h;
+}
+
+/** One box per cell, each at the maximum size its cell's ratio allows.
+ *
+ *  Boxes are grouped by cell ratio and each group is spread independently,
+ *  along whichever source axis has more slack for that group's box size, and
+ *  centred on the other. Grouping is what makes this well-defined for the
+ *  mixed layouts: 2h-2v holds two 540x960 cells (tall, x slack) and two
+ *  1080x480 cells (wide, y slack), and one global spread axis would be wrong
+ *  for one pair or the other. Boxes from *different* groups may overlap,
+ *  which is harmless — different shapes, so their handles never coincide.
+ *
+ *  For 1-1 on a 16:9 source this is a single group of two, computing x = 0
+ *  and x = source.w - w with y centred: bit-identical to the left/right pin
+ *  that shipped before layouts existed, which frames a two-speaker wide shot
+ *  correctly with zero clicks and is one drag from the facecam case. */
+export function defaultBoxes(source: Size, layout: Layout): Rect[] {
+  const cells = cellsOf(layout);
+  const boxes: Rect[] = [];
+
+  // Index positions within each ratio group before placing anything, so a
+  // group's spread depends only on its own membership and not on where its
+  // cells happen to fall in reading order.
+  const groups = new Map<number, number[]>();
+  cells.forEach((cell, i) => {
+    const ratio = ratioOf(cell);
+    const members = groups.get(ratio) ?? [];
+    members.push(i);
+    groups.set(ratio, members);
+  });
+
+  for (const [ratio, members] of groups) {
+    const size = maxBox(source, ratio);
+    const slackX = source.w - size.w;
+    const slackY = source.h - size.h;
+    // x wins an exact tie, which is what keeps 1-1 on a 16:9 source (where
+    // slackY is 0) spreading horizontally as it always has.
+    const spreadOnX = slackX >= slackY;
+    const slack = spreadOnX ? slackX : slackY;
+    const centred = Math.round((spreadOnX ? slackY : slackX) / 2);
+
+    members.forEach((cellIndex, i) => {
+      const along = members.length === 1
+        ? Math.round(slack / 2)
+        : Math.round((i * slack) / (members.length - 1));
+      const rect = spreadOnX
+        ? { x: along, y: centred, ...size }
+        : { x: centred, y: along, ...size };
+      boxes[cellIndex] = clampToBounds(rect, source);
+    });
+  }
+
+  return boxes;
 }

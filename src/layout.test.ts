@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { OUTPUT } from "./geometry.ts";
-import type { Rect } from "./geometry.ts";
+import { OUTPUT, isValidBox, maxBox } from "./geometry.ts";
+import type { Rect, Size } from "./geometry.ts";
 import {
   DEFAULT_LAYOUT,
   DEFAULT_LAYOUT_ID,
   LAYOUTS,
   cellsOf,
+  defaultBoxes,
   layoutById,
   ratioOf,
 } from "./layout.ts";
@@ -142,5 +143,93 @@ describe("ratioOf", () => {
     expect(ratioOf({ x: 0, y: 0, w: 1080, h: 960 })).toBeCloseTo(1.125);
     expect(ratioOf({ x: 0, y: 0, w: 540, h: 960 })).toBeCloseTo(0.5625);
     expect(ratioOf({ x: 0, y: 0, w: 1080, h: 480 })).toBeCloseTo(2.25);
+  });
+});
+
+describe("defaultBoxes", () => {
+  const SOURCES: Size[] = [
+    { w: 1920, h: 1080 },
+    { w: 1280, h: 720 },
+    { w: 1000, h: 1000 },
+    { w: 720, h: 1280 },
+    { w: 100, h: 100 },
+  ];
+
+  it("reproduces today's exact left/right pin for 1-1, on a widescreen source", () => {
+    // The regression fence. Before layouts existed, defaultBoxes put both
+    // halves at max size, top pinned left and bottom pinned right, both
+    // vertically centred — one drag from the facecam case.
+    //
+    // Scoped to sources at least as wide as the cell's own 9:8 ratio,
+    // matching defaultBoxes' own doc comment ("For 1-1 on a 16:9 source").
+    // For those, the 9:8 box is *height*-limited, so all the slack sits on
+    // x and the ratio group spreads there — bit-identical to the old
+    // formula. A source narrower than 9:8 (square, portrait) flips which
+    // axis has more slack, and defaultBoxes deliberately follows it there
+    // too (see its doc comment): correct for the general multi-cell
+    // feature this task exists to enable, but not a pixel-for-pixel match
+    // with the old two-box formula. SQUARE/TALL/tiny are still exercised,
+    // just by the shape-agnostic checks below (valid, max-size,
+    // non-coincident), not by a literal position match.
+    const widescreen = SOURCES.filter((s) => s.w / s.h >= 1.125);
+    for (const s of widescreen) {
+      const boxes = defaultBoxes(s, DEFAULT_LAYOUT);
+      const size = maxBox(s, 1.125);
+      const y = Math.round((s.h - size.h) / 2);
+      expect(boxes).toEqual([
+        { x: 0, y, ...size },
+        { x: s.w - size.w, y, ...size },
+      ]);
+    }
+  });
+
+  it("returns one box per cell, each valid against its own cell ratio", () => {
+    for (const l of LAYOUTS) {
+      const cells = cellsOf(l);
+      for (const s of SOURCES) {
+        const boxes = defaultBoxes(s, l);
+        expect(boxes).toHaveLength(cells.length);
+        cells.forEach((cell, i) => {
+          const box = boxes[i];
+          if (!box) throw new Error("defaultBoxes returned a hole");
+          expect(isValidBox(box, s, ratioOf(cell))).toBe(true);
+        });
+      }
+    }
+  });
+
+  it("gives every box the maximum size for its cell", () => {
+    for (const l of LAYOUTS) {
+      const cells = cellsOf(l);
+      const s: Size = { w: 1920, h: 1080 };
+      const boxes = defaultBoxes(s, l);
+      cells.forEach((cell, i) => {
+        expect(boxes[i]).toMatchObject(maxBox(s, ratioOf(cell)));
+      });
+    }
+  });
+
+  it("does not stack boxes of the same shape on top of each other", () => {
+    // Boxes are grouped by cell ratio and each group spreads along whichever
+    // source axis has slack for that group's box size. A single global
+    // spread axis would be wrong for one group or the other in the mixed
+    // layouts, and spreading 9:4 boxes on x — where they are already as wide
+    // as the source — would leave them all at x = 0, perfectly coincident.
+    const s: Size = { w: 1920, h: 1080 };
+    for (const l of LAYOUTS) {
+      const cells = cellsOf(l);
+      const boxes = defaultBoxes(s, l);
+      for (let i = 0; i < cells.length; i++) {
+        for (let j = i + 1; j < cells.length; j++) {
+          const ci = cells[i];
+          const cj = cells[j];
+          const bi = boxes[i];
+          const bj = boxes[j];
+          if (!ci || !cj || !bi || !bj) throw new Error("hole");
+          if (ratioOf(ci) !== ratioOf(cj)) continue; // different groups may overlap
+          expect(`${bi.x},${bi.y}`).not.toBe(`${bj.x},${bj.y}`);
+        }
+      }
+    }
   });
 });

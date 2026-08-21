@@ -1,7 +1,8 @@
 import * as api from "./api.ts";
 import { mountEditor } from "./editor.ts";
-import { defaultBoxes, SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
+import { SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
 import { clock, mmss, slugify } from "./format.ts";
+import { DEFAULT_LAYOUT, cellsOf, defaultBoxes, ratioOf } from "./layout.ts";
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
@@ -319,19 +320,20 @@ function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement }
   }
 
   if (!s.boxTop || !s.boxBottom) {
-    const { top, bottom } = defaultBoxes(s.source);
+    const [top, bottom] = defaultBoxes(s.source, DEFAULT_LAYOUT);
     // setQuiet, not setState: this runs during render, and notifying from
     // inside a render is re-entrant. The rAF preview loop below reads state
     // fresh every frame, so a quiet update still reaches the canvas.
-    setQuiet({ boxTop: top, boxBottom: bottom });
+    setQuiet({ boxTop: top ?? null, boxBottom: bottom ?? null });
     save();
   }
 
   stopPreview = startPreview(canvasEl, videoEl, () => {
     const cur = getState();
+    const [top, bottom] = defaultBoxes(cur.source, DEFAULT_LAYOUT);
     return {
-      top: cur.boxTop ?? defaultBoxes(cur.source).top,
-      bottom: cur.boxBottom ?? defaultBoxes(cur.source).bottom,
+      top: cur.boxTop ?? top ?? { x: 0, y: 0, w: 0, h: 0 },
+      bottom: cur.boxBottom ?? bottom ?? { x: 0, y: 0, w: 0, h: 0 },
     };
   });
 
@@ -340,10 +342,14 @@ function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement }
     host: sourceSlot,
     media: videoEl,
     source: () => getState().source,
+    ratios: () => cellsOf(DEFAULT_LAYOUT).map(ratioOf),
     boxes: () => {
       const cur = getState();
-      const fallback = defaultBoxes(cur.source);
-      return { top: cur.boxTop ?? fallback.top, bottom: cur.boxBottom ?? fallback.bottom };
+      const [top, bottom] = defaultBoxes(cur.source, DEFAULT_LAYOUT);
+      return {
+        top: cur.boxTop ?? top ?? { x: 0, y: 0, w: 0, h: 0 },
+        bottom: cur.boxBottom ?? bottom ?? { x: 0, y: 0, w: 0, h: 0 },
+      };
     },
     // Dragging must not trigger a full re-render — that would rebuild the
     // video element mid-drag. The editor moves its own nodes and the rAF

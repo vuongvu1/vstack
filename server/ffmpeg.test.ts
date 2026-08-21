@@ -13,7 +13,7 @@ const run = promisify(execFile);
 // A 1920x1080 source: left half pure red, right half pure blue. Boxes placed
 // entirely inside one half must produce an output half of that solid colour.
 const SOURCE: Size = { w: 1920, h: 1080 };
-const size = boxFromHeight(800, SOURCE); // 900x800
+const size = boxFromHeight(800, SOURCE, 1.125); // 900x800
 const TOP: Rect = { x: 0, y: 100, ...size };            // 0..899   -> all red
 const BOTTOM: Rect = { x: 1020, y: 100, ...size };      // 1020..1919 -> all blue
 

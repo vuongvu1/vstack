@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { HALF, isValidBox } from "../src/geometry.ts";
 import type { Rect, Size } from "../src/geometry.ts";
+import { DEFAULT_LAYOUT, cellsOf, ratioOf } from "../src/layout.ts";
 import { toolError } from "./errors.ts";
 
 const run = promisify(execFile);
@@ -103,8 +104,10 @@ export function buildFilter(top: Rect, bottom: Rect): string {
  *  or out-of-bounds rect makes ffmpeg fail unreadably. Same isValidBox the
  *  client editor uses, so there is one definition of a legal rect. */
 export function assertBoxes(top: Rect, bottom: Rect, source: Size): void {
-  for (const [name, rect] of [["top", top], ["bottom", bottom]] as const) {
-    if (!isValidBox(rect, source)) {
+  const cells = cellsOf(DEFAULT_LAYOUT);
+  const pairs = [["top", top, cells[0]], ["bottom", bottom, cells[1]]] as const;
+  for (const [name, rect, cell] of pairs) {
+    if (cell === undefined || !isValidBox(rect, source, ratioOf(cell))) {
       throw new Error(
         `Invalid ${name} box ${JSON.stringify(rect)} for source ` +
           `${source.w}x${source.h}: must be integers, 9:8 (w = round(h * 9/8)), ` +

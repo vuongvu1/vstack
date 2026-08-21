@@ -23,6 +23,9 @@ export function mountEditor(opts: {
   media: HTMLVideoElement;
   source: () => Size;
   boxes: () => { top: Rect; bottom: Rect };
+  /** Parallel to the layout's cells: index 0 is the first cell. Task 5
+   *  turns `Which` into that same index; for now 0 is top, 1 is bottom. */
+  ratios: () => number[];
   onChange(which: Which, rect: Rect): void;
   onCommit(): void;
 }): () => void {
@@ -114,10 +117,14 @@ export function mountEditor(opts: {
     const dx = (e.clientX - drag.originX) / s;
     const dy = (e.clientY - drag.originY) / s;
     const source = opts.source();
+    // A layout always has at least two cells, so this index is always
+    // present; `?? 1.125` is only here because noUncheckedIndexedAccess
+    // requires a value, and 9:8 is the shape that existed before layouts.
+    const ratio = opts.ratios()[drag.which === "top" ? 0 : 1] ?? 1.125;
     const next =
       drag.corner === null
         ? moveBy(drag.startRect, dx, dy, source)
-        : resizeFromCorner(drag.startRect, drag.corner, dx, dy, source);
+        : resizeFromCorner(drag.startRect, drag.corner, dx, dy, source, ratio);
     opts.onChange(drag.which, next);
     place();
   });

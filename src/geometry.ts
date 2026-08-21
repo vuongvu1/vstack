@@ -4,11 +4,15 @@ export type Corner = "nw" | "ne" | "sw" | "se";
 
 export const OUTPUT: Size = { w: 1080, h: 1920 };
 export const HALF: Size = { w: 1080, h: 960 };
-export const BOX_RATIO = 9 / 8;
 
-/** Source px. 142 * 9/8 ≈ 160 wide — small enough to be useful, large
- *  enough that a box can still be grabbed and dragged. */
-export const MIN_BOX_H = 142;
+/** Source px, applied to the box's *shorter* axis. 142 * 9/8 = 160 wide at
+ *  9:8 — small enough to be useful, large enough that a box can still be
+ *  grabbed and dragged.
+ *
+ *  Renamed from MIN_BOX_H because a height-only floor stopped being enough
+ *  once cells came in three shapes: a 9:16 cell floored at h = 142 is only
+ *  80px wide, too narrow to hit its own corner handles. */
+export const MIN_BOX_SIDE = 142;
 
 /** Seconds. Videos shorter than this skip the trim phase entirely. */
 export const SKIP_TRIM_UNDER = 180;
@@ -26,25 +30,39 @@ export const PAD = 5;
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
-/** Largest 9:8 box that fits. Height is derived first, because deriving
- *  width first can round up past the source edge. */
-export function maxBox(source: Size): Size {
-  const h = Math.floor(Math.min(source.h, source.w / BOX_RATIO));
-  return { w: Math.round(h * BOX_RATIO), h };
+/** MIN_BOX_SIDE is the preferred floor on both axes, so for a cell narrower
+ *  than it is tall the height floor has to rise to keep the width legal. A
+ *  source too small to contain it cannot honour it — the effective floor is
+ *  whichever is smaller. Both boxFromHeight and isValidBox read this, so the
+ *  validator can never reject what the constructors produce.
+ *
+ *  Math.ceil is load-bearing, not cosmetic — what matters is that the floor
+ *  is an INTEGER. MIN_BOX_SIDE / ratio is fractional for a tall cell
+ *  (142 / 0.5625 = 252.444) and boxFromHeight *rounds* its clamped height,
+ *  so leaving the floor fractional makes the smallest constructible box
+ *  h = 252 while isValidBox compares it against 252.444 and rejects it: the
+ *  validator refuses its own constructor's output, at 9:16 only. An integer
+ *  floor is also what makes boxFromHeight's round-after-clamp unable to
+ *  escape the range at all. Ceil over round because a floor should never
+ *  round *below* the minimum it names. */
+function effectiveMinH(source: Size, ratio: number): number {
+  const floor = Math.ceil(Math.max(MIN_BOX_SIDE, MIN_BOX_SIDE / ratio));
+  return Math.min(floor, maxBox(source, ratio).h);
 }
 
-/** MIN_BOX_H is the preferred floor, but a source too small to contain it
- *  cannot honour it — the effective floor is whichever is smaller. Both
- *  boxFromHeight and isValidBox read it, so the validator can never reject
- *  what the constructors produce. */
-function effectiveMinH(source: Size): number {
-  return Math.min(MIN_BOX_H, maxBox(source).h);
+/** Largest box of the given aspect that fits. Height is derived first,
+ *  because deriving width first can round up past the source edge. */
+export function maxBox(source: Size, ratio: number): Size {
+  const h = Math.floor(Math.min(source.h, source.w / ratio));
+  return { w: Math.round(h * ratio), h };
 }
 
-/** Canonical box construction: integer height, width derived exactly. */
-export function boxFromHeight(h: number, source: Size): Size {
-  const height = Math.round(clamp(h, effectiveMinH(source), maxBox(source).h));
-  return { w: Math.round(height * BOX_RATIO), h: height };
+/** Canonical box construction: integer height, width derived exactly.
+ *  `ratio` is the target cell's w/h — 1.125, 0.5625 or 2.25 (see
+ *  layout.ts's ratioOf). */
+export function boxFromHeight(h: number, source: Size, ratio: number): Size {
+  const height = Math.round(clamp(h, effectiveMinH(source, ratio), maxBox(source, ratio).h));
+  return { w: Math.round(height * ratio), h: height };
 }
 
 /** Slides a rect back inside the source. Never resizes it — shrinking would
@@ -73,6 +91,7 @@ export function resizeFromCorner(
   dx: number,
   dy: number,
   source: Size,
+  ratio: number,
 ): Rect {
   const west = corner === "nw" || corner === "sw";
   const north = corner === "nw" || corner === "ne";
@@ -88,7 +107,7 @@ export function resizeFromCorner(
   const wantW = Math.max(0, west ? anchorX - draggedX : draggedX - anchorX);
   const wantH = Math.max(0, north ? anchorY - draggedY : draggedY - anchorY);
 
-  const size = boxFromHeight(Math.max(wantH, wantW / BOX_RATIO), source);
+  const size = boxFromHeight(Math.max(wantH, wantW / ratio), source, ratio);
 
   return clampToBounds(
     {
@@ -98,18 +117,6 @@ export function resizeFromCorner(
     },
     source,
   );
-}
-
-/** Both boxes at max size, top pinned left and bottom pinned right,
- *  vertically centred. That frames a two-speaker wide shot correctly with
- *  zero clicks, and is one drag from the facecam case. */
-export function defaultBoxes(source: Size): { top: Rect; bottom: Rect } {
-  const size = maxBox(source);
-  const y = Math.round((source.h - size.h) / 2);
-  return {
-    top: clampToBounds({ x: 0, y, ...size }, source),
-    bottom: clampToBounds({ x: source.w - size.w, y, ...size }, source),
-  };
 }
 
 export function displayScale(source: Size, displayW: number): number {
@@ -130,16 +137,18 @@ export function fromDisplay(rect: Rect, scale: number): Rect {
 }
 
 /** One definition of a legal rect, shared by the client editor and the
- *  server's pre-ffmpeg validation. */
-export function isValidBox(rect: Rect, source: Size): boolean {
+ *  server's pre-ffmpeg validation. `ratio` is the ratio of the *cell this
+ *  box feeds*, which is why it is a parameter and not a constant: a box can
+ *  be a flawless 9:8 rect and still be illegal for a 540x960 cell. */
+export function isValidBox(rect: Rect, source: Size, ratio: number): boolean {
   // Guarded because this validates values arriving from untrusted JSON at
   // runtime, whatever the parameter type claims at compile time.
   if (typeof rect !== "object" || rect === null) return false;
   const ints = [rect.x, rect.y, rect.w, rect.h].every(Number.isInteger);
   return (
     ints &&
-    rect.w === Math.round(rect.h * BOX_RATIO) &&
-    rect.h >= effectiveMinH(source) &&
+    rect.w === Math.round(rect.h * ratio) &&
+    rect.h >= effectiveMinH(source, ratio) &&
     rect.x >= 0 &&
     rect.y >= 0 &&
     rect.x + rect.w <= source.w &&
