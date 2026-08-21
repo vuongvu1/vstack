@@ -55,26 +55,37 @@ describe("mmss", () => {
 });
 
 describe("clock", () => {
-  it("formats as m:ss with zero-padded seconds", () => {
-    expect(clock(0)).toBe("0:00");
-    expect(clock(5)).toBe("0:05");
-    expect(clock(45)).toBe("0:45");
-    expect(clock(59)).toBe("0:59");
+  it("formats as hh:mm:ss with every field zero-padded", () => {
+    expect(clock(0)).toBe("00:00:00");
+    expect(clock(5)).toBe("00:00:05");
+    expect(clock(45)).toBe("00:00:45");
+    expect(clock(59)).toBe("00:00:59");
   });
 
   it("formats minutes correctly", () => {
-    expect(clock(60)).toBe("1:00");
-    expect(clock(125)).toBe("2:05");
-    expect(clock(3661)).toBe("61:01");
+    expect(clock(60)).toBe("00:01:00");
+    expect(clock(125)).toBe("00:02:05");
+    expect(clock(599)).toBe("00:09:59");
+  });
+
+  it("rolls minutes over into hours instead of accumulating them", () => {
+    expect(clock(3600)).toBe("01:00:00");
+    expect(clock(3661)).toBe("01:01:01");
+    expect(clock(5376)).toBe("01:29:36");
+    expect(clock(5446)).toBe("01:30:46");
+  });
+
+  it("keeps hours past 99 rather than truncating", () => {
+    expect(clock(360000)).toBe("100:00:00");
   });
 
   it("clamps negative input to 0", () => {
-    expect(clock(-5)).toBe("0:00");
-    expect(clock(-100)).toBe("0:00");
+    expect(clock(-5)).toBe("00:00:00");
+    expect(clock(-100)).toBe("00:00:00");
   });
 
   it("floors fractional seconds", () => {
-    expect(clock(5.9)).toBe("0:05");
-    expect(clock(59.9)).toBe("0:59");
+    expect(clock(5.9)).toBe("00:00:05");
+    expect(clock(59.9)).toBe("00:00:59");
   });
 });
