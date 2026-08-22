@@ -13,6 +13,7 @@ import {
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
+import { renderTitleArt } from "./starter.ts";
 import type { AppState } from "./state.ts";
 import { getState, restore, save, setQuiet, setState, subscribe } from "./state.ts";
 
@@ -458,6 +459,11 @@ async function doExport(): Promise<void> {
   const layout = resolveLayout(s.layoutId);
   const boxes = s.boxes;
   if (boxes.length !== cellsOf(layout).length) return;
+  // Same check the Export button is disabled on, and the same one the server
+  // repeats: the title is spoken aloud on the starter screen, so a blank one
+  // is a silent screen, not a missing caption.
+  const starterTitle = s.starterTitle.trim();
+  if (starterTitle === "") return;
   await guard("Rendering… (a 30s clip takes ~5–10s)", async () => {
     const blob = await api.exportClip({
       videoId: s.videoId,
@@ -466,6 +472,8 @@ async function doExport(): Promise<void> {
       start: s.start,
       end: s.end,
       title: s.title,
+      starterTitle,
+      titlePng: await renderTitleArt(starterTitle),
       layoutId: layout.id,
       boxes,
     });
@@ -478,6 +486,10 @@ async function doExport(): Promise<void> {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    // Inside the guard, after the await: a failed export throws before this
+    // and rings nothing. Export doesn't change `phase`, so this is the one
+    // step the phase subscriber can't see.
+    bell();
   });
 }
 
@@ -575,21 +587,49 @@ function renderFraming(): Node[] {
   const back = el("button", { className: "btn-gray", textContent: "Back to trim" });
   back.onclick = () => setState({ phase: "trimming" });
 
+  // The starter screen's title, and the gate on Export: the screen reads it
+  // aloud, so a blank one is a silent screen rather than a missing caption.
+  const title = el("input", {
+    type: "text",
+    placeholder: "Starter screen title (required)",
+    title: "Shown and read aloud before the clip",
+    ariaLabel: "Starter screen title",
+    size: 28,
+    value: s.starterTitle,
+    disabled: Boolean(s.busy),
+  });
+  // No window check: windowStart is max(0, floor(start − PAD)) and windowEnd
+  // is min(ceil(end + PAD), duration), so the fetched window contains
+  // [start, end] by construction — and with marking confined to trimming,
+  // nothing reachable from here can move them out of it. The server
+  // re-validates the pair regardless.
+  const exportable = (text: string) => s.end > s.start && text.trim() !== "" && !s.busy;
+
   const long = s.end - s.start > SHORTS_MAX_S;
   const download = el("button", {
     className: "btn-solid",
     textContent: "Export",
-    // No window check: windowStart is max(0, floor(start − PAD)) and
-    // windowEnd is min(ceil(end + PAD), duration), so the fetched window
-    // contains [start, end] by construction — and with marking confined to
-    // trimming, nothing reachable from here can move them out of it. The
-    // server re-validates the pair regardless.
-    disabled: !(s.end > s.start) || Boolean(s.busy),
+    disabled: !exportable(s.starterTitle),
   });
   download.onclick = () => void doExport();
 
+  // Quiet, for the same reason the URL field is: a notifying update per
+  // keystroke would rebuild this very input and drop the caret. But Export's
+  // disabled state depends on this value, and a quiet update reaches no
+  // render — so the button is flipped in place here. Without that it would
+  // stay disabled until some unrelated setState happened along, which reads
+  // as "Export is broken" rather than "type a title first".
+  title.oninput = () => {
+    setQuiet({ starterTitle: title.value });
+    download.disabled = !exportable(title.value);
+  };
+  // On blur rather than per keystroke: the value is settled by then, and
+  // save() notifies nothing, so the caret is safe either way.
+  title.onblur = () => save();
+
   return [
     renderLayoutPicker(s.layoutId, Boolean(s.busy)),
+    title,
     el("span", { className: "badge", textContent: `${clock(s.start)} → ${clock(s.end)}` }),
     el("span", {
       className: "badge",
@@ -678,6 +718,49 @@ function render(): void {
   if (s.error) status.push(el("pre", { className: "callout", textContent: s.error }));
   statusSlot.replaceChildren(...status);
 }
+
+/** A short beep, so a phase advance is noticeable while looking elsewhere.
+ *
+ *  ponytail: an oscillator rather than an audio file — nothing to ship, cache
+ *  or 404. A fresh AudioContext per ring, closed on ended: a long-lived one
+ *  starts suspended until the first gesture and would need resuming, whereas
+ *  every ring here follows a click. Swap in an `<audio>` and a real sample if
+ *  a nicer sound ever matters. */
+function bell(): void {
+  try {
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.frequency.value = 880;
+    // Ramp down rather than a hard stop, which clicks.
+    gain.gain.setValueAtTime(0.12, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.22);
+    osc.connect(gain).connect(ctx.destination);
+    osc.onended = () => void ctx.close();
+    osc.start();
+    osc.stop(ctx.currentTime + 0.22);
+  } catch {
+    // No audio device, or the browser refused to start a context. A missing
+    // bell must never break the phase advance that triggered it.
+  }
+}
+
+// One subscriber for every advance, instead of a bell() at each transition:
+// `phase` is set from four places (load's two branches — skip-trim goes
+// straight to framing — the trim bar's Continue, and "Back to trim") and a
+// per-call-site ring would be missed by the fifth. Comparing here also means
+// the many setState calls that don't move the phase (busy on/off, error,
+// the layout picker) stay silent for free.
+//
+// The initial value is read before the first render, and boot is always
+// "idle": restore() only ever runs inside a load, never at module scope.
+let ranPhase = getState().phase;
+subscribe(() => {
+  const { phase } = getState();
+  if (phase === ranPhase) return;
+  ranPhase = phase;
+  bell();
+});
 
 subscribe(render);
 render();

@@ -14,6 +14,10 @@ export type AppState = {
   url: string;
   videoId: string;
   title: string;
+  /** The starter screen's title, typed in the framing bar. Required to
+   *  export — the screen reads it aloud — and unrelated to `title`, which is
+   *  YouTube's own and only names the downloaded file. */
+  starterTitle: string;
   duration: number;
   start: number;
   end: number;
@@ -35,6 +39,7 @@ const initial: AppState = {
   url: "",
   videoId: "",
   title: "",
+  starterTitle: "",
   duration: 0,
   start: 0,
   end: 0,
@@ -74,6 +79,7 @@ export function subscribe(fn: () => void): void {
 type Saved = {
   start: number;
   end: number;
+  starterTitle: string;
   layoutId: string;
   boxes: Rect[];
   sourceW: number;
@@ -114,6 +120,7 @@ function readSaved(videoId: string): Saved | null {
   return {
     start: s.start ?? 0,
     end: s.end ?? 0,
+    starterTitle: typeof s.starterTitle === "string" ? s.starterTitle : "",
     layoutId: s.layoutId ?? DEFAULT_LAYOUT_ID,
     boxes: migrated ?? (Array.isArray(s.boxes) ? s.boxes : []),
     sourceW: s.sourceW ?? 0,
@@ -157,6 +164,11 @@ export function save(): void {
   const saved: Saved = {
     start: state.start,
     end: state.end,
+    // Persisted unconditionally, like the marks and for the same reason: it
+    // is typed this session and always reflects it. The framing-only gate
+    // below exists for values that are meaningless before /api/window has
+    // reported the clip's real size, which a title is not.
+    starterTitle: state.starterTitle,
     layoutId: framed ? layout.id : (prev?.layoutId ?? DEFAULT_LAYOUT_ID),
     boxes: framed ? state.boxes : (prev?.boxes ?? []),
     sourceW: framed ? state.source.w : (prev?.sourceW ?? 0),
@@ -199,6 +211,7 @@ export function restore(videoId: string, source: Size | null): Partial<AppState>
   return {
     start: Number.isFinite(s.start) ? s.start : initial.start,
     end: Number.isFinite(s.end) ? s.end : initial.end,
+    starterTitle: s.starterTitle,
     layoutId: layout ? layout.id : DEFAULT_LAYOUT_ID,
     boxes: usable ? s.boxes : [],
   };

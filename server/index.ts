@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -13,6 +13,7 @@ import { layoutById } from "../src/layout.ts";
 import { HttpError } from "./errors.ts";
 import { assertBoxes, clipPath, exportClip, probeFile, reportCache } from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
+import { checkStarter, prependStarter, speak } from "./starter.ts";
 import { fetchWindow, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
@@ -76,6 +77,44 @@ export function num(v: unknown, name: string): number {
   return v;
 }
 
+/** The starter screen's title. Trimmed here so the same string is what gets
+ *  spoken, and length-capped because it is handed to `say`, which will
+ *  cheerfully read a novel. */
+const TITLE_MAX = 200;
+
+export function readTitle(v: unknown): string {
+  const text = str(v, "starterTitle").trim();
+  if (text === "") throw new HttpError(400, "starterTitle must not be blank.");
+  if (text.length > TITLE_MAX) {
+    throw new HttpError(400, `starterTitle must be at most ${TITLE_MAX} characters.`);
+  }
+  return text;
+}
+
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+/** A 1080x1920 title overlay is tens of KB. The cap is three orders of
+ *  magnitude of headroom and exists only so a bad request can't be a
+ *  memory-sized one. */
+const PNG_MAX = 8 << 20;
+
+/** The client renders the title to a PNG because this machine's ffmpeg has no
+ *  `drawtext` (no libfreetype in the build), so unlike the frame mask this
+ *  image arrives over the wire. It is written to a temp file and handed to
+ *  ffmpeg as an input, so the signature is checked rather than trusted: the
+ *  decoded bytes are the one part of an export ffmpeg parses as a container. */
+export function png(v: unknown, name: string): Buffer {
+  const b64 = str(v, name);
+  if (b64.length > PNG_MAX) throw new HttpError(400, `${name} is too large.`);
+  // Buffer.from(..., "base64") never throws — it stops at the first invalid
+  // character — so the signature check is what rejects a non-PNG body, not
+  // the decode.
+  const buf = Buffer.from(b64, "base64");
+  if (!buf.subarray(0, 8).equals(PNG_MAGIC)) {
+    throw new HttpError(400, `${name} is not a PNG.`);
+  }
+  return buf;
+}
+
 const server = createServer((req, res) => {
   void route(req, res).catch((err: Error) => {
     console.error(err);
@@ -128,7 +167,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const windowEnd = num(raw.windowEnd, "windowEnd");
     const start = num(raw.start, "start");
     const end = num(raw.end, "end");
-    const title = str(raw.title, "title");
+    const videoTitle = str(raw.title, "title");
+    const starterTitle = readTitle(raw.starterTitle);
+    const titlePng = png(raw.titlePng, "titlePng");
     const layoutId = str(raw.layoutId, "layoutId");
     // Shape is checked here; legality (integers, per-cell ratio, in-bounds)
     // is checked below via assertBoxes/isValidBox, which safely reject null,
@@ -172,10 +213,16 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
 
     const dir = await mkdtemp(join(tmpdir(), "vstack-out-"));
-    const name = `${slugify(title)}-${mmss(start)}-${mmss(end)}.mp4`;
+    const name = `${slugify(videoTitle)}-${mmss(start)}-${mmss(end)}.mp4`;
     const out = join(dir, name);
+    // The composite lands here first; the starter screen is prepended onto it
+    // in a second pass, and `out` — the file that gets streamed — is the
+    // concatenation of the two.
+    const body = join(dir, "body.mp4");
+    const art = join(dir, "title.png");
 
     try {
+      await writeFile(art, titlePng);
       await exportClip({
         input,
         start: start - windowStart,
@@ -186,6 +233,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         // Rendered on first export of each layout and cached from then on,
         // keyed on the layout id plus GUTTER and CORNER_RADIUS.
         mask: await ensureMask(layout),
+        out: body,
+      });
+      const voice = join(dir, "voice.aiff");
+      await prependStarter({
+        main: body,
+        title: art,
+        voice,
+        voiceSeconds: await speak(starterTitle, dir, voice),
         out,
       });
       const { size } = statSync(out);
@@ -222,6 +277,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 }
 
 await checkBinaries();
+await checkStarter();
 // listen() reports failure through an 'error' event, not a throw, so with no
 // handler Node prints an unhandled-'error' stack dump and buries the single
 // line that matters. EADDRINUSE is the common case by far — a second

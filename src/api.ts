@@ -84,6 +84,12 @@ export async function exportClip(body: {
   start: number;
   end: number;
   title: string;
+  /** The starter screen's title. Spoken aloud by the server, and required. */
+  starterTitle: string;
+  /** The same title as a transparent 1080x1920 PNG, bare base64. Rendered
+   *  here because the server's ffmpeg has no `drawtext` — see
+   *  `renderTitleArt` in `starter.ts`. */
+  titlePng: string;
   layoutId: string;
   boxes: Rect[];
 }): Promise<Blob> {

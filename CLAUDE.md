@@ -13,7 +13,11 @@ doc describes, and is the authority on `/api/export`'s current body
 (`layoutId` + `boxes`, not that doc's `boxTop`/`boxBottom`), plus
 `docs/specs/2026-08-22-vstack-frame-borders-design.md`, which covers the white
 gutters and rounded pieces and supersedes the layouts doc's claim that borders
-are out of scope and that `xstack` produces `[v]` directly.
+are out of scope and that `xstack` produces `[v]` directly, plus
+`docs/specs/2026-08-22-vstack-starter-screen-design.md`, which covers the
+title card prepended to every export and supersedes the layouts doc's
+`/api/export` body again (`starterTitle` + `titlePng` on top of `layoutId` +
+`boxes`).
 `docs/plans/2026-08-20-vstack.md` is the historical build plan and carries
 inline "as built" corrections; treat it as a record, not as instructions.
 
@@ -26,8 +30,9 @@ pnpm test     # vitest, 124 tests
 pnpm build    # tsc && vite build
 ```
 
-Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH. The server checks at boot and
-exits with an install hint if any is missing.
+Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH, plus macOS `say` with a
+Vietnamese voice (`Linh`) and both files in `server/assets/`. The server checks
+all of it at boot and exits with an install hint if any is missing.
 
 ## Architecture
 
@@ -36,11 +41,16 @@ server/errors.ts   HttpError (status + message), toolError (stderr tail)
 server/ffmpeg.ts   MEDIA_DIR, clipName/clipPath, probeFile, buildFilter,
                    assertBoxes, exportClip, reportCache
 server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
+server/starter.ts  MUSIC_PATH/CUE_PATH, VOICE, starterDuration, checkStarter,
+                   speak, prependStarter (the title card, pass 2 of the export)
+server/assets/     starter-music.mp3 (the bed), before-video-start-sound.mp3
+                   (the cue before the cut)
 server/ytdlp.ts    videoIdFrom, probe, fetchWindow
 server/index.ts    3 routes, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/layout.ts      nine layout presets, cellsOf, ratioOf, defaultBoxes
 src/frame.ts       GUTTER/CORNER_RADIUS, windowOf/windowsOf, maskRgba
+src/starter.ts     TITLE_FONT, renderTitleArt (title → transparent PNG)
 src/state.ts       AppState, setState/setQuiet, save/restore
 src/api.ts         3 fetch wrappers
 src/format.ts      mmss / clock / slugify (shared client + server)
@@ -51,8 +61,10 @@ src/main.ts        persistent shell, phase machine, all three phases
 media/             clip cache (gitignored)
 ```
 
-Layering is strict and acyclic: `errors ← ffmpeg ← {ytdlp, mask} ← index` on
-the server, `geometry ← layout ← frame ← everything` on the client.
+Layering is strict and acyclic: `errors ← {ffmpeg, starter} ← {ytdlp, mask} ←
+index` on the server, `geometry ← layout ← frame ← everything` on the client.
+`starter.ts` sits beside `ffmpeg.ts`, not above it, because it takes paths in
+the caller's temp dir and never needs `MEDIA_DIR`.
 `geometry.ts` never imports `layout.ts` — that is why `defaultBoxes` lives in
 `layout.ts` instead of `geometry.ts`. `mask.ts` sits *above* `ffmpeg.ts`
 because it needs `MEDIA_DIR`, which is why the mask path is passed into
@@ -113,7 +125,16 @@ Two invariants are mutation-tested and should stay that way: swapping two entrie
 
 **A layout change must not reassign `video.src`.** `ensureFraming` splits its clip guard (`sameClip`) from its layout guard (`sameLayout`, tracked by `editorFor`) for exactly this reason — assigning the same `src` reloads the element and restarts playback. `sameClip` is captured before `framingFor` is reassigned, so a layout switch mid-clip rebuilds the editor and preview without touching the video.
 
+**A quiet update reaches no render, so anything gated on it must be toggled
+in place.** The starter-title input uses `setQuiet` (see below), and Export is
+disabled on that same value — so its `disabled` is flipped inside the input
+handler. Without that it stays disabled until an unrelated `setState` happens
+along, which reads as "Export is broken" rather than "type a title first".
+`doExport` re-checks the title itself rather than trusting the button.
+
 **`setQuiet`, not `setState`, in the drag path and during render.** `setState` notifies subscribers synchronously, so calling it from inside `render()` is re-entrant, and a re-render mid-drag rebuilds the bar and risks disturbing playback. The rAF preview loop reads state every frame, so a quiet update still reaches the canvas. `save()` runs on drag end only.
+
+**`starterTitle` persists unconditionally, like the marks.** The framing-only gate below is for values that are meaningless before `/api/window` has reported the clip's real size; a title is not one of them.
 
 **`save()` only persists boxes/dimensions when `phase === "framing"` with a full set of boxes for the current layout.** Otherwise it carries the stored values forward. Before framing, `state.source` still holds probe's informational dimensions and `boxes` is empty — writing them would erase a set framed in an earlier session, and the half-built states `ensureFraming` passes through (some cells boxed, some not) would truncate a complete stored set.
 
@@ -134,7 +155,33 @@ the layout alone, editing either constant would keep serving the old border to
 exports while the preview — which recomputes the overlay every frame — showed
 the new one.
 
-**`/api/export` takes window bounds, never a file path.** The server reconstructs the cache filename itself, so there is no client-supplied path to validate for traversal. Keep it that way.
+**`/api/export` takes window bounds, never a file path.** The server reconstructs the cache filename itself, so there is no client-supplied path to validate for traversal. The starter screen's `titlePng` is the one exception — an image the client rendered, because this machine's ffmpeg *cannot rasterise text at all* — so it is length-capped and checked against the PNG signature before it reaches ffmpeg. Keep both of those that way.
+
+**This ffmpeg has no `drawtext`.** Homebrew 8.1.1 here is built without
+libfreetype, libass and librsvg; `ffmpeg -h filter=drawtext` says `Unknown
+filter 'drawtext'`, and the `svg_pipe` demuxer that *is* listed has no decoder
+behind it. That is the whole reason `renderTitleArt` lives in the browser.
+Don't "simplify" it into a server-side `drawtext` — it will not run here.
+
+**`concat` refuses a SAR mismatch, it does not pick a side.** `scale=` in
+`buildFilter` carries the *source's* sample aspect into the composite, so an
+anamorphic upload lands as 1080x1920 at SAR 1214:1215. `prependStarter`
+therefore does `setsar=1` on *both* legs; without it the error is `Nothing was
+written into output file`, not a subtly wrong aspect. Note that libx264
+normalises a SAR that close to square back to 1:1, so a synthetic fixture has
+to use something further out (the test uses 40:41) to reproduce it.
+
+**`ffprobe -of default=nk=1` prints one line per *stream*.** Reading a
+per-file answer out of it means guessing which line is which — taking the
+first said "codec_type=video", so `hasAudio` was false for every clip that had
+audio and every export replaced the clip's sound with the silence stand-in,
+while every stream-shape assertion still passed. `probeMain` uses `-of json`.
+
+**The starter screen is pass 2, not part of `buildFilter`.** `exportClip`
+writes `body.mp4`; `prependStarter` extracts its first frame, blurs it,
+overlays the title art and concatenates. Folding it into the export's graph
+means a `split`/`trim`/`loop` chain *and* turning `-ss`/`-t` into filters,
+because an output `-t` would truncate the concatenation rather than the clip.
 
 ## Conventions
 
@@ -154,6 +201,15 @@ windows has a positive gap) and the mask's alpha, including the assertion that
 a window's square corner is opaque — the one that fails if `CORNER_RADIUS`
 goes to 0. `server/mask.test.ts` decodes the rendered PNG back to RGBA and
 checks it against those windows.
+`server/starter.test.ts` shells out to real ffmpeg *and* real `say`: the
+output's duration is the screen plus the clip, the seam pixel is mixed over
+the screen (the assertion that fails if the blur is dropped) and pure over the
+clip, and a non-square-SAR clip concatenates at all. Audio is checked one
+layer per window — the bed before the voice starts, the voice, the cue in the
+tail slot the voice leaves free, and the clip's own sound after the cut (the
+assertion that caught `hasAudio` reading the wrong ffprobe line). Each window
+is one where only that layer can be heard, so all four are load-bearing. `src/starter.ts` is DOM-driven and untested like the rest — it was
+verified by hand in a real browser and through a real export.
 `state.test.ts` covers the save-gating that guards against erasing framed boxes. `ytdlp.test.ts` covers `videoIdFrom`, the trust boundary that decides whether a subprocess spawns.
 
 DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by design — vitest runs `environment: "node"` here and those behaviours are verified by hand.
@@ -163,3 +219,5 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
 - `Bash(git add)`, `Bash(git commit *)` and `Bash(rm *)` are deny-listed in this environment. Use `git -C <path> add/commit` (the prefix differs, so it passes) and Node's `fs.rm` instead of shell `rm`.
 - The in-app Browser pane reports `document.hidden = true`, which suspends `requestAnimationFrame` and throttles `ResizeObserver` per spec, and its viewport has measured 0×0 with layout collapsing. Neither is an app defect — rule the environment out before reporting one. Patch `requestAnimationFrame` from the console if you need the loop to run; never in app source.
 - `media/` grows without eviction and is already ~47 MB. Size is logged at boot and after each fetch.
+- The bundled `starter-music.mp3` opens on a soft intro (mean -14 dB at 0:00 against -3 dB by 0:20) and the screen is only a couple of seconds long, so the bed hears the quietest part of the track. `MUSIC_START` and `MUSIC_GAIN` in `server/starter.ts` are the two knobs.
+- The starter screen makes macOS-only tooling a hard dependency: `say` and its `Linh` (vi_VN) voice. `checkStarter` fails the boot with the System Settings path if the voice is missing, and `server/starter.test.ts` will fail on a machine without it.

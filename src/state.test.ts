@@ -74,6 +74,7 @@ describe("save", () => {
     expect(readRaw(videoId)).toEqual({
       start: 12,
       end: 60,
+      starterTitle: "",
       layoutId: "1-1",
       boxes: [
         { x: 0, y: 0, w: 180, h: 160 },
@@ -122,6 +123,7 @@ describe("save", () => {
     expect(readRaw(videoId)).toEqual({
       start: 2,
       end: 20,
+      starterTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [
         { x: 0, y: 0, w: 180, h: 160 },
@@ -151,6 +153,7 @@ describe("save", () => {
     expect(readRaw(videoId)).toEqual({
       start: 1,
       end: 9,
+      starterTitle: "",
       layoutId: "1-1",
       boxes: [
         { x: 1, y: 1, w: 180, h: 160 },
@@ -220,6 +223,7 @@ describe("save", () => {
     expect(readRaw(videoId)).toEqual({
       start: 3,
       end: 30,
+      starterTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
       sourceW: 0,
@@ -244,6 +248,7 @@ describe("save", () => {
     expect(readRaw(videoId)).toEqual({
       start: 1,
       end: 2,
+      starterTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
       sourceW: 0,
@@ -254,6 +259,36 @@ describe("save", () => {
   it("is a no-op without a videoId", () => {
     setState({ videoId: "", phase: "trimming" });
     expect(() => save()).not.toThrow();
+  });
+
+  it("persists the starter title from any phase, like a mark and unlike a box", () => {
+    // The title is typed in framing but gated like a mark, not like a box:
+    // it always reflects the current session, so it must survive a save from
+    // trimming — where `framed` is false and boxes/dimensions are carried
+    // forward from the previous record instead of written.
+    const videoId = "starter-title";
+    setState({
+      videoId,
+      phase: "trimming",
+      starterTitle: "Ăn cơm chưa bạn ơi",
+      start: 2,
+      end: 20,
+      layoutId: "1-1",
+      boxes: [],
+      source: { w: 3840, h: 2160 },
+    });
+    save();
+
+    expect(readRaw(videoId)).toEqual({
+      start: 2,
+      end: 20,
+      starterTitle: "Ăn cơm chưa bạn ơi",
+      layoutId: DEFAULT_LAYOUT_ID,
+      boxes: [],
+      sourceW: 0,
+      sourceH: 0,
+    });
+    expect(restore(videoId, null)).toMatchObject({ starterTitle: "Ăn cơm chưa bạn ơi" });
   });
 });
 
@@ -292,6 +327,7 @@ describe("restore", () => {
     expect(restore(videoId, { w: 1920, h: 1080 })).toEqual({
       start: 7,
       end: 70,
+      starterTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [
         { x: 0, y: 0, w: 180, h: 160 },
@@ -326,6 +362,7 @@ describe("restore", () => {
     expect(restore(videoId, { w: 1920, h: 1080 })).toEqual({
       start: 2,
       end: 20,
+      starterTitle: "",
       layoutId: "1-1",
       boxes: [
         { x: 3, y: 3, w: 180, h: 160 },
@@ -357,6 +394,7 @@ describe("restore", () => {
     expect(restore(videoId, { w: 1280, h: 720 })).toEqual({
       start: 7,
       end: 70,
+      starterTitle: "",
       layoutId: "2h-1",
       boxes: [],
     });
