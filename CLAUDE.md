@@ -79,7 +79,12 @@ composite, export). Videos under `SKIP_TRIM_UNDER` (180s) skip `trimming`.
 Marking is `trimming`-only — the framing bar has no Set Start/Set End, so a
 skipped-trim video reaches marking through "Back to trim". Both marks can also
 be reached by pasting a YouTube `?t=` link into the trimming bar's timestamp
-field (`parseTimestamp` in `src/format.ts`), which only seeks.
+field (`parseTimestamp` in `src/format.ts`), which only seeks. The `NUDGES`
+group (−2/−1/+1/+2s) only seeks too: YouTube's own arrow keys move 5s and the
+iframe only hears them while focused, which every button in the bar takes
+away. Everything that seeks pauses first — a rolling player has left the frame
+you aimed at by the time you reach Set Start, and YouTube's `seekTo` resumes a
+playing player but leaves a paused one paused.
 
 ## Invariants — breaking these is silent, not loud
 
@@ -193,7 +198,7 @@ because an output `-t` would truncate the concatenation rather than the clip.
 - No `console.log`/`.info` — `.error`/`.warn` only.
 - `strict` and `noUncheckedIndexedAccess` are on: indexing yields `T | undefined`, guard with `?? fallback` rather than `!`.
 - Visual values come from the `@radix-ui/colors` custom properties imported in `style.css` — light `slate`/`blue`/`amber`/`red`/`grass`/`violet` plus each one's `-alpha` companion. `grass` and `violet` were added to tint crop boxes 3 and 4; `red` was already spoken for as the error/callout colour, so it couldn't be reused for a third or fourth box. The light files define their tokens on `:root`, so no wrapper class is needed (the dark files need `class="dark"`; switching back means restoring it). Import the alpha scale alongside every solid one: soft buttons, badges and card borders sit on both the page background and a white card, and an opaque `blue-3` bands at that boundary where `blue-a3` does not.
-- `style.css` hand-rolls Radix *Themes*' token layer (`--radius-1..4`, `--space-1..6`, `--shadow-2/3`, `--control-height`) and its component recipes (Card, Button solid/soft/soft-gray, TextField surface, Badge, Callout, Slider track/thumb). The React package can't be used here, so the metrics are transcribed, not imported — keep new UI on these tokens rather than fresh literals. Button variants are classes: bare `<button>` is soft accent, `.btn-solid` is the one phase-advancing action, `.btn-gray` steps back.
+- `style.css` hand-rolls Radix *Themes*' token layer (`--radius-1..4`, `--space-1..6`, `--shadow-2/3`, `--control-height`) and its component recipes (Card, Button solid/soft/soft-gray, TextField surface, Badge, Callout, Slider track/thumb). The React package can't be used here, so the metrics are transcribed, not imported — keep new UI on these tokens rather than fresh literals. Button variants are classes: bare `<button>` is soft accent, `.btn-solid` is the one phase-advancing action, `.btn-gray` steps back. A bar with more controls than fit on a line splits itself into `.bar-row`s (each claims 100% of `.bar`), with the advancing action in a trailing `.bar-end` so `margin-left: auto` keeps it at the far edge instead of letting it wrap to a line of its own — that is what the trimming bar does, scrubber on the first row and marking controls on the second.
 - `ponytail:` comments mark deliberate simplifications and name the upgrade path.
 
 ## Testing posture

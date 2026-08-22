@@ -252,6 +252,32 @@ input:disabled { background: var(--slate-a2); color: var(--slate-11); }
 
 /* The layout picker. Nine text labels would swamp the bar, and for a tool
    whose whole job is visual composition the diagram IS the label. */
+/* A bar that needs more than one line lays out its own rows: `.bar` stays the
+   flex container, and a row claims the whole width of it. `flex-wrap` is kept
+   on the row too, so a narrow window still degrades by wrapping rather than
+   by overflowing. */
+.bar-row {
+  display: flex;
+  flex: 1 1 100%;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* The far end of a row — the phase-advancing action, and whatever badge
+   belongs beside it. */
+.bar-end {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin-left: auto;
+}
+
+/* Nudge group — four seek steps that read as one control rather than four
+   buttons, so a 1px gap instead of the bar's own. */
+.nudges { display: inline-flex; gap: 1px; }
+.nudges > button { padding: 0 var(--space-2); }
+
 .layouts { display: flex; gap: var(--space-1); align-items: center; }
 
 .layout-pick {

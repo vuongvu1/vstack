@@ -197,6 +197,10 @@ function ensureSourcePlayer(videoId: string): void {
     });
 }
 
+/** The playhead nudges, in seconds, in the order they appear. Signed rather
+ *  than a magnitude plus a direction: the order on screen *is* the list. */
+const NUDGES = [-2, -1, 1, 2] as const;
+
 function clampMark(seconds: number, duration: number): number {
   return Math.min(Math.max(0, seconds), duration);
 }
@@ -275,6 +279,35 @@ function renderTrimming(): Node[] {
     save();
   };
 
+  // Fine seeking. YouTube's own arrow keys move 5s, which is coarser than a
+  // cut needs — and the iframe only hears them when it has focus, which it
+  // loses to every button in this bar. These nudge the *playhead*, not the
+  // marks: the point is to look at the frame you are about to mark, so the
+  // pair is "nudge until the frame is right, then Set Start".
+  const nudges = el("div", { className: "nudges", ariaLabel: "Nudge playhead" });
+  nudges.setAttribute("role", "group");
+  for (const delta of NUDGES) {
+    const label = `${delta > 0 ? "+" : "−"}${Math.abs(delta)}s`;
+    const step = el("button", {
+      className: "btn-gray",
+      textContent: label,
+      ariaLabel:
+        `${delta > 0 ? "Forward" : "Back"} ${Math.abs(delta)} ` +
+        `second${Math.abs(delta) === 1 ? "" : "s"}`,
+      title: `Seek ${label}`,
+      disabled: !ready,
+    });
+    step.onclick = () => {
+      if (!player) return;
+      // Paused before the seek, for the reason spelled out on the timestamp
+      // field: a rolling player has left the frame by the time you reach
+      // Set Start, which would make the nudge pointless.
+      player.pause();
+      player.seekTo(clampMark(player.currentTime() + delta, s.duration));
+    };
+    nudges.append(step);
+  }
+
   const marks = el("span", {
     className: "badge",
     textContent: `${clock(s.start)} → ${clock(s.end)}`,
@@ -295,7 +328,7 @@ function renderTrimming(): Node[] {
   });
   go.onclick = () => void openWindow();
 
-  const controls: Node[] = [setStart, setEnd];
+  const controls: Node[] = [setStart, setEnd, nudges];
   if (failed) {
     // One attempt per click, never automatic — see ensureSourcePlayer.
     const retry = el("button", { className: "btn-gray", textContent: "Retry" });
@@ -306,33 +339,49 @@ function renderTrimming(): Node[] {
     controls.push(retry);
   }
 
+  const stamp = renderStampInput((t) => {
+    if (t > s.duration) {
+      return `${clock(t)} is past the end of this video (${clock(s.duration)}).`;
+    }
+    // Paused, and paused *before* the seek: applying a timestamp is aiming
+    // at a mark, and a player that keeps rolling has already moved off the
+    // frame you were aiming at by the time you reach Set Start. YouTube's
+    // seekTo resumes a playing player but leaves a paused one paused, so
+    // this order needs no second call to undo the resume.
+    player?.pause();
+    player?.seekTo(t);
+    return "";
+  }, !ready);
+
+  // Two rows, because one row of nine controls wrapped wherever it ran out of
+  // width — which put Continue, the only phase-advancing action, on a line of
+  // its own below everything else.
+  //
+  // The strip gets the first row to itself (plus the marks it describes): it
+  // is `flex: 1 1 240px`, so sharing a row with eight other controls squeezed
+  // the one control whose whole job is being clicked precisely. Every marking
+  // control is on the second row, in the order the work happens — mark, nudge
+  // the playhead, jump to a pasted timestamp — with Continue pushed to the far
+  // end, where the advancing action sits in every other phase.
   return [
-    ...controls,
-    // Before the strip, not after: `.strip` is `flex: 1 1 240px`, so it eats
-    // the row's free space and would push anything behind it to the far edge,
-    // away from the Set Start / Set End buttons this input feeds.
-    ...renderStampInput((t) => {
-      if (t > s.duration) {
-        return `${clock(t)} is past the end of this video (${clock(s.duration)}).`;
-      }
-      // Paused, and paused *before* the seek: applying a timestamp is aiming
-      // at a mark, and a player that keeps rolling has already moved off the
-      // frame you were aiming at by the time you reach Set Start. YouTube's
-      // seekTo resumes a playing player but leaves a paused one paused, so
-      // this order needs no second call to undo the resume.
-      player?.pause();
-      player?.seekTo(t);
-      return "";
-    }, !ready),
-    renderStrip({
-      duration: s.duration,
-      start: s.start,
-      end: s.end,
-      onSeek: (t) => player?.seekTo(t),
-    }),
-    marks,
-    warn,
-    go,
+    el(
+      "div",
+      { className: "bar-row" },
+      renderStrip({
+        duration: s.duration,
+        start: s.start,
+        end: s.end,
+        onSeek: (t) => player?.seekTo(t),
+      }),
+      marks,
+    ),
+    el(
+      "div",
+      { className: "bar-row" },
+      ...controls,
+      ...stamp,
+      el("div", { className: "bar-end" }, warn, go),
+    ),
   ];
 }
 
