@@ -7,6 +7,7 @@
     "dev": "vite",
     "start": "trap 'kill 0' INT TERM EXIT; node server/index.ts & vite",
     "server": "node server/index.ts",
+    "voices": "node scripts/audition.ts",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",

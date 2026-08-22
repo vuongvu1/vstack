@@ -125,11 +125,31 @@ Five things in there are load-bearing, and three of them were failures first:
 
 ### Text to speech
 
-`say -v Linh -f <file> -o voice.aiff`, then ffprobe for its duration.
+`say -v <VOICE> -f <file> -o voice.aiff`, then ffprobe for its duration.
 
 Via a file, not argv: `say -f` cannot mistake a title beginning with `-` for
 an option, and there is no argv length ceiling to think about. `execFile`
 means no shell either way.
+
+`VOICE` defaults to `Linh`, which is the *only* Vietnamese voice macOS
+installs — the novelty family (Eddy, Flo, Grandma, Rocko…) ships for 14
+locales and vi_VN is not among them. So a different voice means either
+downloading one (an Enhanced/Premium `Linh` keeps the same name, so nothing
+here changes) or accepting a non-Vietnamese voice mangling the diacritics,
+which is a legitimate choice for a joke.
+
+It is therefore overridable by `VSTACK_VOICE` rather than being a code edit,
+and `scripts/audition.ts` (`pnpm voices`) reads a title in each candidate —
+files under `$TMPDIR/vstack-voices`, spoken aloud unless `--quiet`. A script
+rather than a UI: choosing a voice is a once-ever decision, and a dropdown
+would mean an `AppState` field, a `/api/voices` route, a preview endpoint and
+a save/restore migration.
+
+`installedVoices()` parses `say -v '?'` into name + locale, and both
+`checkStarter` and the script use it so there is one parser. It has to parse
+rather than grep: a voice name contains spaces and parentheses — "Eddy
+(English (US))" — so the locale token is the only reliable delimiter, and
+matching a name by regex would mean escaping it.
 
 The voice and both audio assets are boot checks (`checkStarter`), alongside
 the existing three binaries. All of them are hard requirements of every
@@ -209,7 +229,8 @@ Vietnamese diacritics in Comic Sans, and round-tripped through a real export.
 
 - Previewing the starter screen in the canvas. The preview loop composites
   the clip; the screen is an export-time segment.
-- A non-Vietnamese voice, or a voice picker. One constant.
+- A voice picker in the UI. `VSTACK_VOICE` plus `pnpm voices` covers a
+  once-ever choice.
 - Controls for blur strength, screen duration, font, or either sound.
   Constants in the two modules.
 - Reusing the starter title as the download filename. The filename still

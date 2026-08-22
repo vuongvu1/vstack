@@ -26,8 +26,9 @@ inline "as built" corrections; treat it as a record, not as instructions.
 ```
 pnpm server   # backend on 127.0.0.1:8787   (node runs .ts directly, no build)
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 124 tests
+pnpm test     # vitest, 130 tests
 pnpm build    # tsc && vite build
+pnpm voices   # audition the starter screen's TTS voice (see below)
 ```
 
 Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH, plus macOS `say` with a
@@ -42,7 +43,9 @@ server/ffmpeg.ts   MEDIA_DIR, clipName/clipPath, probeFile, buildFilter,
                    assertBoxes, exportClip, reportCache
 server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
 server/starter.ts  MUSIC_PATH/CUE_PATH, VOICE, starterDuration, checkStarter,
-                   speak, prependStarter (the title card, pass 2 of the export)
+                   installedVoices, speak, prependStarter (the title card,
+                   pass 2 of the export)
+scripts/audition.ts  `pnpm voices` — speaks a title in each installed voice
 server/assets/     starter-music.mp3 (the bed), before-video-start-sound.mp3
                    (the cue before the cut)
 server/ytdlp.ts    videoIdFrom, probe, fetchWindow
@@ -221,3 +224,4 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
 - `media/` grows without eviction and is already ~47 MB. Size is logged at boot and after each fetch.
 - The bundled `starter-music.mp3` opens on a soft intro (mean -14 dB at 0:00 against -3 dB by 0:20) and the screen is only a couple of seconds long, so the bed hears the quietest part of the track. `MUSIC_START` and `MUSIC_GAIN` in `server/starter.ts` are the two knobs.
 - The starter screen makes macOS-only tooling a hard dependency: `say` and its `Linh` (vi_VN) voice. `checkStarter` fails the boot with the System Settings path if the voice is missing, and `server/starter.test.ts` will fail on a machine without it.
+- **`Linh` is the only Vietnamese voice macOS installs.** The novelty family (Eddy, Flo, Grandma, Rocko…) ships for 14 locales and vi_VN is not one of them, so "use a different voice" means either downloading one (an Enhanced/Premium `Linh` keeps the same name, so no code change) or accepting a non-Vietnamese voice mangling the diacritics. Audition with `pnpm voices [title] [voice...]` — it writes one file per voice to `$TMPDIR/vstack-voices` and speaks each aloud unless `--quiet`. Select with `VSTACK_VOICE="<name>" pnpm server`; the name must match `say -v '?'` exactly, parentheses and all, and `checkStarter` rejects it at boot if not.

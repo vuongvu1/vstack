@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { OUTPUT } from "../src/geometry.ts";
-import { prependStarter, speak, starterDuration } from "./starter.ts";
+import { VOICE, installedVoices, prependStarter, speak, starterDuration } from "./starter.ts";
 
 const run = promisify(execFile);
 
@@ -136,6 +136,22 @@ async function probeOut(path: string) {
     }[];
   };
 }
+
+describe("installedVoices", () => {
+  it("parses voice names whole, spaces and parentheses included", async () => {
+    const voices = await installedVoices();
+    expect(voices.length).toBeGreaterThan(10);
+    // The name a grep or a split on whitespace gets wrong: macOS' localised
+    // voices are called things like "Eddy (English (US))", and that whole
+    // string is what `say -v` wants back.
+    const parenthesised = voices.find((v) => v.name.includes("("));
+    expect(parenthesised?.name).toMatch(/\)$/);
+    // The default voice has to be here, or checkStarter fails the boot.
+    expect(voices).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: VOICE, locale: "vi_VN" })]),
+    );
+  });
+});
 
 describe("speak", () => {
   it("reads the title in Vietnamese and reports a real duration", () => {

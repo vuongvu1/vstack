@@ -19,9 +19,15 @@ export const MUSIC_PATH = asset("starter-music.mp3");
  *  gitignored clip cache. */
 export const CUE_PATH = asset("before-video-start-sound.mp3");
 
-/** macOS' Vietnamese voice. Checked at boot (`checkStarter`), because a
- *  missing voice is an install problem, not an export-time surprise. */
-export const VOICE = "Linh";
+/** The voice that reads the title. `Linh` is macOS' Vietnamese voice and the
+ *  only one installed for vi_VN by default — the novelty family (Eddy, Flo,
+ *  Rocko…) ships for 14 locales and Vietnamese is not among them.
+ *
+ *  Overridable so picking a different one costs no code edit: audition with
+ *  `pnpm voices`, then `VSTACK_VOICE="<name>" pnpm server`. Checked at boot
+ *  (`checkStarter`), because a name that `say` does not know is an install or
+ *  typo problem, not an export-time surprise. */
+export const VOICE = process.env.VSTACK_VOICE ?? "Linh";
 
 /** The screen's shape: music alone, then the voice, then the cue.
  *
@@ -67,21 +73,44 @@ export async function checkStarter(): Promise<void> {
       process.exit(1);
     }
   }
-  let stdout = "";
+  let voices: Voice[];
   try {
-    ({ stdout } = await run("say", ["-v", "?"]));
+    voices = await installedVoices();
   } catch {
     console.error('vstack: "say" not found — the starter screen needs macOS text-to-speech.');
     process.exit(1);
   }
-  if (!stdout.includes("vi_VN")) {
+  if (!voices.some((v) => v.name === VOICE)) {
     console.error(
-      `vstack: no Vietnamese voice for "say" (wanted ${VOICE}). Fix: System Settings ` +
-        "→ Accessibility → Spoken Content → System Voice → Manage Voices… " +
-        "→ Vietnamese",
+      `vstack: "say" has no voice named ${VOICE}. Fix: install it under System ` +
+        "Settings → Accessibility → Spoken Content → System Voice → Manage " +
+        "Voices…, or pick one you have with `pnpm voices`.",
     );
     process.exit(1);
   }
+}
+
+export type Voice = { name: string; locale: string };
+
+/** Every voice `say` can use, as name + locale.
+ *
+ *  Parsed rather than grepped because a voice name can contain spaces and
+ *  parentheses — "Eddy (English (US))" — so the locale token is the only
+ *  reliable delimiter, and matching a name by regex would mean escaping it.
+ *  Shared by `checkStarter` and the audition script so there is one parser. */
+export async function installedVoices(): Promise<Voice[]> {
+  let stdout: string;
+  try {
+    ({ stdout } = await run("say", ["-v", "?"], { maxBuffer: 1 << 20 }));
+  } catch (err) {
+    throw toolError("say", err);
+  }
+  const voices: Voice[] = [];
+  for (const line of stdout.split("\n")) {
+    const m = /^(.+?)\s+([a-z]{2}_[A-Z]{2})\s/.exec(line);
+    if (m?.[1] && m[2]) voices.push({ name: m[1].trim(), locale: m[2] });
+  }
+  return voices;
 }
 
 /** Reads the title aloud into `out` (AIFF) and returns its duration.
