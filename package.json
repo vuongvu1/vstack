@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "start": "trap 'kill 0' INT TERM EXIT; node server/index.ts & vite",
     "server": "node server/index.ts",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "clean": "node -e \"require('fs').rmSync('media',{recursive:true,force:true})\""
   },
   "dependencies": {
     "@radix-ui/colors": "^3.0.0"
