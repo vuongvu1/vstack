@@ -176,6 +176,21 @@ does.
 `server/index.ts` — `readTitle` and `png` validators; the export route renders
 `body.mp4`, speaks the title, and streams `prependStarter`'s output.
 
+The download is named `<slugified starter title>-<mmss start>-<mmss end>.mp4`,
+by both the server's `Content-Disposition` and the client's `<a download>` —
+same inputs on both sides, because a mismatch there would be invisible until
+someone compared the saved file against the server's log. That is the only
+thing the export ever used YouTube's title for, so `title` left the request
+body when the starter title took over.
+
+Naming the file after Vietnamese text is also what exposed `slugify`: NFKD
+splits a diacritic into letter + combining mark, and every mark is a
+non-`[a-z]` character, so the separator pass turned each one into a dash
+*inside* a word — "Ăn cơm chưa bạn ơi" slugged as `a-n-co-m-chu-a-ba-n-o-i`.
+The marks are now dropped after NFKD, and `đ` — the one Vietnamese letter with
+no canonical decomposition — is mapped to `d` before it. Barely visible for an
+ASCII YouTube title; unreadable for this.
+
 `src/state.ts` — `starterTitle` in `AppState` and in the stored record. It is
 persisted *unconditionally*, like the marks and unlike the boxes: the
 framing-only gate exists for values that are meaningless before `/api/window`
@@ -233,7 +248,5 @@ Vietnamese diacritics in Comic Sans, and round-tripped through a real export.
   once-ever choice.
 - Controls for blur strength, screen duration, font, or either sound.
   Constants in the two modules.
-- Reusing the starter title as the download filename. The filename still
-  comes from YouTube's title, which is what names the clip.
 - Caching the spoken title. `say` takes under a second and the export around
   eight.

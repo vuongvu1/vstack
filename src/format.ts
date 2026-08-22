@@ -17,7 +17,17 @@ export function slugify(s: string): string {
   return (
     s
       .toLowerCase()
+      // đ has no canonical decomposition, so NFKD leaves it whole and the
+      // separator pass below would turn it into a dash mid-word.
+      .replace(/đ/g, "d")
       .normalize("NFKD")
+      // The combining marks NFKD just split off. Dropping them before the
+      // separator pass is what makes "Ăn cơm chưa" slug as "an-com-chua"
+      // rather than "a-n-co-m-chu-a" — every mark is a non-[a-z] character,
+      // so left in place each one becomes a dash inside a word. Barely
+      // visible for an ASCII YouTube title; unreadable for a Vietnamese one,
+      // which is what names the file now.
+      .replace(/\p{M}+/gu, "")
       .replace(/[^\da-z]+/g, "-")
       .slice(0, 60)
       // Trim AFTER slicing: trimming first lets the cut land on a collapsed

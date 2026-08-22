@@ -167,7 +167,6 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const windowEnd = num(raw.windowEnd, "windowEnd");
     const start = num(raw.start, "start");
     const end = num(raw.end, "end");
-    const videoTitle = str(raw.title, "title");
     const starterTitle = readTitle(raw.starterTitle);
     const titlePng = png(raw.titlePng, "titlePng");
     const layoutId = str(raw.layoutId, "layoutId");
@@ -213,7 +212,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
 
     const dir = await mkdtemp(join(tmpdir(), "vstack-out-"));
-    const name = `${slugify(videoTitle)}-${mmss(start)}-${mmss(end)}.mp4`;
+    // Named after the starter title, not YouTube's: it is what the screen says
+    // and reads aloud, so it is what the file is *about*. This is the only
+    // thing the export ever used YouTube's title for, which is why the body no
+    // longer carries it.
+    const name = `${slugify(starterTitle)}-${mmss(start)}-${mmss(end)}.mp4`;
     const out = join(dir, name);
     // The composite lands here first; the starter screen is prepended onto it
     // in a second pass, and `out` — the file that gets streamed — is the

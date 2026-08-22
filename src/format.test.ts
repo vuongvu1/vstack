@@ -21,6 +21,16 @@ describe("slugify", () => {
     expect(slugify("foo  bar")).toBe("foo-bar");
     expect(slugify("test-case")).toBe("test-case");
   });
+
+  it("folds Vietnamese diacritics instead of breaking words on them", () => {
+    // The starter title names the exported file, and it is Vietnamese. Leaving
+    // NFKD's combining marks in place turned each one into a dash *inside* a
+    // word — "a-n-co-m-chu-a-ba-n-o-i" for the first of these.
+    expect(slugify("Ăn cơm chưa bạn ơi")).toBe("an-com-chua-ban-oi");
+    expect(slugify("Hôm nay trời đẹp quá")).toBe("hom-nay-troi-dep-qua");
+    // đ is the one letter NFKD does not decompose.
+    expect(slugify("Đi ăn phở không?")).toBe("di-an-pho-khong");
+  });
 });
 
 describe("mmss", () => {

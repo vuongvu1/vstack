@@ -83,8 +83,8 @@ export async function exportClip(body: {
   windowEnd: number;
   start: number;
   end: number;
-  title: string;
-  /** The starter screen's title. Spoken aloud by the server, and required. */
+  /** The starter screen's title. Spoken aloud by the server, names the
+   *  downloaded file, and required. */
   starterTitle: string;
   /** The same title as a transparent 1080x1920 PNG, bare base64. Rendered
    *  here because the server's ffmpeg has no `drawtext` — see

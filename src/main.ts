@@ -471,7 +471,6 @@ async function doExport(): Promise<void> {
       windowEnd: s.windowEnd,
       start: s.start,
       end: s.end,
-      title: s.title,
       starterTitle,
       titlePng: await renderTitleArt(starterTitle),
       layoutId: layout.id,
@@ -480,7 +479,10 @@ async function doExport(): Promise<void> {
     const url = URL.createObjectURL(blob);
     const a = el("a", {
       href: url,
-      download: `${slugify(s.title)}-${mmss(s.start)}-${mmss(s.end)}.mp4`,
+      // The same name the server puts in Content-Disposition, from the same
+      // inputs — a mismatch here would be invisible until someone compared
+      // the saved file with the server's log.
+      download: `${slugify(starterTitle)}-${mmss(s.start)}-${mmss(s.end)}.mp4`,
     });
     document.body.append(a);
     a.click();

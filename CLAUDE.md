@@ -17,7 +17,7 @@ are out of scope and that `xstack` produces `[v]` directly, plus
 `docs/specs/2026-08-22-vstack-starter-screen-design.md`, which covers the
 title card prepended to every export and supersedes the layouts doc's
 `/api/export` body again (`starterTitle` + `titlePng` on top of `layoutId` +
-`boxes`).
+`boxes`, and no `title` — the starter title names the file now).
 `docs/plans/2026-08-20-vstack.md` is the historical build plan and carries
 inline "as built" corrections; treat it as a record, not as instructions.
 
@@ -26,7 +26,7 @@ inline "as built" corrections; treat it as a record, not as instructions.
 ```
 pnpm server   # backend on 127.0.0.1:8787   (node runs .ts directly, no build)
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 130 tests
+pnpm test     # vitest, 131 tests
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's TTS voice (see below)
 ```
