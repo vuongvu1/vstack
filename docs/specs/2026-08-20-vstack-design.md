@@ -67,6 +67,11 @@ export reads the same file.
 `pad = 5s`. It has two jobs: it absorbs keyframe-sloppy stream-copy edges, and
 it lets the final export seek frame-accurately (see Export).
 
+> **Superseded** — marking now lives only in `trimming`; the framing bar has
+> no Set Start/Set End, so there are no post-framing nudges for the pad to
+> absorb. The pad's two jobs above are unchanged, and "re-fetch window"
+> survives on its own merit: re-downloading a suspect cached clip.
+
 Trim nudges after framing stay local while inside the pad. Outside it, a
 "re-fetch window" button pulls a new slice and preserves the boxes.
 
@@ -177,6 +182,11 @@ client-side extraction or early-reject round trip to skip.
 duration. Bottom: `[Set Start] [Set End]` plus a timeline strip showing the
 marked range. A trim you cannot see is a trim you cannot verify, so the strip
 is not optional. `Continue` enabled only when `end > start`.
+
+> **Superseded in part** — the trim marks are gone from this bar. Framing is
+> crop, layout and export only; changing a mark means "Back to trim", which
+> works even for a video that skipped `trimming` on the way in. (The "two box
+> overlays" are two-box-era — see the note at the top of this file.)
 
 `framing` — left: local `<video>` with the two box overlays. Right: the
 1080×1920 canvas, CSS-scaled to fit. Bottom: transport plus the trim marks,

@@ -85,18 +85,29 @@ export type ExportOpts = {
   layout: Layout;
   boxes: Rect[];
   source: Size;
+  /** The frame overlay PNG for `layout`, from `ensureMask`. Passed in rather
+   *  than resolved here so `mask.ts` — which needs `MEDIA_DIR` from this
+   *  module — can sit above it and the server layering stays acyclic. */
+  mask: string;
   out: string;
 };
 
 /** One decode, split N ways, each leg cropped and scaled to its cell, then
- *  composed. Two -i of the same file would decode it twice.
+ *  composed, then the frame mask overlaid on top.
  *
  *  A single xstack rather than hstack-per-row-then-vstack: it needs no
  *  special case for single-column rows, and its `layout=` string comes
  *  straight out of cellsOf, so the composition can't drift from the cells
  *  the preview and the editor use. For the 1-1 layout it emits
  *  `layout=0_0|0_960`, which is pixel-identical to the vstack this
- *  replaced. */
+ *  replaced.
+ *
+ *  The white gutters and rounded corners arrive last, as one overlay of the
+ *  RGBA mask on input 1 (`ensureMask`). ffmpeg has no rounded-rect filter,
+ *  and a per-frame `geq` alpha would cost more than the encode — a
+ *  pre-rendered mask is a single blend per frame. Crucially the overlay is
+ *  *on top of* an edge-to-edge composite, so `crop=` and `scale=` never see
+ *  the gutter and the stored boxes stay exact. */
 export function buildFilter(layout: Layout, boxes: Rect[]): string {
   const cells = cellsOf(layout);
   const legs = cells.map((cell, i) => {
@@ -120,7 +131,8 @@ export function buildFilter(layout: Layout, boxes: Rect[]): string {
   return [
     `[0:v]split=${cells.length}${inputs}`,
     ...legs,
-    `${scaled}xstack=inputs=${cells.length}:layout=${positions}[v]`,
+    `${scaled}xstack=inputs=${cells.length}:layout=${positions}[stack]`,
+    "[stack][1:v]overlay=0:0:format=auto[v]",
   ].join(";");
 }
 
@@ -164,6 +176,12 @@ export async function exportClip(opts: ExportOpts): Promise<string> {
       [
         "-v", "error",
         "-i", opts.input,
+        // Input 1, the frame overlay. -loop 1 makes the single PNG frame an
+        // endless stream so overlay has something for every main frame; the
+        // output -t is what bounds it. Both inputs must be declared before
+        // -ss, or -ss would attach to this one as an input option instead of
+        // staying an output option on the clip.
+        "-loop", "1", "-i", opts.mask,
         // -ss AFTER -i is frame-accurate. Before -i it snaps to a keyframe
         // and drifts up to ~2s; decoding the pad is what buys the accuracy.
         "-ss", String(opts.start),

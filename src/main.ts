@@ -377,16 +377,18 @@ let editorFor = "";
  *  editorFor are what keep it from restarting the rAF loop, re-rolling
  *  default boxes or reloading the video on every one of them. A layout
  *  change rebuilds the editor and preview (their node count and cell list
- *  are layout-derived) without touching videoEl or canvasEl. */
-function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement } {
+ *  are layout-derived) without touching videoEl or canvasEl.
+ *
+ *  Returns nothing: the nodes it builds are reachable through the module
+ *  scoped videoEl/canvasEl that render() already toggles, and the bar has no
+ *  reader for them since marking left this phase. */
+function ensureFraming(): void {
   const s = getState();
   const layout = resolveLayout(s.layoutId);
   const cells = cellsOf(layout);
   const sameClip = videoEl !== null && canvasEl !== null && framingFor === s.clipUrl;
   const sameLayout = editorFor === layout.id;
-  if (sameClip && sameLayout && videoEl && canvasEl) {
-    return { video: videoEl, canvas: canvasEl };
-  }
+  if (sameClip && sameLayout) return;
   framingFor = s.clipUrl;
   editorFor = layout.id;
   stopPreview?.();
@@ -432,8 +434,6 @@ function ensureFraming(): { video: HTMLVideoElement; canvas: HTMLCanvasElement }
     onCommit: () => save(),
   });
   boxesLayer = sourceSlot.querySelector<HTMLDivElement>(".boxes");
-
-  return { video: videoEl, canvas: canvasEl };
 }
 
 /** The current boxes, or this layout's defaults if the list isn't built yet.
@@ -547,42 +547,24 @@ function renderLayoutPicker(currentId: string, busy: boolean): Node {
   return wrap;
 }
 
-/** The framing transport: marks (free within the fetched window's pad),
- *  re-fetch (once they wander outside it), back-to-trim, and export. Returns
+/** The framing bar: layout, re-fetch, back-to-trim and export. Marking is
+ *  confined to the trimming phase — framing is crop and layout only, and
+ *  exports whatever start/end trimming left behind. Returns
  *  bar-slot children only — the <video>/<canvas> themselves are owned by
  *  ensureFraming() and live permanently in the persistent sourceSlot/outSlot
  *  (see the module-level comment on the persistent shell), so this function
  *  builds no wrapper of its own around them. */
 function renderFraming(): Node[] {
   const s = getState();
-  const { video } = ensureFraming();
+  // Called for its effects: it mounts the <video>, canvas, crop-box overlay
+  // and preview loop into the persistent shell. Nothing in this bar reads
+  // the video handle it returns any more — marking, the only thing that did,
+  // now lives solely in the trimming phase.
+  ensureFraming();
 
-  const setStart = el("button", { textContent: "Set Start" });
-  setStart.onclick = () => {
-    // video.currentTime is clip-relative; marks are in the original video's
-    // timeline, and the clip begins at windowStart.
-    setState({ start: s.windowStart + video.currentTime });
-    save();
-  };
-
-  const setEnd = el("button", { textContent: "Set End" });
-  setEnd.onclick = () => {
-    setState({ end: s.windowStart + video.currentTime });
-    save();
-  };
-
-  // Nudging a mark within the fetched window is free — PAD already covers
-  // it, no refetch needed. Outside it, the server will reject start/end as
-  // outside the fetched window regardless; this is just the UI affordance.
-  const inWindow = s.start >= s.windowStart && s.end <= s.windowEnd;
-
-  // `inWindow` is deliberately not part of this gate: with windowStart
-  // computed as max(0, floor(start - PAD)), `start >= windowStart` holds
-  // unconditionally, and framing's only mark input is bounded by the
-  // clip's own span — so `inWindow` is true in every state the UI can
-  // reach and gating on it would leave this permanently disabled. A forced
-  // re-download is still useful on its own (a cached clip can be
-  // suspect), so only `busy` guards it.
+  // A forced re-download is useful on its own — a cached clip can be
+  // suspect — and `busy` is the only thing worth gating it on: start and end
+  // cannot move while this phase is on screen.
   const refetch = el("button", {
     textContent: "Re-fetch window",
     disabled: Boolean(s.busy),
@@ -597,24 +579,16 @@ function renderFraming(): Node[] {
   const download = el("button", {
     className: "btn-solid",
     textContent: "Export",
-    disabled: !(s.end > s.start) || !inWindow || Boolean(s.busy),
+    // No window check: windowStart is max(0, floor(start − PAD)) and
+    // windowEnd is min(ceil(end + PAD), duration), so the fetched window
+    // contains [start, end] by construction — and with marking confined to
+    // trimming, nothing reachable from here can move them out of it. The
+    // server re-validates the pair regardless.
+    disabled: !(s.end > s.start) || Boolean(s.busy),
   });
   download.onclick = () => void doExport();
 
   return [
-    setStart,
-    setEnd,
-    // Absolute source-timeline seconds, but the clip's own clock starts at
-    // windowStart — and it only spans as far as windowEnd, so a timestamp
-    // outside that says so instead of silently clamping to an edge.
-    ...renderStampInput((t) => {
-      if (t < s.windowStart || t > s.windowEnd) {
-        const win = `${clock(s.windowStart)} → ${clock(s.windowEnd)}`;
-        return `${clock(t)} is outside the fetched window (${win}). Re-trim to reach it.`;
-      }
-      video.currentTime = t - s.windowStart;
-      return "";
-    }, Boolean(s.busy)),
     renderLayoutPicker(s.layoutId, Boolean(s.busy)),
     el("span", { className: "badge", textContent: `${clock(s.start)} → ${clock(s.end)}` }),
     el("span", {

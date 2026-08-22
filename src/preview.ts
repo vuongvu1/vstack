@@ -1,3 +1,4 @@
+import { CORNER_RADIUS, windowOf } from "./frame.ts";
 import { OUTPUT } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
 
@@ -24,6 +25,10 @@ export function startPreview(
   const ctx = canvas.getContext("2d", { alpha: false });
   if (!ctx) throw new Error("2d context unavailable");
 
+  // Derived from the cells rather than passed in, so these are necessarily
+  // the same windows the export's mask was rendered from.
+  const windows = cells.map(windowOf);
+
   let raf = 0;
   const frame = () => {
     if (video.readyState >= 2) {
@@ -37,6 +42,16 @@ export function startPreview(
         if (!b) return;
         ctx.drawImage(video, b.x, b.y, b.w, b.h, cell.x, cell.y, cell.w, cell.h);
       });
+      // The gutters and rounded corners, painted over the finished composite
+      // exactly as ffmpeg overlays its mask: full-frame white with the
+      // windows punched out of it by the even-odd rule. Drawing it every
+      // frame costs one fill and needs no invalidation when the layout
+      // changes, because `windows` is rebuilt with the preview.
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      ctx.rect(0, 0, OUTPUT.w, OUTPUT.h);
+      for (const w of windows) ctx.roundRect(w.x, w.y, w.w, w.h, CORNER_RADIUS);
+      ctx.fill("evenodd");
     }
     raf = requestAnimationFrame(frame);
   };

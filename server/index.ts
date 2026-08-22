@@ -12,6 +12,7 @@ import type { Rect } from "../src/geometry.ts";
 import { layoutById } from "../src/layout.ts";
 import { HttpError } from "./errors.ts";
 import { assertBoxes, clipPath, exportClip, probeFile, reportCache } from "./ffmpeg.ts";
+import { ensureMask } from "./mask.ts";
 import { fetchWindow, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
@@ -182,6 +183,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         layout,
         boxes,
         source: { w: source.width, h: source.height },
+        // Rendered on first export of each layout and cached from then on,
+        // keyed on the layout id plus GUTTER and CORNER_RADIUS.
+        mask: await ensureMask(layout),
         out,
       });
       const { size } = statSync(out);

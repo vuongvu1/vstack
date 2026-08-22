@@ -55,6 +55,11 @@ overlap; a row list cannot.
 
 `1-1` is today's behaviour and must stay pixel-identical.
 
+> **Superseded (2026-08-22):** `1-1`'s *cells and crop boxes* stay identical,
+> but its pixels no longer do — every layout now gets white gutters and
+> rounded corners painted over the composite. See
+> `docs/specs/2026-08-22-vstack-frame-borders-design.md`.
+
 Three distinct cell shapes exist across all nine:
 
 | cell | ratio | as a fraction |
@@ -180,6 +185,11 @@ The `layout=` string is built from `cellsOf`. One `xstack` rather than
 `hstack`-per-row-then-`vstack` avoids special-casing single-column rows, and
 for `1-1` produces output pixel-identical to today's `vstack`.
 
+> **Superseded (2026-08-22):** `xstack` now writes `[stack]`, and a second
+> input — the cached frame-mask PNG — is overlaid on it to produce `[v]`.
+> `ExportOpts` gained a `mask` field. See
+> `docs/specs/2026-08-22-vstack-frame-borders-design.md`.
+
 `assertBoxes(layout, boxes, source)` checks the box count against the cell
 count, then runs `isValidBox` per box against **that cell's** ratio. The error
 message names the cell index and its expected ratio.
@@ -299,4 +309,7 @@ design — vitest runs `environment: "node"` here.
 - Non-exact-aspect crops (letterboxing or stretching a crop into a cell).
 - Per-cell audio selection. Audio still comes from the source stream via
   `-map 0:a?`.
-- Gaps, borders, or backgrounds between cells. Cells tile exactly.
+- ~~Gaps, borders, or backgrounds between cells. Cells tile exactly.~~
+  **Superseded (2026-08-22):** cells still tile exactly, but a white gutter
+  and a per-piece corner radius are now painted *over* the composite. See
+  `docs/specs/2026-08-22-vstack-frame-borders-design.md`.

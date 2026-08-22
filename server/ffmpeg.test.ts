@@ -6,9 +6,11 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { boxFromHeight } from "../src/geometry.ts";
 import type { Rect, Size } from "../src/geometry.ts";
+import { CORNER_RADIUS, GUTTER, windowsOf } from "../src/frame.ts";
 import { DEFAULT_LAYOUT, cellsOf, layoutById } from "../src/layout.ts";
 import type { Layout } from "../src/layout.ts";
 import { assertBoxes, buildFilter, exportClip, probeFile } from "./ffmpeg.ts";
+import { ensureMask } from "./mask.ts";
 
 const run = promisify(execFile);
 
@@ -22,6 +24,8 @@ const BOTTOM: Rect = { x: 1020, y: 100, ...size };      // 1020..1919 -> all blu
 let dir = "";
 let src = "";
 let bands = "";
+let mask = "";
+let mask3 = "";
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "vstack-"));
@@ -47,6 +51,9 @@ beforeAll(async () => {
     "-filter_complex", "[0:v][1:v][2:v]vstack=inputs=3[v]",
     "-map", "[v]", "-pix_fmt", "yuv420p", "-y", bands,
   ]);
+
+  mask = await ensureMask(DEFAULT_LAYOUT, dir);
+  mask3 = await ensureMask(byId("2v-1"), dir);
 });
 
 afterAll(async () => {
@@ -100,6 +107,17 @@ describe("buildFilter", () => {
   it("refuses a box count that does not match the layout", () => {
     expect(() => buildFilter(byId("2v-1"), [TOP, BOTTOM])).toThrow(/3 boxes/);
   });
+
+  it("overlays the frame mask on top of the finished composite", () => {
+    // The gutters and rounded corners are painted over the composite, never
+    // built into it: xstack still tiles the frame edge to edge, so the crop
+    // rects and the cell scales are untouched by the border.
+    const f = buildFilter(DEFAULT_LAYOUT, [TOP, BOTTOM]);
+    expect(f).toContain("xstack=inputs=2:layout=0_0|0_960[stack]");
+    expect(f).toContain("[stack][1:v]overlay=0:0:format=auto[v]");
+    // Exactly one [v]: the overlay owns the graph's output now.
+    expect(f.match(/\[v\]/g)).toHaveLength(1);
+  });
 });
 
 describe("assertBoxes", () => {
@@ -151,6 +169,7 @@ describe("exportClip", () => {
       layout: DEFAULT_LAYOUT,
       boxes: [TOP, BOTTOM],
       source: SOURCE,
+      mask,
       out,
     });
 
@@ -168,6 +187,49 @@ describe("exportClip", () => {
     expect(bottom.g).toBeLessThan(80);
   });
 
+  it("paints a white gutter and rounds each piece's corners", async () => {
+    // The other half of the preview/export agreement: the canvas punches the
+    // same rounded windows out of a white frame that this mask does, so if
+    // these pixels disagree with the preview the border is the reason.
+    const out = join(dir, "out-border.mp4");
+    await exportClip({
+      input: src,
+      start: 0.5,
+      duration: 1,
+      layout: DEFAULT_LAYOUT,
+      boxes: [TOP, BOTTOM],
+      source: SOURCE,
+      mask,
+      out,
+    });
+
+    const [top] = windowsOf(DEFAULT_LAYOUT);
+    if (!top) throw new Error("1-1 has no first window");
+    const white = (p: { r: number; g: number; b: number }) => {
+      expect(p.r).toBeGreaterThan(200);
+      expect(p.g).toBeGreaterThan(200);
+      expect(p.b).toBeGreaterThan(200);
+    };
+
+    // Frame margin, and the seam between the two halves (y 955..964).
+    white(await pixelAt(out, 0.4, 540, 2));
+    white(await pixelAt(out, 0.4, 2, 480));
+    white(await pixelAt(out, 0.4, 540, 960));
+
+    // Halfway along the diagonal of the top-left corner's cut. Square
+    // corners would put the source's red here instead — this is the
+    // assertion that fails if CORNER_RADIUS goes to 0.
+    const cut = Math.round(top.x + CORNER_RADIUS * (Math.SQRT2 - 1) / 2);
+    white(await pixelAt(out, 0.4, cut, cut));
+
+    // Just inside the piece, past the gutter: still the source's red. Fails
+    // if the gutter is painted wider than GUTTER.
+    const inside = await pixelAt(out, 0.4, 540, top.y + GUTTER);
+    expect(inside.r).toBeGreaterThan(150);
+    expect(inside.g).toBeLessThan(80);
+    expect(inside.b).toBeLessThan(80);
+  });
+
   it("rejects a negative start", async () => {
     const out = join(dir, "out-neg-start.mp4");
     await expect(
@@ -178,6 +240,7 @@ describe("exportClip", () => {
         layout: DEFAULT_LAYOUT,
         boxes: [TOP, BOTTOM],
         source: SOURCE,
+        mask,
         out,
       }),
     ).rejects.toThrow(/start/i);
@@ -193,6 +256,7 @@ describe("exportClip", () => {
         layout: DEFAULT_LAYOUT,
         boxes: [TOP, BOTTOM],
         source: SOURCE,
+        mask,
         out,
       }),
     ).rejects.toThrow(/duration/i);
@@ -219,6 +283,7 @@ describe("exportClip", () => {
       layout,
       boxes,
       source: SOURCE,
+      mask: mask3,
       out,
     });
 

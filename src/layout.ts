@@ -14,8 +14,11 @@ export type Row = { h: number; cols: number };
 
 export type Layout = { id: string; label: string; rows: Row[] };
 
-/** Today's layout, and the regression fence for this whole feature: its
- *  output must stay pixel-identical to what shipped before layouts existed.
+/** Today's layout, and the regression fence for the layout feature: its two
+ *  cells and their crop boxes must stay identical to what shipped before
+ *  layouts existed. The *pixels* no longer are — `src/frame.ts` paints white
+ *  gutters and rounded corners over every composite — but that is decoration
+ *  applied after the fact, and the geometry underneath is untouched.
  *
  *  Exported as a value, not just an id, so consumers needing "the default"
  *  don't have to unwrap `layoutById`'s null. */
