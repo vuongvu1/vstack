@@ -822,3 +822,29 @@ subscribe(() => {
 
 subscribe(render);
 render();
+
+// Dark theme. No control in the bar on purpose — a personal tool can afford
+// a keystroke instead of a switch. `.dark` on <html> is the class Radix's
+// dark scales key on (see `style.css`), and putting it on the root element
+// is also what makes `color-scheme: dark` reach the native scrollbars and
+// form controls.
+//
+// ponytail: window keydown only, so the shortcut is deaf while the YouTube
+// iframe holds focus — the same capture problem the NUDGES buttons exist to
+// work around. Click anywhere in the page first; a real fix means polling
+// document.activeElement, which is not worth it for a theme toggle.
+const THEME_KEY = "vstack:theme";
+document.documentElement.classList.toggle(
+  "dark",
+  localStorage.getItem(THEME_KEY) === "dark",
+);
+window.addEventListener("keydown", (e) => {
+  // `e.code`, not `e.key`: with Shift held, the 0 key reports ")" on a US
+  // layout and something else again elsewhere, while the physical key stays
+  // Digit0. CMD+Shift+0 itself is free in Chrome and Safari — CMD+0 alone
+  // is "reset zoom", and adding Shift is unbound.
+  if (!e.metaKey || !e.shiftKey || e.code !== "Digit0") return;
+  e.preventDefault();
+  const dark = document.documentElement.classList.toggle("dark");
+  localStorage.setItem(THEME_KEY, dark ? "dark" : "light");
+});

@@ -15,6 +15,23 @@
 @import "@radix-ui/colors/violet.css";
 @import "@radix-ui/colors/violet-alpha.css";
 
+/* The dark scales, same set. Radix's dark files scope their tokens to
+   `.dark, .dark-theme` rather than `:root`, so importing them costs nothing
+   until `<html>` carries the class — which is the whole theme switch. They
+   must come after the light imports: same specificity, later wins. */
+@import "@radix-ui/colors/slate-dark.css";
+@import "@radix-ui/colors/slate-dark-alpha.css";
+@import "@radix-ui/colors/blue-dark.css";
+@import "@radix-ui/colors/blue-dark-alpha.css";
+@import "@radix-ui/colors/amber-dark.css";
+@import "@radix-ui/colors/amber-dark-alpha.css";
+@import "@radix-ui/colors/red-dark.css";
+@import "@radix-ui/colors/red-dark-alpha.css";
+@import "@radix-ui/colors/grass-dark.css";
+@import "@radix-ui/colors/grass-dark-alpha.css";
+@import "@radix-ui/colors/violet-dark.css";
+@import "@radix-ui/colors/violet-dark-alpha.css";
+
 /* Radix Themes' own token layer, hand-rolled — the React package can't be
    used here, but its scales are what make the components read as Radix. */
 :root {
@@ -35,6 +52,27 @@
     0 3px 12px -4px rgba(0, 0, 0, 0.04);
 
   --control-height: 32px;
+
+  /* The three surfaces that were literal `#fff`. Everything else in the UI
+     already reads from a Radix scale and flips on its own. */
+  --page: #fff;
+  --panel: #fff;
+  --field: #fff;
+  color-scheme: light;
+}
+
+/* Dark theme. Toggled by CMD+Shift+0 (see `src/main.ts`) — there is no
+   control for it on purpose. `.dark` is what Radix's dark files key on, and
+   it lands on `<html>`, the same element `:root` matches: equal specificity,
+   so this block has to stay below the one above. `--field` is a step darker
+   than `--panel` so an input reads as recessed into the bar rather than
+   flush with it; in light they are both white and the inset ring does that
+   job alone. */
+.dark {
+  --page: var(--slate-1);
+  --panel: var(--slate-2);
+  --field: var(--slate-1);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -42,7 +80,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: #fff;
+  background: var(--page);
   color: var(--slate-12);
   font: 14px/1.5 system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -104,7 +142,7 @@ body {
   align-items: center;
   flex-wrap: wrap;
   padding: var(--space-3);
-  background: #fff;
+  background: var(--panel);
   border-radius: var(--radius-4);
   box-shadow: var(--shadow-3);
 }
@@ -153,7 +191,7 @@ input {
   padding: 0 var(--space-2);
   border: none;
   border-radius: var(--radius-2);
-  background: #fff;
+  background: var(--field);
   color: var(--slate-12);
   box-shadow: inset 0 0 0 1px var(--slate-a7);
 }
