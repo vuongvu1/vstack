@@ -212,7 +212,8 @@ let stampText = "";
  *  Set End, so a misread paste costs a seek and never a mark. `onApply`
  *  receives absolute source-timeline seconds — each phase maps those onto
  *  its own clock — and returns the message to show, or "" once it has
- *  seeked.
+ *  seeked. The caller also decides what else a seek implies: trimming pauses,
+ *  because the next click is usually Set Start.
  *
  *  ponytail: the video id in a pasted URL is ignored, so a timestamp copied
  *  from a *different* video seeks this one. Checking it needs `videoIdFrom`,
@@ -314,6 +315,12 @@ function renderTrimming(): Node[] {
       if (t > s.duration) {
         return `${clock(t)} is past the end of this video (${clock(s.duration)}).`;
       }
+      // Paused, and paused *before* the seek: applying a timestamp is aiming
+      // at a mark, and a player that keeps rolling has already moved off the
+      // frame you were aiming at by the time you reach Set Start. YouTube's
+      // seekTo resumes a playing player but leaves a paused one paused, so
+      // this order needs no second call to undo the resume.
+      player?.pause();
       player?.seekTo(t);
       return "";
     }, !ready),
