@@ -2,7 +2,7 @@ import * as api from "./api.ts";
 import { mountEditor } from "./editor.ts";
 import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
-import { clock, mmss, slugify } from "./format.ts";
+import { clock, mmss, parseTimestamp, slugify } from "./format.ts";
 import {
   DEFAULT_LAYOUT_ID,
   LAYOUTS,
@@ -200,6 +200,59 @@ function clampMark(seconds: number, duration: number): number {
   return Math.min(Math.max(0, seconds), duration);
 }
 
+// The pasted-timestamp text. It lives here rather than in AppState because
+// nothing about it is persisted, and `barSlot` is rebuilt on every render —
+// so the value has to survive that rebuild without ever causing one, the
+// same hazard renderIdle's quiet `oninput` avoids for the URL field.
+let stampText = "";
+
+/** The paste-a-YouTube-timestamp affordance, shared by both marking phases.
+ *  Applying only ever *seeks*: start and end still come from Set Start /
+ *  Set End, so a misread paste costs a seek and never a mark. `onApply`
+ *  receives absolute source-timeline seconds — each phase maps those onto
+ *  its own clock — and returns the message to show, or "" once it has
+ *  seeked.
+ *
+ *  ponytail: the video id in a pasted URL is ignored, so a timestamp copied
+ *  from a *different* video seeks this one. Checking it needs `videoIdFrom`,
+ *  which lives in server/ytdlp.ts where the client cannot import it; hoist
+ *  that into a shared module if this ever bites. Both callers reject a
+ *  timestamp outside their own range, which catches the usual case. */
+function renderStampInput(onApply: (seconds: number) => string, disabled: boolean): Node[] {
+  const input = el("input", {
+    type: "text",
+    placeholder: "https://youtu.be/…?t=327",
+    size: 26,
+    value: stampText,
+    title: "Paste a YouTube link with ?t=, or 1h2m3s, or 5:27",
+    disabled,
+  });
+  // Assigning the module-level `stampText` instead of calling setState: a
+  // notifying update per keystroke would rebuild this very input and drop
+  // the cursor mid-typing (see renderIdle for the same reasoning).
+  input.oninput = () => {
+    stampText = input.value;
+  };
+
+  const apply = () => {
+    const t = parseTimestamp(input.value);
+    // A single setState for both outcomes, so a seek that lands also clears
+    // whatever message the previous attempt left behind.
+    setState({
+      error:
+        t === null
+          ? "Could not read a timestamp there. Paste a YouTube link with ?t=…, or 1h2m3s, or 5:27."
+          : onApply(t),
+    });
+  };
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") apply();
+  };
+  const go = el("button", { textContent: "Apply timestamp", disabled });
+  go.onclick = apply;
+  return [input, go];
+}
+
 function renderTrimming(): Node[] {
   const s = getState();
   ensureSourcePlayer(s.videoId);
@@ -253,6 +306,16 @@ function renderTrimming(): Node[] {
 
   return [
     ...controls,
+    // Before the strip, not after: `.strip` is `flex: 1 1 240px`, so it eats
+    // the row's free space and would push anything behind it to the far edge,
+    // away from the Set Start / Set End buttons this input feeds.
+    ...renderStampInput((t) => {
+      if (t > s.duration) {
+        return `${clock(t)} is past the end of this video (${clock(s.duration)}).`;
+      }
+      player?.seekTo(t);
+      return "";
+    }, !ready),
     renderStrip({
       duration: s.duration,
       start: s.start,
@@ -541,6 +604,17 @@ function renderFraming(): Node[] {
   return [
     setStart,
     setEnd,
+    // Absolute source-timeline seconds, but the clip's own clock starts at
+    // windowStart — and it only spans as far as windowEnd, so a timestamp
+    // outside that says so instead of silently clamping to an edge.
+    ...renderStampInput((t) => {
+      if (t < s.windowStart || t > s.windowEnd) {
+        const win = `${clock(s.windowStart)} → ${clock(s.windowEnd)}`;
+        return `${clock(t)} is outside the fetched window (${win}). Re-trim to reach it.`;
+      }
+      video.currentTime = t - s.windowStart;
+      return "";
+    }, Boolean(s.busy)),
     renderLayoutPicker(s.layoutId, Boolean(s.busy)),
     el("span", { className: "badge", textContent: `${clock(s.start)} → ${clock(s.end)}` }),
     el("span", {

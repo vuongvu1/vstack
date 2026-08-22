@@ -19,7 +19,7 @@ inline "as built" corrections; treat it as a record, not as instructions.
 ```
 pnpm server   # backend on 127.0.0.1:8787   (node runs .ts directly, no build)
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 97 tests
+pnpm test     # vitest, 102 tests
 pnpm build    # tsc && vite build
 ```
 

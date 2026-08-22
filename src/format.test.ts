@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clock, mmss, slugify } from "./format.ts";
+import { clock, mmss, parseTimestamp, slugify } from "./format.ts";
 
 describe("slugify", () => {
   it("converts a long title to a slug with no trailing dash", () => {
@@ -87,5 +87,46 @@ describe("clock", () => {
   it("floors fractional seconds", () => {
     expect(clock(5.9)).toBe("00:00:05");
     expect(clock(59.9)).toBe("00:00:59");
+  });
+});
+
+describe("parseTimestamp", () => {
+  it("reads t= out of the YouTube URL forms you can copy from the player", () => {
+    expect(parseTimestamp("https://youtu.be/MxClj4IRXac?t=327")).toBe(327);
+    expect(parseTimestamp("https://www.youtube.com/watch?v=MxClj4IRXac&t=327s")).toBe(327);
+    expect(parseTimestamp("https://youtu.be/MxClj4IRXac?t=327&feature=share")).toBe(327);
+    expect(parseTimestamp("https://www.youtube.com/embed/MxClj4IRXac?start=327")).toBe(327);
+  });
+
+  it("reads the h/m/s form YouTube also emits", () => {
+    expect(parseTimestamp("https://youtu.be/ID?t=1h2m3s")).toBe(3723);
+    expect(parseTimestamp("1h2m3s")).toBe(3723);
+    expect(parseTimestamp("2m10s")).toBe(130);
+    expect(parseTimestamp("1h")).toBe(3600);
+    expect(parseTimestamp("5m")).toBe(300);
+  });
+
+  it("accepts a bare second count, with or without the s suffix", () => {
+    expect(parseTimestamp("327")).toBe(327);
+    expect(parseTimestamp("327s")).toBe(327);
+    expect(parseTimestamp("0")).toBe(0);
+    expect(parseTimestamp("  327  ")).toBe(327);
+  });
+
+  it("accepts the clock form the badges display", () => {
+    expect(parseTimestamp("5:27")).toBe(327);
+    expect(parseTimestamp("1:05:27")).toBe(3927);
+    expect(parseTimestamp("00:05:27")).toBe(327);
+  });
+
+  it("returns null for anything it cannot read, rather than a wrong seek", () => {
+    expect(parseTimestamp("")).toBeNull();
+    expect(parseTimestamp("   ")).toBeNull();
+    expect(parseTimestamp("https://youtu.be/MxClj4IRXac")).toBeNull();
+    expect(parseTimestamp("https://youtu.be/ID?t=abc")).toBeNull();
+    expect(parseTimestamp("abc")).toBeNull();
+    expect(parseTimestamp("-5")).toBeNull();
+    expect(parseTimestamp("1.5")).toBeNull();
+    expect(parseTimestamp("s")).toBeNull();
   });
 });
