@@ -652,7 +652,9 @@ function renderFraming(): Node[] {
     placeholder: "Starter screen title (required)",
     title: "Shown and read aloud before the clip",
     ariaLabel: "Starter screen title",
-    size: 28,
+    // Grows to fill its row instead of carrying a `size`: it is the one field
+    // in this phase and the thing Export is gated on, so it gets the space.
+    className: "field-grow",
     value: s.starterTitle,
     disabled: Boolean(s.busy),
   });
@@ -685,23 +687,39 @@ function renderFraming(): Node[] {
   // save() notifies nothing, so the caret is safe either way.
   title.onblur = () => save();
 
+  // Two rows, split by what each one is for: pick the shape and read the facts
+  // about the clip, then name it and ship it. One row put the required title
+  // field between the layout swatches and two read-only badges, which is the
+  // least prominent spot on the bar for the control that gates Export.
   return [
-    renderLayoutPicker(s.layoutId, Boolean(s.busy)),
-    title,
-    el("span", { className: "badge", textContent: `${clock(s.start)} → ${clock(s.end)}` }),
-    el("span", {
-      className: "badge",
-      textContent: `source ${s.source.w}×${s.source.h}`,
-    }),
-    long
-      ? el("span", {
-          className: "badge badge-warn",
-          textContent: "over 3 min — longer than a YouTube Short",
-        })
-      : el("span"),
-    refetch,
-    back,
-    download,
+    el(
+      "div",
+      { className: "bar-row" },
+      renderLayoutPicker(s.layoutId, Boolean(s.busy)),
+      el(
+        "div",
+        { className: "bar-end" },
+        el("span", { className: "badge", textContent: `${clock(s.start)} → ${clock(s.end)}` }),
+        el("span", {
+          className: "badge",
+          textContent: `source ${s.source.w}×${s.source.h}`,
+        }),
+        long
+          ? el("span", {
+              className: "badge badge-warn",
+              textContent: "over 3 min — longer than a YouTube Short",
+            })
+          : el("span"),
+      ),
+    ),
+    el(
+      "div",
+      { className: "bar-row" },
+      title,
+      // Re-fetch first: it is the odd one out, a utility rather than a step,
+      // so it sits furthest from the action that ends the phase.
+      el("div", { className: "bar-end" }, refetch, back, download),
+    ),
   ];
 }
 

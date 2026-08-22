@@ -311,6 +311,10 @@ input:disabled { background: var(--slate-a2); color: var(--slate-11); }
   margin-left: auto;
 }
 
+/* A field that should claim its row's free space rather than sit at its
+   intrinsic `size`. */
+.field-grow { flex: 1 1 240px; min-width: 160px; }
+
 /* Nudge group — four seek steps that read as one control rather than four
    buttons, so a 1px gap instead of the bar's own. */
 .nudges { display: inline-flex; gap: 1px; }
