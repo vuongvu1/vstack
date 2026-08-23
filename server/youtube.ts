@@ -11,6 +11,7 @@ import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { HttpError } from "./errors.ts";
 
 /** Outside the project root on purpose. Vite's dev server serves the project
  *  root statically — that is how `/out/<name>` and `/media/…` reach the
@@ -116,7 +117,7 @@ export async function accessToken(): Promise<string> {
   if (cached !== null && cached.expires > Date.now() + 30_000) return cached.token;
   const client = readClient();
   const refresh = readRefreshToken();
-  if (client === null || refresh === null) throw new Error(AUTH_HINT);
+  if (client === null || refresh === null) throw new HttpError(400, AUTH_HINT);
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -133,7 +134,7 @@ export async function accessToken(): Promise<string> {
     // token, which it does after 7 days for any consent screen still in
     // Testing publishing status. Naming the fix matters more than the raw
     // "invalid_grant" would.
-    if (res.status === 400 || res.status === 401) throw new Error(`${AUTH_HINT}\n\n${text}`);
+    if (res.status === 400 || res.status === 401) throw new HttpError(400, `${AUTH_HINT}\n\n${text}`);
     throw new Error(`Token refresh failed (${res.status}): ${text}`);
   }
   const body = JSON.parse(text) as { access_token: string; expires_in: number };
@@ -200,10 +201,32 @@ export function publishProgress(): { sent: number; total: number } {
  *  from one `data` listener, with no transform stream in the way. */
 function putVideo(session: string, path: string, size: number): Promise<string> {
   return new Promise<string>((resolve, reject) => {
+    // `seenResponse` decides which side owns a failure: once headers have
+    // arrived, a write-side error is just the still-open socket noticing the
+    // server already hung up, not the actual failure.
+    let seenResponse = false;
+    const file = createReadStream(path);
+    // Tears down both streams before rejecting, on every error path (never
+    // on the success path below, where both have already ended naturally).
+    // Without this a failed upload leaves an open fd and a socket with a
+    // declared-but-unsent Content-Length until GC. Declared before `req` is
+    // assigned; every call site below is inside a callback that only runs
+    // once `req` exists, never in this function's own synchronous body.
+    const fail = (err: Error) => {
+      file.destroy();
+      req.destroy();
+      reject(err);
+    };
     const req = httpsRequest(
       session,
       { method: "PUT", headers: { "content-type": "video/mp4", "content-length": size } },
       (res) => {
+        seenResponse = true;
+        // Without this, Node swallows a destroyed response with no listener
+        // and "end" never fires — the promise settles neither way and the
+        // upload hangs forever (busy stuck, poll ticking, progress never
+        // reset) until the page is reloaded.
+        res.on("error", fail);
         const chunks: Buffer[] = [];
         res.on("data", (chunk: Buffer) => chunks.push(chunk));
         res.on("end", () => {
@@ -213,19 +236,37 @@ function putVideo(session: string, path: string, size: number): Promise<string> 
             // ffmpeg stderr already get. A 403 here is usually the ~100
             // uploads/day this endpoint has had its own quota for since
             // June 2026.
-            reject(new Error(`Upload failed (${res.statusCode ?? 0}): ${text}`));
+            fail(new Error(`Upload failed (${res.statusCode ?? 0}): ${text}`));
           } else {
             resolve(text);
           }
         });
       },
     );
-    req.on("error", reject);
-    const file = createReadStream(path);
+    // Without this a silently stalled connection hangs the promise forever —
+    // no FIN, no RST, so neither error handler ever fires. Ten minutes is far
+    // longer than a few-MB upload needs and short enough to not look frozen.
+    req.setTimeout(600_000, () => {
+      req.destroy(new Error("The upload timed out after 10 minutes with no response from YouTube."));
+    });
+    // A write-side error must not preempt a response that already arrived:
+    // when the endpoint rejects an upload early it answers and closes, and
+    // the EPIPE from the still-writing body would otherwise replace Google's
+    // own message with "write EPIPE". If nothing was received at all, the
+    // write error IS the failure, so it still rejects — named, because
+    // "EPIPE" alone tells the user nothing they can act on.
+    req.on("error", (err: NodeJS.ErrnoException) => {
+      if (seenResponse) return;
+      const cause =
+        err.code === "EPIPE" || err.code === "ECONNRESET"
+          ? "YouTube closed the connection during the upload — this is usually the daily upload quota or an expired session. "
+          : "";
+      fail(new Error(`${cause}${err.message}`));
+    });
     file.on("data", (chunk: Buffer) => {
       progress = { sent: progress.sent + chunk.length, total: size };
     });
-    file.on("error", reject);
+    file.on("error", fail);
     file.pipe(req);
   });
 }

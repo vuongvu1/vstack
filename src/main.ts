@@ -643,7 +643,10 @@ async function doPublish(): Promise<void> {
       void api
         .publishProgress()
         .then(({ sent, total }) => {
-          if (total > 0) {
+          // A poll already in flight can land after guard's own finally has
+          // cleared `busy` — checking it here stops a late tick from
+          // resurrecting a bar that has already moved on.
+          if (total > 0 && getState().busy !== "") {
             setState({ busy: `Publishing… ${Math.round((sent / total) * 100)}%` });
           }
         })

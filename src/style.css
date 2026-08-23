@@ -207,13 +207,16 @@ input {
 }
 input::placeholder { color: var(--slate-9); }
 input:focus { outline: none; box-shadow: inset 0 0 0 2px var(--blue-8); }
-input:disabled { background: var(--slate-a2); color: var(--slate-11); }
+input:disabled, .bar textarea:disabled { background: var(--slate-a2); color: var(--slate-11); }
 
 /* Same surface as the text inputs, just taller. `resize: vertical` only —
    a horizontal drag would fight `.bar-row`'s flex sizing. */
 .bar textarea {
   font: inherit;
-  padding: 6px 8px;
+  /* 6px has no matching --space-N token (--space-1 is 4px, --space-2 is
+     8px); left raw rather than rounding to a spacing step that isn't this
+     one. */
+  padding: 6px var(--space-2);
   border-radius: var(--radius-2);
   border: 1px solid var(--slate-a7);
   background: var(--field);
@@ -226,7 +229,7 @@ input:disabled { background: var(--slate-a2); color: var(--slate-11); }
   display: inline-flex;
   align-items: center;
   height: var(--control-height);
-  padding: 0 12px;
+  padding: 0 var(--space-3);
   border-radius: var(--radius-2);
   background: var(--grass-a3);
   color: var(--grass-11);
