@@ -1,6 +1,6 @@
 import { execFile, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -147,7 +147,7 @@ export function png(v: unknown, name: string): Buffer {
 async function applyThumbnail(video: string, videoId: string): Promise<boolean> {
   const dir = await mkdtemp(join(tmpdir(), "vstack-thumb-"));
   try {
-    await setThumbnail(videoId, await firstFrame(video, join(dir, "thumb.jpg")));
+    await setThumbnail(videoId, await firstFrame(video, join(dir, "thumb.jpg"), "wide"));
     console.warn(`vstack: set the starter screen as ${videoId}'s thumbnail`);
     return true;
   } catch (err) {
@@ -177,7 +177,105 @@ const server = createServer((req, res) => {
   });
 });
 
+/** Saves the export's opening frame beside it as a vertical JPEG.
+ *
+ *  Studio's *Shorts* thumbnail slot is 9:16 and no Data API v3 method fills
+ *  it, so that upload is a manual job — this is the file to drag into it,
+ *  already sitting next to the video in Finder. Deliberately NOT the same
+ *  shape as the one `applyThumbnail` sends: that one is cropped to 16:9 for
+ *  `thumbnails.set`, this one is left vertical for the Shorts slot.
+ *
+ *  Best-effort. The video is the product; a still that fails to extract is
+ *  not worth failing an export that already succeeded. `isOutName` matches
+ *  `.mp4` only, so this file is never servable over `/out/` — it exists for
+ *  Finder, not the browser. */
+async function saveStill(video: string): Promise<void> {
+  const still = video.replace(/\.mp4$/, ".jpg");
+  try {
+    await firstFrame(video, still, "tall");
+  } catch (err) {
+    console.warn(`vstack: could not save a still beside ${video}:`, err);
+    await rm(still, { force: true }).catch(() => undefined);
+  }
+}
+
+/** `bytes=a-b`, `bytes=a-` and `bytes=-n` — the three forms a browser sends. */
+const RANGE = /^bytes=(\d*)-(\d*)$/;
+
+/** Streams a finished export.
+ *
+ *  The only GET this server answers, and it exists because OUT_DIR moved out
+ *  of the project root: Vite serves the root statically, which is how
+ *  `/media/<id>/<clip>.mp4` reaches the browser with no route, but a Desktop
+ *  path is outside that root. Vite proxies `/out` here instead.
+ *
+ *  Byte ranges are not optional. A <video> asks for one the moment it seeks,
+ *  and answering 200 with the whole file to a Range request leaves scrubbing
+ *  silently broken — the element loads but the timeline does nothing.
+ *
+ *  `isOutName` is the whole guard, and it is doing more work than it used to:
+ *  it now stands between a request and the user's home directory. */
+function serveOut(req: IncomingMessage, res: ServerResponse): void {
+  // The URL carries the mtime cache-buster as a query string; the name is
+  // everything before it.
+  const raw = (req.url ?? "").slice("/out/".length).split("?")[0] ?? "";
+  let name: string;
+  try {
+    name = decodeURIComponent(raw);
+  } catch {
+    // decodeURIComponent throws on a malformed escape — a bad name, not a 500.
+    return send(res, 400, { error: "Bad output name." });
+  }
+  if (!isOutName(name)) return send(res, 400, { error: "Bad output name." });
+  const path = outPath(name);
+  if (!existsSync(path)) return send(res, 404, { error: `${name} is not in out/.` });
+
+  const { size } = statSync(path);
+  const match = RANGE.exec(req.headers.range ?? "");
+
+  if (!match) {
+    res.writeHead(200, {
+      "content-type": "video/mp4",
+      "content-length": size,
+      "accept-ranges": "bytes",
+    });
+    pipeOut(createReadStream(path), res);
+    return;
+  }
+
+  const from = match[1] ?? "";
+  const to = match[2] ?? "";
+  // `bytes=-500` means the LAST 500 bytes, not "0 through 500" — reading it
+  // as the latter serves the wrong part of the file to a seeking player.
+  const start = from === "" ? Math.max(0, size - Number(to)) : Number(from);
+  const end = from === "" || to === "" ? size - 1 : Math.min(Number(to), size - 1);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start < 0) {
+    res.writeHead(416, { "content-range": `bytes */${size}` });
+    res.end();
+    return;
+  }
+
+  res.writeHead(206, {
+    "content-type": "video/mp4",
+    "content-length": end - start + 1,
+    "content-range": `bytes ${start}-${end}/${size}`,
+    "accept-ranges": "bytes",
+  });
+  pipeOut(createReadStream(path, { start, end }), res);
+}
+
+/** A player that seeks abandons the previous response mid-flight, so both
+ *  ends of this pipe fail routinely. Neither is worth a stack trace, and an
+ *  unhandled stream error would take the process down. */
+function pipeOut(file: ReturnType<typeof createReadStream>, res: ServerResponse): void {
+  file.on("error", () => res.destroy());
+  res.on("close", () => file.destroy());
+  file.pipe(res);
+}
+
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  // Above the POST-only guard, and deliberately the only thing that is.
+  if (req.method === "GET" && (req.url ?? "").startsWith("/out/")) return serveOut(req, res);
   if (req.method !== "POST") return send(res, 405, { error: "POST only" });
 
   if (req.url === "/api/probe") {
@@ -303,6 +401,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         out: partial,
       });
       await rename(partial, out);
+      await saveStill(out);
       const { size, mtimeMs } = statSync(out);
       console.warn(`vstack: exported out/${name} (${Math.round(size / 1e6)} MB)`);
       // Nothing streams any more, so the whole headers-already-sent dance

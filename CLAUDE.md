@@ -60,7 +60,8 @@ server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
                    setThumbnail
 scripts/youtube-auth.ts  `pnpm youtube-auth` — the one-off OAuth dance
 server/ytdlp.ts    videoIdFrom, probe, fetchWindow
-server/index.ts    6 routes, body validators, boot checks
+server/index.ts    7 routes (6 POST + GET /out/<name>), serveOut range
+                   streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/layout.ts      nine layout presets, cellsOf, ratioOf, defaultBoxes
 src/frame.ts       GUTTER/CORNER_RADIUS, windowOf/windowsOf, maskRgba
@@ -73,7 +74,9 @@ src/editor.ts      crop-box drag/resize overlay
 src/preview.ts     canvas composite rAF loop
 src/main.ts        persistent shell, phase machine, all four phases
 media/             clip cache (gitignored)
-out/               finished shorts (gitignored)
+~/Desktop/vstack/  finished shorts, plus a vertical .jpg still beside each
+                   one (OUT_DIR; VSTACK_OUT_DIR overrides). Outside the repo,
+                   so the user sweeps it, not .gitignore
 ```
 
 Layering is strict and acyclic: `errors ← {ffmpeg, starter, youtube} ←
@@ -92,7 +95,8 @@ Four phases: `idle` (URL) → `trimming` (YouTube iframe, mark start/end, no
 download) → `framing` (real `<video>` of the fetched window, crop boxes,
 canvas composite, export) → `preview` (the finished file from `out/`, played
 back, with publish-to-YouTube). Export no longer downloads: it writes
-`out/<slug>-<mmss>-<mmss>.mp4` and advances the phase. Videos under
+`<OUT_DIR>/<slug>-<mmss>-<mmss>.mp4`, saves the opening frame beside it as a
+vertical `.jpg` for Studio's Shorts thumbnail slot, and advances the phase. Videos under
 `SKIP_TRIM_UNDER` (180s) skip `trimming`.
 Marking is `trimming`-only — the framing bar has no Set Start/Set End, so a
 skipped-trim video reaches marking through "Back to trim". The transport row
@@ -153,7 +157,9 @@ path itself, so there is nothing to validate. Preview breaks that — publish
 and reveal both name a file that already exists — so the name is checked
 against exactly what `slugify` + `mmss` can emit (the `OUT_NAME` regex in
 `server/ffmpeg.ts`), plus an `existsSync` in `OUT_DIR`. Loosen the pattern and
-`open -R` and an upload both point at whatever the caller asked for.
+`open -R`, an upload, and `serveOut`'s file read all point at whatever the
+caller asked for — and since `OUT_DIR` now lives under `$HOME`, that is a
+reach into the user's home directory rather than into the repo.
 
 **Uploads are private and there is no option.** An unaudited YouTube Data API
 project has every `videos.insert` locked to private viewing. `buildSnippet`
@@ -241,11 +247,16 @@ overlays the title art and concatenates. Folding it into the export's graph
 means a `split`/`trim`/`loop` chain *and* turning `-ss`/`-t` into filters,
 because an output `-t` would truncate the concatenation rather than the clip.
 
-**Vite's dev server serves the project root statically.** That is why
-`/media/<id>/<clip>.mp4` and `/out/<name>.mp4` reach the browser with no
-route behind them — and equally why nothing private may sit under the project
-root. Credentials live in `~/.vstack/`; a `secrets/` directory here would be
-readable at `/secrets/youtube-token.json` by any page the browser has open.
+**Vite's dev server serves the project root statically — which covers
+`media/` and no longer covers output.** `/media/<id>/<clip>.mp4` still reaches
+the browser with no route behind it. `OUT_DIR` moved to `~/Desktop/vstack`,
+outside that root, so `/out/<name>` is a real `GET` route (`serveOut`) that
+Vite proxies alongside `/api`. It answers byte ranges because a `<video>`
+requests one the instant it seeks, and replying 200 to a Range request leaves
+scrubbing silently dead. The static-root rule still bites the other way:
+nothing private may sit under the project root, which is why credentials live
+in `~/.vstack/` — a `secrets/` directory here would be readable at
+`/secrets/youtube-token.json` by any page the browser has open.
 
 **The resumable upload's PUT uses `node:https`, not `fetch`.** It needs an
 exact `Content-Length`, and `Content-Length` is a forbidden header name under
@@ -363,7 +374,10 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
 - The bundled `starter-music.mp3` opens on a soft intro (mean -14 dB at 0:00 against -3 dB by 0:20) and the screen is only a couple of seconds long, so the bed hears the quietest part of the track. `MUSIC_START` and `MUSIC_GAIN` in `server/starter.ts` are the two knobs.
 - The starter screen makes macOS-only tooling a hard dependency: `say` and its `Linh` (vi_VN) voice. `checkStarter` fails the boot with the System Settings path if the voice is missing, and `server/starter.test.ts` will fail on a machine without it.
 - **`Linh` is the only Vietnamese voice macOS installs.** The novelty family (Eddy, Flo, Grandma, Rocko…) ships for 14 locales and vi_VN is not one of them, so "use a different voice" means either downloading one (an Enhanced/Premium `Linh` keeps the same name, so no code change) or accepting a non-Vietnamese voice mangling the diacritics. Audition with `pnpm voices [title] [voice...]` — it writes one file per voice to `$TMPDIR/vstack-voices` and speaks each aloud unless `--quiet`. Select with `VSTACK_VOICE="<name>" pnpm server`; the name must match `say -v '?'` exactly, parentheses and all, and `checkStarter` rejects it at boot if not.
-- `out/` grows without eviction, like `media/`. Nothing prunes it.
+- `~/Desktop/vstack/` grows without eviction, two files per export (the
+  `.mp4` and its vertical `.jpg`). Nothing prunes it — deliberately the
+  user's to clear, which is why it sits on the Desktop rather than in the
+  repo.
 - Publishing needs `~/.vstack/youtube-client.json` (a **Desktop app** OAuth
   client from Google Cloud Console, with YouTube Data API v3 enabled) and a
   token from `pnpm youtube-auth`. Missing either is a boot *warning*, not a
@@ -374,7 +388,9 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
   already requests, so no re-consent.
   It needs a **phone-verified channel**; an unverified one answers 403 and
   the bar shows a `thumbnail skipped` badge rather than failing a publish
-  whose video is already up. The JPEG goes to a temp dir, never `out/`.
+  whose video is already up. That JPEG is cropped 16:9 and goes to a temp
+  dir; the vertical one saved next to the export is a different shape for a
+  different slot — see `firstFrame`'s `shape` argument.
 - Uploads land private and cannot be made public from here; that is Google's
   audit rule for unaudited API projects, not a missing feature. The endpoint
   also has its own ~100 uploads/day quota.

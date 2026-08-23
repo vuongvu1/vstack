@@ -32,6 +32,7 @@ const BOTTOM: Rect = { x: 1020, y: 100, ...size };      // 1020..1919 -> all blu
 let dir = "";
 let src = "";
 let bands = "";
+let vert = "";
 let mask = "";
 let mask3 = "";
 
@@ -44,6 +45,21 @@ beforeAll(async () => {
     "-f", "lavfi", "-i", "color=c=blue:s=960x1080:d=2:r=10",
     "-filter_complex", "[0:v][1:v]hstack=inputs=2[v]",
     "-map", "[v]", "-pix_fmt", "yuv420p", "-y", src,
+  ]);
+
+  // A 1080x1920 vertical source in three stacked bands, red over green over
+  // blue. The middle band is 640px tall and a 16:9 crop of this is 607px of
+  // source height taken around the centre, so the crop lands wholly inside
+  // the green — which is what makes "every corner is green" a real assertion
+  // about cropping rather than letterboxing.
+  vert = join(dir, "vertical.mp4");
+  await run("ffmpeg", [
+    "-v", "error",
+    "-f", "lavfi", "-i", "color=c=red:s=1080x640:d=1:r=10",
+    "-f", "lavfi", "-i", "color=c=green:s=1080x640:d=1:r=10",
+    "-f", "lavfi", "-i", "color=c=blue:s=1080x640:d=1:r=10",
+    "-filter_complex", "[0:v][1:v][2:v]vstack=inputs=3[v]",
+    "-map", "[v]", "-pix_fmt", "yuv420p", "-y", vert,
   ]);
 
   // Three horizontal bands, 1920x360 each: red on top, green in the middle,
@@ -390,26 +406,13 @@ async function pixelIn(path: string, width: number, x: number, y: number) {
 }
 
 describe("firstFrame", () => {
-  // A 1080x1920 source in three stacked bands, red over green over blue. A
-  // 16:9 crop of it is 607px of source height taken around the centre, which
-  // lands entirely inside the green band — so every CORNER of the output
-  // being green is what proves the frame was cropped full-bleed. Letterboxing
-  // a vertical image into 16:9 is the bug this replaced: it put the picture
-  // in a 32%-wide strip and black in those corners, which reads as a blank
-  // thumbnail at the size YouTube actually shows one.
-  it("crops a vertical source to a full-bleed 1280x720 JPEG", async () => {
-    const vert = join(dir, "vertical.mp4");
-    await run("ffmpeg", [
-      "-v", "error",
-      "-f", "lavfi", "-i", "color=c=red:s=1080x640:d=1:r=10",
-      "-f", "lavfi", "-i", "color=c=green:s=1080x640:d=1:r=10",
-      "-f", "lavfi", "-i", "color=c=blue:s=1080x640:d=1:r=10",
-      "-filter_complex", "[0:v][1:v][2:v]vstack=inputs=3[v]",
-      "-map", "[v]", "-pix_fmt", "yuv420p", "-y", vert,
-    ]);
-
-    const thumb = join(dir, "thumb.jpg");
-    await firstFrame(vert, thumb);
+  // Letterboxing a vertical frame into 16:9 was the shipped bug: it put the
+  // picture in a 32%-wide strip and black in the corners, which reads as a
+  // blank thumbnail at the size YouTube shows one. Corners being GREEN is
+  // what proves the frame was cropped full-bleed instead.
+  it("crops a vertical source to a full-bleed 1280x720 JPEG when wide", async () => {
+    const thumb = join(dir, "wide-thumb.jpg");
+    await firstFrame(vert, thumb, "wide");
 
     expect(await probeFile(thumb)).toEqual({ width: 1280, height: 720 });
 
@@ -421,9 +424,26 @@ describe("firstFrame", () => {
     }
   });
 
+  // The other shape, and the reason the parameter exists: Studio's Shorts
+  // thumbnail slot wants 9:16, so this one must NOT be cropped. All three
+  // bands survive, which is exactly what the wide crop throws away.
+  it("keeps the source's own shape when tall", async () => {
+    const thumb = join(dir, "tall-thumb.jpg");
+    await firstFrame(vert, thumb, "tall");
+
+    expect(await probeFile(thumb)).toEqual({ width: 1080, height: 1920 });
+
+    const top = await pixelIn(thumb, 1080, 540, 100);
+    const middle = await pixelIn(thumb, 1080, 540, 960);
+    const bottom = await pixelIn(thumb, 1080, 540, 1820);
+    expect(top.r).toBeGreaterThan(120);
+    expect(middle.g).toBeGreaterThan(120);
+    expect(bottom.b).toBeGreaterThan(120);
+  });
+
   it("writes a JPEG small enough for thumbnails.set", async () => {
-    const thumb = join(dir, "wide.jpg");
-    await firstFrame(src, thumb);
+    const thumb = join(dir, "magic.jpg");
+    await firstFrame(src, thumb, "wide");
 
     // The API takes image/jpeg by MIME and validates the bytes; a PNG under a
     // .jpg name is rejected. SOI marker, not the extension.

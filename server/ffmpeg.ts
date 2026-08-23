@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -27,11 +28,16 @@ export function clipPath(videoId: string, windowStart: number, windowEnd: number
   return join(MEDIA_DIR, videoId, clipName(windowStart, windowEnd));
 }
 
-/** Finished shorts, beside the `media/` clip cache and gitignored the same
- *  way. Reachable from the browser at `/out/<name>` for exactly the reason
- *  `/media/<id>/<clip>.mp4` is: Vite's dev server serves the project root
- *  statically, so neither needs a route behind it. */
-export const OUT_DIR = join(ROOT, "out");
+/** Finished shorts. Outside the repo on purpose — these are products, not
+ *  build artefacts, and the user sweeps them up by hand.
+ *
+ *  This is why `/out/<name>` needs a real route. `media/` reaches the browser
+ *  for free because Vite serves the project ROOT statically; a Desktop path
+ *  is outside that root, so `index.ts` serves this directory itself and Vite
+ *  proxies `/out` to it. That route's only guard is `isOutName`, which now
+ *  stands between a request and the user's home directory rather than
+ *  between a request and the repo. */
+export const OUT_DIR = process.env.VSTACK_OUT_DIR ?? join(homedir(), "Desktop", "vstack");
 
 /** The exported short's filename — deterministic in title and range, so
  *  re-exporting the same clip after a crop tweak overwrites rather than
@@ -248,12 +254,16 @@ export async function exportClip(opts: ExportOpts): Promise<string> {
  *  title over it. There is nothing to render here, only a frame to lift and
  *  reshape.
  *
- *  **16:9, cropped, never letterboxed.** YouTube accepts a 1080x1920
- *  thumbnail and then fits it into its own 16:9 boxes, which leaves the
- *  picture in a 32%-wide strip with black either side — at the tile size a
- *  thumbnail is actually viewed, that reads as blank. Verified against a
- *  real upload: the API took the vertical image without complaint and
- *  Studio showed black. So the frame is scaled to *cover* and cropped.
+ *  Two shapes, because YouTube wants two different pictures:
+ *
+ *  - `"wide"` — 1280x720, scaled to *cover* and cropped. This is what
+ *    `thumbnails.set` takes. Uploading the raw 1080x1920 frame instead gets
+ *    it pillarboxed into a 32%-wide strip with black either side, which at
+ *    the tile size a thumbnail is actually viewed reads as blank.
+ *  - `"tall"` — the source's own shape, untouched. This is the one saved
+ *    beside the export, because Studio's *Shorts* thumbnail slot is 9:16 and
+ *    no Data API v3 method can fill it — that upload is a manual job, and
+ *    this is the file to drag into it.
  *
  *  Cropping is safe because `renderTitleArt` centres the title block
  *  vertically (`OUTPUT.h / 2`), and the crop is 607px of source height taken
@@ -266,7 +276,14 @@ export async function exportClip(opts: ExportOpts): Promise<string> {
  *
  *  The caller owns `out` and must put it somewhere disposable — never in
  *  OUT_DIR, which is servable and is swept by nothing. */
-export async function firstFrame(input: string, out: string): Promise<string> {
+export async function firstFrame(
+  input: string,
+  out: string,
+  shape: "wide" | "tall",
+): Promise<string> {
+  // increase + crop, not decrease + pad: cover the 16:9 box and trim the
+  // overflow, rather than fitting inside it and filling the rest with bars.
+  const wide = ["-vf", "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720"];
   try {
     await run(
       "ffmpeg",
@@ -274,10 +291,7 @@ export async function firstFrame(input: string, out: string): Promise<string> {
         "-v", "error",
         "-i", input,
         "-frames:v", "1",
-        // increase + crop, not decrease + pad: cover the 16:9 box and trim
-        // the overflow, rather than fitting inside it and filling the rest
-        // with bars.
-        "-vf", "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720",
+        ...(shape === "wide" ? wide : []),
         "-q:v", "3",
         "-y", out,
       ],
