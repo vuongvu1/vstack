@@ -48,6 +48,9 @@ export type AppState = {
   /** Set once the upload lands. Empty means "not published yet", which is
    *  what Publish is gated on. */
   ytVideoId: string;
+  /** Whether the thumbnail took. Only meaningful once `ytVideoId` is set —
+   *  before that it is just the initial `false`. */
+  ytThumbnail: boolean;
 };
 
 const initial: AppState = {
@@ -74,6 +77,7 @@ const initial: AppState = {
   ytDescription: "",
   ytTags: "",
   ytVideoId: "",
+  ytThumbnail: false,
 };
 
 let state: AppState = { ...initial };

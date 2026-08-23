@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -9,7 +9,15 @@ import type { Rect, Size } from "../src/geometry.ts";
 import { CORNER_RADIUS, GUTTER, windowsOf } from "../src/frame.ts";
 import { DEFAULT_LAYOUT, cellsOf, layoutById } from "../src/layout.ts";
 import type { Layout } from "../src/layout.ts";
-import { assertBoxes, buildFilter, exportClip, isOutName, outName, probeFile } from "./ffmpeg.ts";
+import {
+  assertBoxes,
+  buildFilter,
+  exportClip,
+  firstFrame,
+  isOutName,
+  outName,
+  probeFile,
+} from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
 
 const run = promisify(execFile);
@@ -365,5 +373,26 @@ describe("exportClip", () => {
     expect(third.b).toBeGreaterThan(150);
     expect(third.r).toBeLessThan(80);
     expect(third.g).toBeLessThan(80);
+  });
+});
+
+describe("firstFrame", () => {
+  // The published thumbnail is this call's output, so the two things YouTube
+  // refuses are what get asserted: a non-JPEG body and anything over 2 MB.
+  it("writes the source's first frame as a JPEG at the source's size", async () => {
+    const thumb = join(dir, "thumb.jpg");
+    await firstFrame(src, thumb);
+
+    const { width, height } = await probeFile(thumb);
+    expect({ width, height }).toEqual({ width: 1920, height: 1080 });
+
+    // The API takes image/jpeg by MIME and validates the bytes; a PNG under a
+    // .jpg name is rejected. SOI marker, not the extension.
+    const bytes = await readFile(thumb);
+    expect(bytes.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]));
+
+    // thumbnails.set caps uploads at 2 MB. This is what the quality flag is
+    // for — a lossless still of a 1080p frame would clear it easily.
+    expect((await stat(thumb)).size).toBeLessThan(2 << 20);
   });
 });

@@ -15,6 +15,7 @@ import {
   assertBoxes,
   clipPath,
   exportClip,
+  firstFrame,
   isOutName,
   outName,
   outPath,
@@ -23,7 +24,13 @@ import {
 } from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
 import { checkStarter, prependStarter, speak } from "./starter.ts";
-import { buildSnippet, checkYouTube, publishProgress, uploadVideo } from "./youtube.ts";
+import {
+  buildSnippet,
+  checkYouTube,
+  publishProgress,
+  setThumbnail,
+  uploadVideo,
+} from "./youtube.ts";
 import { fetchWindow, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
@@ -123,6 +130,34 @@ export function png(v: unknown, name: string): Buffer {
     throw new HttpError(400, `${name} is not a PNG.`);
   }
   return buf;
+}
+
+/** Publishes the export's own first frame as the video's thumbnail — which
+ *  for a vstack output is the starter screen, blurred background and title
+ *  already composited, so there is nothing to render.
+ *
+ *  Best-effort by design, and the return value says which: by the time this
+ *  runs the video is uploaded and visible in Studio, so a thumbnail refusal
+ *  must not turn a successful publish into an error. The common refusal is a
+ *  403 on a channel that was never phone-verified, which blocks custom
+ *  thumbnails account-wide.
+ *
+ *  The JPEG goes to a temp dir, never OUT_DIR: everything in there is
+ *  servable under a name the client can ask for, and nothing sweeps it. */
+async function applyThumbnail(video: string, videoId: string): Promise<boolean> {
+  const dir = await mkdtemp(join(tmpdir(), "vstack-thumb-"));
+  try {
+    await setThumbnail(videoId, await firstFrame(video, join(dir, "thumb.jpg")));
+    console.warn(`vstack: set the starter screen as ${videoId}'s thumbnail`);
+    return true;
+  } catch (err) {
+    console.warn(`vstack: could not set a thumbnail for ${videoId}:`, err);
+    return false;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
+      console.error("vstack: thumbnail temp dir cleanup failed:", err);
+    });
+  }
 }
 
 const server = createServer((req, res) => {
@@ -330,6 +365,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return send(res, 200, {
       videoId,
       url: `https://studio.youtube.com/video/${videoId}/edit`,
+      thumbnail: await applyThumbnail(path, videoId),
     });
   }
 

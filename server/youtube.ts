@@ -11,6 +11,7 @@ import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { YT_TITLE_MAX } from "../src/defaults.ts";
 import { HttpError } from "./errors.ts";
 
 /** Outside the project root on purpose. Vite's dev server serves the project
@@ -153,9 +154,6 @@ export type VideoResource = {
   status: { privacyStatus: string; selfDeclaredMadeForKids: boolean };
 };
 
-/** YouTube rejects a longer title outright, and `starterTitle` — which this
- *  prefills from — allows 200. */
-const TITLE_MAX = 100;
 const SHORTS = "#Shorts";
 /** People & Blogs. A picker would be an AppState field, a categories route
  *  and a save/restore migration for a value this tool never varies.
@@ -168,7 +166,7 @@ export function buildSnippet(input: SnippetInput): VideoResource {
   const description = input.description.trim();
   return {
     snippet: {
-      title: input.title.trim().slice(0, TITLE_MAX),
+      title: input.title.trim().slice(0, YT_TITLE_MAX),
       // Case-insensitive, and only when absent: a user who typed the tag
       // themselves must not get it twice.
       description: /#shorts\b/i.test(description)
@@ -316,5 +314,37 @@ export async function uploadVideo(opts: {
     // Reset on the failure path too — a stale 90% left behind would make the
     // next publish look like it started three-quarters done.
     progress = { sent: 0, total: 0 };
+  }
+}
+
+/** Sets a video's custom thumbnail.
+ *
+ *  Plain `fetch` with a Buffer body, deliberately unlike the video upload's
+ *  `node:https` PUT: a Buffer body gets its `Content-Length` set for us, so
+ *  the forbidden-header problem that forces the other one onto `node:https`
+ *  never arises. The file is under 2 MB by construction — that is the API's
+ *  cap and why `firstFrame` compresses.
+ *
+ *  `youtube.upload`, the scope the auth script already requests, is one of
+ *  the scopes this method accepts, so nothing has to be re-authorised.
+ *
+ *  Throws on refusal, and the caller is expected to treat that as
+ *  non-fatal: a 403 here usually means the channel has never been
+ *  phone-verified, which blocks custom thumbnails account-wide and has
+ *  nothing to do with the video that just uploaded fine. */
+export async function setThumbnail(videoId: string, jpeg: string): Promise<void> {
+  const token = await accessToken();
+  const res = await fetch(
+    "https://www.googleapis.com/upload/youtube/v3/thumbnails/set" +
+      `?videoId=${encodeURIComponent(videoId)}&uploadType=media`,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "image/jpeg" },
+      body: readFileSync(jpeg),
+    },
+  );
+  if (!res.ok) {
+    // Google's own body, verbatim, like every other failure in this module.
+    throw new Error(`Thumbnail rejected (${res.status}): ${await res.text()}`);
   }
 }

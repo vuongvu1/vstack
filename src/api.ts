@@ -111,10 +111,14 @@ export async function publish(body: {
   title: string;
   description: string;
   tags: string;
-}): Promise<{ videoId: string; url: string }> {
+}): Promise<{ videoId: string; url: string; thumbnail: boolean }> {
   return (await post("/api/publish", body)).json() as Promise<{
     videoId: string;
     url: string;
+    /** Whether the starter screen was accepted as the video's thumbnail.
+     *  False is not a failed publish — the video is up either way; the
+     *  usual cause is a channel that was never phone-verified. */
+    thumbnail: boolean;
   }>;
 }
 

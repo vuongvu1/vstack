@@ -2,6 +2,7 @@ import * as api from "./api.ts";
 import { mountEditor } from "./editor.ts";
 import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
+import { DESCRIPTION_TEMPLATE, defaultTitle } from "./defaults.ts";
 import { clock, parseTimestamp } from "./format.ts";
 import {
   DEFAULT_LAYOUT_ID,
@@ -617,10 +618,15 @@ async function doExport(): Promise<void> {
       outName: out.name,
       outUrl: out.url,
       outSize: out.size,
-      // YouTube caps the title at 100; starterTitle allows 200.
-      ytTitle: getState().ytTitle || starterTitle.slice(0, 100),
-      // A fresh file has not been published, whatever the last one did.
+      // Both defaults are `||`-guarded so a re-export after a crop fix keeps
+      // whatever was already typed — retyping the metadata is exactly the
+      // work this phase exists to remove.
+      ytTitle: getState().ytTitle || defaultTitle(starterTitle),
+      ytDescription: getState().ytDescription || DESCRIPTION_TEMPLATE,
+      // A fresh file has not been published, whatever the last one did, and
+      // its thumbnail state belongs to that upload rather than this file.
       ytVideoId: "",
+      ytThumbnail: false,
     });
   });
 }
@@ -651,13 +657,13 @@ async function doPublish(): Promise<void> {
         .catch(() => undefined);
     }, 500);
     try {
-      const { videoId } = await api.publish({
+      const { videoId, thumbnail } = await api.publish({
         name: s.outName,
         title,
         description: s.ytDescription,
         tags: s.ytTags,
       });
-      setState({ ytVideoId: videoId });
+      setState({ ytVideoId: videoId, ytThumbnail: thumbnail });
       bell();
     } finally {
       // Must run before guard's own finally clears `busy`, or the next tick
@@ -937,6 +943,16 @@ function renderPreview(): Node[] {
       }),
       published
         ? el("span", { className: "badge badge-info", textContent: "uploaded — private" })
+        : el("span"),
+      // Only worth saying when it did NOT take: a set thumbnail is the
+      // expected outcome and needs no badge, but a skipped one is something
+      // to fix by hand in Studio, and silence would hide it.
+      published && !s.ytThumbnail
+        ? el("span", {
+            className: "badge badge-warn",
+            title: "Custom thumbnails need a phone-verified channel",
+            textContent: "thumbnail skipped",
+          })
         : el("span"),
       el("div", { className: "bar-end" }, finder, back),
     ),

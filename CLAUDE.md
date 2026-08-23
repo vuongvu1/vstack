@@ -46,6 +46,7 @@ all of it at boot and exits with an install hint if any is missing.
 server/errors.ts   HttpError (status + message), toolError (stderr tail)
 server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, outName/outPath,
                    isOutName, probeFile, buildFilter, assertBoxes, exportClip,
+                   firstFrame,
                    reportCache
 server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
 server/starter.ts  MUSIC_PATH/CUE_PATH, VOICE, starterDuration, checkStarter,
@@ -55,7 +56,8 @@ scripts/audition.ts  `pnpm voices` — speaks a title in each installed voice
 server/assets/     starter-music.mp3 (the bed), before-video-start-sound.mp3
                    (the cue before the cut)
 server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
-                   buildSnippet, accessToken, uploadVideo, publishProgress
+                   buildSnippet, accessToken, uploadVideo, publishProgress,
+                   setThumbnail
 scripts/youtube-auth.ts  `pnpm youtube-auth` — the one-off OAuth dance
 server/ytdlp.ts    videoIdFrom, probe, fetchWindow
 server/index.ts    6 routes, body validators, boot checks
@@ -157,6 +159,13 @@ against exactly what `slugify` + `mmss` can emit (the `OUT_NAME` regex in
 project has every `videos.insert` locked to private viewing. `buildSnippet`
 hardcodes `privacyStatus: "private"` and `selfDeclaredMadeForKids: false` —
 the second is required by the API, and an upload without it is rejected.
+
+**The title's hashtags are reserved before the title, not appended after.**
+`defaultTitle` gives the starter title only `100 - len(TITLE_HASHTAGS) - 1`
+characters and puts the tags on the end. Concatenating first and slicing to
+100 afterwards cuts the *tail*, and the tail is the tags — a long Vietnamese
+title would upload ending in `#vtuber #vir`. A clipped title is one edit
+away from fixed; a clipped hashtag reads as a typo to every viewer.
 
 **The preview URL carries the file's mtime.** The output name is stable
 across re-exports, so `/out/<name>` with no cache-buster re-shows the
@@ -309,7 +318,10 @@ assertion that caught `hasAudio` reading the wrong ffprobe line). Each window
 is one where only that layer can be heard, so all four are load-bearing. `src/starter.ts` is DOM-driven and untested like the rest — it was
 verified by hand in a real browser and through a real export.
 `state.test.ts` covers the save-gating that guards against erasing framed boxes. `ytdlp.test.ts` covers `videoIdFrom`, the trust boundary that decides whether a subprocess spawns.
-`server/youtube.test.ts` covers `buildSnippet` and nothing else — it is where
+`src/defaults.test.ts` covers `defaultTitle` — that the tags survive a
+200-character starter title, that no input can exceed 100, and that the
+description template still carries a shorts tag so `buildSnippet`'s append
+stays a no-op against it. `server/youtube.test.ts` covers `buildSnippet` and nothing else — it is where
 every decision that is awkward to change later lives (the 100-char title cap,
 `#Shorts` appended once and case-insensitively, private, not-made-for-kids).
 The HTTP calls, `open -R`, the preview bar and the auth script have no tests,
@@ -332,6 +344,12 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
   client from Google Cloud Console, with YouTube Data API v3 enabled) and a
   token from `pnpm youtube-auth`. Missing either is a boot *warning*, not a
   boot failure — everything except Publish works without them.
+- The thumbnail is the export's own first frame — the starter screen —
+  lifted by `firstFrame` and posted with `thumbnails.set`, which accepts the
+  `youtube.upload` scope the auth script already requests, so no re-consent.
+  It needs a **phone-verified channel**; an unverified one answers 403 and
+  the bar shows a `thumbnail skipped` badge rather than failing a publish
+  whose video is already up. The JPEG goes to a temp dir, never `out/`.
 - Uploads land private and cannot be made public from here; that is Google's
   audit rule for unaudited API projects, not a missing feature. The endpoint
   also has its own ~100 uploads/day quota.

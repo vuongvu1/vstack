@@ -242,3 +242,29 @@ export async function exportClip(opts: ExportOpts): Promise<string> {
   }
   return opts.out;
 }
+
+/** The first frame of a finished export, as a JPEG — which for a vstack
+ *  output is the starter screen: the blurred opening frame with the title
+ *  over it. That is the thumbnail, so there is nothing to render here, only
+ *  a frame to lift.
+ *
+ *  `-q:v 3` rather than lossless because `thumbnails.set` refuses anything
+ *  over 2 MB, and a 1080x1920 still can clear that uncompressed. The output
+ *  keeps the source's dimensions: YouTube accepts a vertical thumbnail and
+ *  Shorts surfaces show it upright, which is the whole point of using the
+ *  title card.
+ *
+ *  The caller owns `out` and must put it somewhere disposable — never in
+ *  OUT_DIR, which is servable and is swept by nothing. */
+export async function firstFrame(input: string, out: string): Promise<string> {
+  try {
+    await run(
+      "ffmpeg",
+      ["-v", "error", "-i", input, "-frames:v", "1", "-q:v", "3", "-y", out],
+      { maxBuffer: 16 << 20 },
+    );
+  } catch (err) {
+    throw toolError("ffmpeg", err);
+  }
+  return out;
+}
