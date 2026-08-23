@@ -1,6 +1,7 @@
 node_modules/
 dist/
 media/
+out/
 .DS_Store
 
 .superpowers/

@@ -7,6 +7,7 @@ import { isValidBox } from "../src/geometry.ts";
 import type { Rect, Size } from "../src/geometry.ts";
 import { cellsOf, ratioOf } from "../src/layout.ts";
 import type { Layout } from "../src/layout.ts";
+import { mmss, slugify } from "../src/format.ts";
 import { toolError } from "./errors.ts";
 
 const run = promisify(execFile);
@@ -24,6 +25,42 @@ export function clipName(windowStart: number, windowEnd: number): string {
 
 export function clipPath(videoId: string, windowStart: number, windowEnd: number): string {
   return join(MEDIA_DIR, videoId, clipName(windowStart, windowEnd));
+}
+
+/** Finished shorts, beside the `media/` clip cache and gitignored the same
+ *  way. Reachable from the browser at `/out/<name>` for exactly the reason
+ *  `/media/<id>/<clip>.mp4` is: Vite's dev server serves the project root
+ *  statically, so neither needs a route behind it. */
+export const OUT_DIR = join(ROOT, "out");
+
+/** The exported short's filename — deterministic in title and range, so
+ *  re-exporting the same clip after a crop tweak overwrites rather than
+ *  accumulating. `isOutName` below is anchored to exactly what this emits. */
+export function outName(title: string, start: number, end: number): string {
+  return `${slugify(title)}-${mmss(start)}-${mmss(end)}.mp4`;
+}
+
+export function outPath(name: string): string {
+  return join(OUT_DIR, name);
+}
+
+/** Anchored to what `slugify` (lowercase `[a-z0-9-]`, never leading or
+ *  trailing dash, never empty) and `mmss` (four or more digits, but four is
+ *  the floor) can produce together. */
+const OUT_NAME = /^[a-z0-9][a-z0-9-]*-\d{4,}-\d{4,}\.mp4$/;
+
+/** The one client-supplied path component this API accepts. `/api/export`
+ *  deliberately takes window bounds and reconstructs the cache filename
+ *  itself, so there is nothing to validate there; preview breaks that,
+ *  because publish and reveal both name a file that already exists. So the
+ *  name is validated rather than reconstructed. No slash, no dot-dot, no
+ *  backslash, no absolute path and no non-ASCII survives the pattern.
+ *
+ *  Takes `unknown`: it is called on a raw request-body field, and a
+ *  `string` annotation there would be a compile-time claim about a value
+ *  that arrives from the wire. */
+export function isOutName(name: unknown): name is string {
+  return typeof name === "string" && OUT_NAME.test(name);
 }
 
 function cacheSize(dir: string): number {

@@ -9,7 +9,7 @@ import type { Rect, Size } from "../src/geometry.ts";
 import { CORNER_RADIUS, GUTTER, windowsOf } from "../src/frame.ts";
 import { DEFAULT_LAYOUT, cellsOf, layoutById } from "../src/layout.ts";
 import type { Layout } from "../src/layout.ts";
-import { assertBoxes, buildFilter, exportClip, probeFile } from "./ffmpeg.ts";
+import { assertBoxes, buildFilter, exportClip, isOutName, outName, probeFile } from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
 
 const run = promisify(execFile);
@@ -80,6 +80,61 @@ function byId(id: string): Layout {
   if (!layout) throw new Error(`test asked for unknown layout ${id}`);
   return layout;
 }
+
+describe("outName", () => {
+  it("slugs a Vietnamese title and pads both marks", () => {
+    expect(outName("Ăn cơm chưa", 90, 125)).toBe("an-com-chua-0130-0205.mp4");
+  });
+
+  it("falls back to `clip` when a title slugs to nothing", () => {
+    expect(outName("!!!???", 0, 30)).toBe("clip-0000-0030.mp4");
+  });
+
+  it("produces a name that isOutName accepts", () => {
+    expect(isOutName(outName("Hôm nay trời đẹp quá", 3661, 3700))).toBe(true);
+  });
+});
+
+// The one place this API takes a client-supplied path component. Everything
+// else reconstructs paths from window bounds, so this is the check that
+// decides which file a subprocess touches — it gets the same exhaustive
+// treatment videoIdFrom gets.
+describe("outName — the traversal guard", () => {
+  it("accepts what outName emits", () => {
+    expect(isOutName("an-com-chua-0130-0205.mp4")).toBe(true);
+    expect(isOutName("clip-0000-0030.mp4")).toBe(true);
+    expect(isOutName("a-0000-0001.mp4")).toBe(true);
+  });
+
+  it("rejects traversal", () => {
+    expect(isOutName("../secret-0000-0001.mp4")).toBe(false);
+    expect(isOutName("a/b-0000-0001.mp4")).toBe(false);
+    expect(isOutName("a\\b-0000-0001.mp4")).toBe(false);
+    expect(isOutName("/etc/passwd")).toBe(false);
+    expect(isOutName("..")).toBe(false);
+  });
+
+  it("rejects anything slugify could not have produced", () => {
+    expect(isOutName("An-Com-0130-0205.mp4")).toBe(false); // uppercase
+    expect(isOutName("ăn-cơm-0130-0205.mp4")).toBe(false); // diacritics
+    expect(isOutName("-lead-0000-0001.mp4")).toBe(false); // leading dash
+    expect(isOutName("has space-0000-0001.mp4")).toBe(false);
+  });
+
+  it("rejects a malformed range or extension", () => {
+    expect(isOutName("clip-130-205.mp4")).toBe(false); // mmss is 4 digits
+    expect(isOutName("clip-0000-0030.mp4.txt")).toBe(false);
+    expect(isOutName("clip-0000-0030.mov")).toBe(false);
+    expect(isOutName("clip-0000-0030")).toBe(false);
+  });
+
+  it("rejects non-strings without throwing", () => {
+    expect(isOutName(null)).toBe(false);
+    expect(isOutName(42)).toBe(false);
+    expect(isOutName(undefined)).toBe(false);
+    expect(isOutName({ toString: () => "clip-0000-0030.mp4" })).toBe(false);
+  });
+});
 
 describe("buildFilter", () => {
   it("crops each box and composes them, every leg scaled to its cell", () => {
