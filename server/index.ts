@@ -22,6 +22,7 @@ import {
 } from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
 import { checkStarter, prependStarter, speak } from "./starter.ts";
+import { checkYouTube } from "./youtube.ts";
 import { fetchWindow, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
@@ -308,6 +309,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
 await checkBinaries();
 await checkStarter();
+// Soft, unlike the two above: no Google credentials means Publish does not
+// work, not that vstack refuses to boot.
+checkYouTube();
 // SIGTERMs whatever vstack server already holds PORT, and reports whether it
 // found one. Node has no way to ask who owns a port, hence lsof — the same
 // command the old error message told the user to run by hand. The `ps` check
