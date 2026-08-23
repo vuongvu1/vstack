@@ -93,6 +93,10 @@ describe("outName", () => {
   it("produces a name that isOutName accepts", () => {
     expect(isOutName(outName("Hôm nay trời đẹp quá", 3661, 3700))).toBe(true);
   });
+
+  it("accepts an all-digit slug, which backtracking makes ambiguous", () => {
+    expect(isOutName(outName("2024", 0, 30))).toBe(true);
+  });
 });
 
 // The one place this API takes a client-supplied path component. Everything
@@ -119,6 +123,8 @@ describe("outName — the traversal guard", () => {
     expect(isOutName("ăn-cơm-0130-0205.mp4")).toBe(false); // diacritics
     expect(isOutName("-lead-0000-0001.mp4")).toBe(false); // leading dash
     expect(isOutName("has space-0000-0001.mp4")).toBe(false);
+    expect(isOutName("a--b-0000-0001.mp4")).toBe(false); // slugify collapses runs to one dash
+    expect(isOutName("ab--0000-0001.mp4")).toBe(false);
   });
 
   it("rejects a malformed range or extension", () => {

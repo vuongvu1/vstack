@@ -44,10 +44,11 @@ export function outPath(name: string): string {
   return join(OUT_DIR, name);
 }
 
-/** Anchored to what `slugify` (lowercase `[a-z0-9-]`, never leading or
- *  trailing dash, never empty) and `mmss` (four or more digits, but four is
- *  the floor) can produce together. */
-const OUT_NAME = /^[a-z0-9][a-z0-9-]*-\d{4,}-\d{4,}\.mp4$/;
+/** Anchored to what `slugify` (emits dash-separated alphanumeric groups,
+ *  never leading or trailing dash, never empty — collapses runs of dashes
+ *  to one) and `mmss` (four or more digits, but four is the floor) can
+ *  produce together. */
+const OUT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*-\d{4,}-\d{4,}\.mp4$/;
 
 /** The one client-supplied path component this API accepts. `/api/export`
  *  deliberately takes window bounds and reconstructs the cache filename
