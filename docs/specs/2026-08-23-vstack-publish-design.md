@@ -249,10 +249,14 @@ PUT <session url>
   → 200 { "id": "<videoId>", … }
 ```
 
-**A streaming `fetch` body needs `duplex: "half"`.** Node's undici rejects a
-`ReadableStream` body without it, and the error names neither the option nor
-the request. The PUT sends `Readable.toWeb(createReadStream(path))` through a
-counting transform, which is where progress comes from.
+**The two JSON calls use `fetch`; the PUT uses `node:https`.** The resumable
+protocol requires an exact `Content-Length` on the upload, and `Content-Length`
+is a forbidden header name under the fetch spec — a `fetch` with a stream body
+is free to drop it and send chunked instead, which this endpoint does not
+accept. `https.request` sets the header verbatim, and piping a
+`createReadStream` into it gives byte-level progress from a `data` listener
+with no transform stream and no `duplex: "half"` to remember. Stdlib, and no
+part of it is ambiguous.
 
 Progress is a module-level `{ sent, total }` that the poll route reads.
 `ponytail: one global upload slot; key it by name if concurrent publishing
