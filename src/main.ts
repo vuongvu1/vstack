@@ -2,7 +2,7 @@ import * as api from "./api.ts";
 import { mountEditor } from "./editor.ts";
 import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
-import { clock, mmss, parseTimestamp, slugify } from "./format.ts";
+import { clock, parseTimestamp } from "./format.ts";
 import {
   DEFAULT_LAYOUT_ID,
   LAYOUTS,
@@ -477,6 +477,24 @@ let videoEl: HTMLVideoElement | null = null;
 let canvasEl: HTMLCanvasElement | null = null;
 let stopPreview: (() => void) | null = null;
 let stopEditor: (() => void) | null = null;
+
+/** The finished export, played from `/out/<name>`. Like the framing <video>
+ *  it lives permanently in outSlot and is only ever hidden — see the
+ *  module-level comment on the persistent shell. */
+let outVideoEl: HTMLVideoElement | null = null;
+
+/** Idempotent per URL. The URL carries the file's mtime, so a re-export
+ *  under the same name is a genuinely different src and reloading is the
+ *  point here — the opposite of ensureFraming, where reassigning the same
+ *  src is the bug. */
+function ensurePreview(url: string): void {
+  if (!outVideoEl) {
+    outVideoEl = el("video", { controls: true, loop: true, preload: "auto" });
+    outSlot.append(outVideoEl);
+  }
+  const absolute = new URL(url, location.href).href;
+  if (outVideoEl.src !== absolute) outVideoEl.src = absolute;
+}
 // mountEditor appends its own `.boxes` overlay directly into sourceSlot (see
 // the comment on its host param) and, like the iframe/video/canvas above, is
 // built once and torn down only on a genuine clip change — never on a phase
@@ -566,13 +584,12 @@ function currentBoxes(): Rect[] {
   return cur.boxes.length === cells.length ? cur.boxes : defaultBoxes(cur.source, layout);
 }
 
-/** Downloads the exported clip. `exportClip` returns a Blob; the object URL
- *  is handed to a real <a download> rather than window.open/location, which
- *  browsers are free to treat as a navigation instead of a save. The anchor
- *  must be attached before `.click()` (Firefox ignores clicks on detached
- *  elements) and the object URL must outlive the click — revoking
- *  synchronously races the browser's own read of it in some browsers, so
- *  revocation is deferred instead of immediate. */
+/** Renders the clip and moves to the preview phase. The file lands in `out/`
+ *  server-side, so there is no Blob, no object URL and no <a download> here
+ *  any more — and no second copy of the filename either. The client used to
+ *  rebuild the same slugify/mmss string purely to label a download, with a
+ *  comment noting a mismatch between the two would be invisible; the server
+ *  says it once now and this reads it. */
 async function doExport(): Promise<void> {
   const s = getState();
   const layout = resolveLayout(s.layoutId);
@@ -584,7 +601,7 @@ async function doExport(): Promise<void> {
   const starterTitle = s.starterTitle.trim();
   if (starterTitle === "") return;
   await guard("Rendering… (a 30s clip takes ~5–10s)", async () => {
-    const blob = await api.exportClip({
+    const out = await api.exportClip({
       videoId: s.videoId,
       windowStart: s.windowStart,
       windowEnd: s.windowEnd,
@@ -595,21 +612,18 @@ async function doExport(): Promise<void> {
       layoutId: layout.id,
       boxes,
     });
-    const url = URL.createObjectURL(blob);
-    const a = el("a", {
-      href: url,
-      // The same name the server puts in Content-Disposition, from the same
-      // inputs — a mismatch here would be invisible until someone compared
-      // the saved file with the server's log.
-      download: `${slugify(starterTitle)}-${mmss(s.start)}-${mmss(s.end)}.mp4`,
+    setState({
+      phase: "preview",
+      outName: out.name,
+      outUrl: out.url,
+      outSize: out.size,
+      // YouTube caps the title at 100; starterTitle allows 200.
+      ytTitle: getState().ytTitle || starterTitle.slice(0, 100),
+      // A fresh file has not been published, whatever the last one did.
+      ytVideoId: "",
     });
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
     // Inside the guard, after the await: a failed export throws before this
-    // and rings nothing. Export doesn't change `phase`, so this is the one
-    // step the phase subscriber can't see.
+    // and rings nothing.
     bell();
   });
 }
@@ -786,6 +800,34 @@ function renderFraming(): Node[] {
   ];
 }
 
+/** The preview bar: what came out, and the ways out of here. Publish joins
+ *  it in a later task. */
+function renderPreview(): Node[] {
+  const s = getState();
+  // Called for its effect: it mounts the output <video> into the persistent
+  // outSlot and points it at this export.
+  ensurePreview(s.outUrl);
+
+  const back = el("button", { className: "btn-gray", textContent: "Frame again" });
+  // Boxes, layout and marks are all untouched, so this lands back on the
+  // same framing the export came from — a bad crop is one click from a
+  // re-render.
+  back.onclick = () => setState({ phase: "framing" });
+
+  return [
+    el(
+      "div",
+      { className: "bar-row" },
+      el("span", { className: "badge badge-title", textContent: s.outName }),
+      el("span", {
+        className: "badge",
+        textContent: `${(s.outSize / 1e6).toFixed(1)} MB`,
+      }),
+      el("div", { className: "bar-end" }, back),
+    ),
+  ];
+}
+
 function renderIdle(s: AppState): Node[] {
   const busy = s.busy !== "";
   const input = el("input", {
@@ -829,10 +871,17 @@ function render(): void {
   // detach/reattach fine — it just has no reason to move once it lives in
   // the persistent sourceSlot.
   if (videoEl) {
-    videoEl.hidden = s.phase !== "framing";
+    // Visible in preview too, paused, so the result can be compared against
+    // what it was cut from. boxesLayer's own `!== "framing"` rule below is
+    // what keeps the source from reading as still editable.
+    videoEl.hidden = s.phase !== "framing" && s.phase !== "preview";
     if (s.phase !== "framing") videoEl.pause();
   }
   if (canvasEl) canvasEl.hidden = s.phase !== "framing";
+  if (outVideoEl) {
+    outVideoEl.hidden = s.phase !== "preview";
+    if (s.phase !== "preview") outVideoEl.pause();
+  }
   // The crop-box overlay is positioned against videoEl and, like it, is
   // built once and never torn down on a phase change (see the comment by
   // its declaration) — only hidden, so "Back to trim" doesn't leave it
@@ -842,7 +891,8 @@ function render(): void {
 
   if (s.phase === "idle") barSlot.replaceChildren(...renderIdle(s));
   else if (s.phase === "trimming") barSlot.replaceChildren(...renderTrimming());
-  else barSlot.replaceChildren(...renderFraming());
+  else if (s.phase === "framing") barSlot.replaceChildren(...renderFraming());
+  else barSlot.replaceChildren(...renderPreview());
 
   const status: Node[] = [];
   const meta: Node[] = [];

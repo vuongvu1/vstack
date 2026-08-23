@@ -125,7 +125,8 @@ body {
 .source > iframe { width: 100%; height: 100%; }
 
 .out { aspect-ratio: 9 / 16; height: 100%; }
-.out > canvas { width: 100%; height: 100%; display: block; }
+.out > canvas,
+.out > video { width: 100%; height: 100%; display: block; }
 
 /* Author-origin `display: block` on the media children above beats the UA's
    `[hidden] { display: none }` (user-agent origin), no matter how the two

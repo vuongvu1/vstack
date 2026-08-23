@@ -77,6 +77,12 @@ export async function fetchWindow(
     .json() as Promise<WindowResult>;
 }
 
+/** What `/api/export` answers with now that it leaves the file on disk
+ *  instead of streaming it back. `url` already carries the file's mtime as a
+ *  cache-buster — the name is stable across re-exports, so re-showing the
+ *  previous render is otherwise exactly what a <video> would do. */
+export type ExportResult = { name: string; url: string; size: number };
+
 export async function exportClip(body: {
   videoId: string;
   windowStart: number;
@@ -92,6 +98,6 @@ export async function exportClip(body: {
   titlePng: string;
   layoutId: string;
   boxes: Rect[];
-}): Promise<Blob> {
-  return (await post("/api/export", body)).blob();
+}): Promise<ExportResult> {
+  return (await post("/api/export", body)).json() as Promise<ExportResult>;
 }

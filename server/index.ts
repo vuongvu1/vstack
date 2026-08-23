@@ -1,17 +1,23 @@
 import { execFile, spawnSync } from "node:child_process";
-import { createReadStream, existsSync, statSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync, statSync } from "node:fs";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
-import { mmss, slugify } from "../src/format.ts";
 import type { Rect } from "../src/geometry.ts";
 import { layoutById } from "../src/layout.ts";
 import { HttpError } from "./errors.ts";
-import { assertBoxes, clipPath, exportClip, probeFile, reportCache } from "./ffmpeg.ts";
+import {
+  OUT_DIR,
+  assertBoxes,
+  clipPath,
+  exportClip,
+  outName,
+  probeFile,
+  reportCache,
+} from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
 import { checkStarter, prependStarter, speak } from "./starter.ts";
 import { fetchWindow, probe, videoIdFrom } from "./ytdlp.ts";
@@ -212,15 +218,19 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
 
     const dir = await mkdtemp(join(tmpdir(), "vstack-out-"));
-    // Named after the starter title, not YouTube's: it is what the screen says
-    // and reads aloud, so it is what the file is *about*. This is the only
-    // thing the export ever used YouTube's title for, which is why the body no
-    // longer carries it.
-    const name = `${slugify(starterTitle)}-${mmss(start)}-${mmss(end)}.mp4`;
-    const out = join(dir, name);
-    // The composite lands here first; the starter screen is prepended onto it
-    // in a second pass, and `out` — the file that gets streamed — is the
-    // concatenation of the two.
+    // Named after the starter title, not YouTube's: it is what the screen
+    // says and reads aloud, so it is what the file is *about*.
+    const name = outName(starterTitle, start, end);
+    await mkdir(OUT_DIR, { recursive: true });
+    const out = join(OUT_DIR, name);
+    // Written under a partial name and renamed on success, the same way
+    // fetchWindow does. Two reasons: a half-written file must never be
+    // servable under a name the client can request, and the rename has to
+    // stay on one volume — $TMPDIR is a different filesystem on macOS, so
+    // rendering into the temp dir and renaming into the project risks EXDEV.
+    const partial = out.replace(/\.mp4$/, ".part.mp4");
+    // The composite lands here first; the starter screen is prepended onto
+    // it in a second pass.
     const body = join(dir, "body.mp4");
     const art = join(dir, "title.png");
 
@@ -244,36 +254,35 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         title: art,
         voice,
         voiceSeconds: await speak(starterTitle, dir, voice),
-        out,
+        out: partial,
       });
-      const { size } = statSync(out);
-      res.writeHead(200, {
-        "content-type": "video/mp4",
-        "content-length": size,
-        "content-disposition": `attachment; filename="${name}"`,
+      await rename(partial, out);
+      const { size, mtimeMs } = statSync(out);
+      console.warn(`vstack: exported out/${name} (${Math.round(size / 1e6)} MB)`);
+      // Nothing streams any more, so the whole headers-already-sent dance
+      // this route used to need is gone with it.
+      return send(res, 200, {
+        name,
+        // The mtime is load-bearing, not decoration. The name is stable
+        // across re-exports, so without a cache-buster the <video> would
+        // re-show the previous render and a crop fix would look like it did
+        // nothing.
+        url: `/out/${name}?t=${Math.round(mtimeMs)}`,
+        size,
       });
-      await pipeline(createReadStream(out), res);
-    } catch (err) {
-      // exportClip failures land here before any header is written, so the
-      // top-level handler's send() is still safe. A failure *during*
-      // streaming happens after headers are already sent, and a JSON error
-      // body at that point would corrupt the response — so that case is
-      // handled here instead of being rethrown.
-      if (res.headersSent) {
-        console.error("vstack: export stream failed after headers were sent:", err);
-        res.destroy();
-        return;
-      }
-      throw err;
     } finally {
-      // force:true only suppresses ENOENT. A throwing finally overrides even a
-      // clean completion, escaping this try/catch entirely — so this cleanup
-      // must swallow its own errors rather than propagate them.
+      // force:true only suppresses ENOENT. A throwing finally overrides even
+      // a clean completion, escaping this route entirely — so this cleanup
+      // must swallow its own errors rather than propagate them. The partial
+      // is removed here rather than in a catch: on the success path the
+      // rename already took it away, so one cleanup covers both.
+      await rm(partial, { force: true }).catch((err: unknown) => {
+        console.error("vstack: partial cleanup failed:", err);
+      });
       await rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
         console.error("vstack: temp dir cleanup failed:", err);
       });
     }
-    return;
   }
 
   return send(res, 404, { error: `No route ${req.url}` });

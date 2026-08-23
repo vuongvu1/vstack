@@ -2,7 +2,7 @@ import { isValidBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
 import { DEFAULT_LAYOUT_ID, cellsOf, layoutById, ratioOf, resolveLayout } from "./layout.ts";
 
-export type Phase = "idle" | "trimming" | "framing";
+export type Phase = "idle" | "trimming" | "framing" | "preview";
 
 export type AppState = {
   phase: Phase;
@@ -30,6 +30,22 @@ export type AppState = {
    *  "not framed yet" — the only other legal length is the layout's cell
    *  count, which is what `save`'s gate and `restore` both check. */
   boxes: Rect[];
+  /** The finished export. Set by doExport, cleared by nothing — a new
+   *  export overwrites them. None of these are persisted: an export belongs
+   *  to the session that made it, so save()/restore() do not touch them. */
+  outName: string;
+  outUrl: string;
+  outSize: number;
+  /** The upload's metadata. `ytTitle` prefills from `starterTitle` sliced to
+   *  YouTube's 100-character cap; the other two persist across a re-export
+   *  within the session, because retyping a description after a crop fix is
+   *  exactly the work this phase exists to remove. */
+  ytTitle: string;
+  ytDescription: string;
+  ytTags: string;
+  /** Set once the upload lands. Empty means "not published yet", which is
+   *  what Publish is gated on. */
+  ytVideoId: string;
 };
 
 const initial: AppState = {
@@ -49,6 +65,13 @@ const initial: AppState = {
   source: { w: 0, h: 0 },
   layoutId: DEFAULT_LAYOUT_ID,
   boxes: [],
+  outName: "",
+  outUrl: "",
+  outSize: 0,
+  ytTitle: "",
+  ytDescription: "",
+  ytTags: "",
+  ytVideoId: "",
 };
 
 let state: AppState = { ...initial };
