@@ -14,7 +14,9 @@ import {
   assertBoxes,
   clipPath,
   exportClip,
+  isOutName,
   outName,
+  outPath,
   probeFile,
   reportCache,
 } from "./ffmpeg.ts";
@@ -283,6 +285,22 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         console.error("vstack: temp dir cleanup failed:", err);
       });
     }
+  }
+
+  if (req.url === "/api/reveal") {
+    const body = await json<Record<string, unknown>>(req);
+    // The name is validated, not reconstructed — see isOutName. This is the
+    // only path component this API takes from a client.
+    if (!isOutName(body.name)) return send(res, 400, { error: "Bad output name." });
+    const path = outPath(body.name);
+    if (!existsSync(path)) return send(res, 404, { error: `${body.name} is not in out/.` });
+    // Fire and forget: `open` has done its job by the time it exits, and
+    // revealing a file is not worth an error banner. macOS is already a hard
+    // dependency here — `say` and the Linh voice.
+    execFile("open", ["-R", path], (err) => {
+      if (err) console.warn(`vstack: could not reveal ${path}:`, err);
+    });
+    return send(res, 200, { ok: true });
   }
 
   return send(res, 404, { error: `No route ${req.url}` });

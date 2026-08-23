@@ -808,6 +808,16 @@ function renderPreview(): Node[] {
   // outSlot and points it at this export.
   ensurePreview(s.outUrl);
 
+  const finder = el("button", { textContent: "Show in Finder" });
+  // Not wrapped in guard(): revealing a file is not a phase-blocking action,
+  // and flipping `busy` for it would disable the whole bar for a blink. A
+  // failure still surfaces the same way everything else does.
+  finder.onclick = () => {
+    void api.reveal(s.outName).catch((err: unknown) => {
+      setState({ error: err instanceof Error ? err.message : String(err) });
+    });
+  };
+
   const back = el("button", { className: "btn-gray", textContent: "Frame again" });
   // Boxes, layout and marks are all untouched, so this lands back on the
   // same framing the export came from — a bad crop is one click from a
@@ -823,7 +833,7 @@ function renderPreview(): Node[] {
         className: "badge",
         textContent: `${(s.outSize / 1e6).toFixed(1)} MB`,
       }),
-      el("div", { className: "bar-end" }, back),
+      el("div", { className: "bar-end" }, finder, back),
     ),
   ];
 }

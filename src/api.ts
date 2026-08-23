@@ -101,3 +101,7 @@ export async function exportClip(body: {
 }): Promise<ExportResult> {
   return (await post("/api/export", body)).json() as Promise<ExportResult>;
 }
+
+export async function reveal(name: string): Promise<void> {
+  await post("/api/reveal", { name });
+}
