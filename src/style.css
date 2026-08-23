@@ -115,6 +115,15 @@ body {
 .source { position: relative; display: grid; place-items: center; }
 .source > video, .source > iframe { max-width: 100%; max-height: 100%; display: block; }
 
+/* The YouTube API writes width/height *attributes* (640x360) on the iframe it
+   creates, and `max-*` only caps — it never grows. So the trimming phase sat
+   at 640x360 in the middle of a much larger card. Fill the card instead and
+   let the player letterbox internally, which it already does for every
+   aspect it plays. Deliberately iframe-only: the framing `<video>` must stay
+   aspect-fitted, because `.boxes` is drawn against the video's rendered rect
+   and a stretched video would put every crop box over the wrong pixels. */
+.source > iframe { width: 100%; height: 100%; }
+
 .out { aspect-ratio: 9 / 16; height: 100%; }
 .out > canvas { width: 100%; height: 100%; display: block; }
 
