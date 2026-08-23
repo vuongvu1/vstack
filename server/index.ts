@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -281,28 +281,76 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
 await checkBinaries();
 await checkStarter();
+// SIGTERMs whatever vstack server already holds PORT, and reports whether it
+// found one. Node has no way to ask who owns a port, hence lsof — the same
+// command the old error message told the user to run by hand. The `ps` check
+// is the whole safety margin: a stranger's process on 8787 did not ask to be
+// killed, so only a command line pointing at this server qualifies.
+function killOldServer(): boolean {
+  const listeners = spawnSync(
+    "lsof",
+    ["-t", `-iTCP:${PORT}`, "-sTCP:LISTEN"],
+    { encoding: "utf8" },
+  );
+  const pids = (listeners.stdout ?? "")
+    .split("\n")
+    .map((line) => Number(line.trim()))
+    .filter((pid) => pid > 0 && pid !== process.pid)
+    .filter((pid) =>
+      (
+        spawnSync("ps", ["-o", "command=", "-p", String(pid)], {
+          encoding: "utf8",
+        }).stdout ?? ""
+      ).includes("server/index.ts"),
+    );
+  let killed = 0;
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGTERM");
+      killed += 1;
+    } catch (err) {
+      console.error(`vstack: could not stop pid ${pid}:`, err);
+    }
+  }
+  return killed > 0;
+}
+
 // listen() reports failure through an 'error' event, not a throw, so with no
 // handler Node prints an unhandled-'error' stack dump and buries the single
 // line that matters. EADDRINUSE is the common case by far — a second
 // `pnpm server` started while one is already up — and for a loopback-bound
-// single-user tool that is a duplicate launch, not a conflict worth
-// resolving, so say which command finds the existing one.
+// single-user tool that is a duplicate launch, so the newer process wins:
+// stop the old one and take the port. Only once; if the port is still busy
+// on the retry, whoever holds it is not ours to evict.
+let retried = false;
 server.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {
+    if (!retried && killOldServer()) {
+      retried = true;
+      console.warn(`vstack: replaced the server already on port ${PORT}`);
+      // SIGTERM has no handler over there, so that process is gone almost at
+      // once; the wait is for the kernel to hand the socket back.
+      setTimeout(() => server.listen(PORT, "127.0.0.1"), 300);
+      return;
+    }
     console.error(
-      `vstack: port ${PORT} is already in use — a vstack server is probably ` +
-        `already running. Fix: lsof -nP -iTCP:${PORT} -sTCP:LISTEN`,
+      `vstack: port ${PORT} is already in use, and the process holding it is ` +
+        `not a vstack server. Fix: lsof -nP -iTCP:${PORT} -sTCP:LISTEN`,
     );
   } else {
     console.error(`vstack: could not listen on port ${PORT}:`, err);
   }
   process.exit(1);
 });
+// Registered as its own handler rather than as listen()'s callback because
+// the retry above calls listen() a second time — a callback passed to the
+// first call would have to be repeated there to survive.
+server.on("listening", () => {
+  console.warn(`vstack server on http://localhost:${PORT}`);
+  reportCache();
+});
 // Loopback only: this is a local single-user tool, not deployed (see the
 // design doc), and binding the unspecified address would let any device on
 // the LAN POST /api/window (make this machine download video) or
 // /api/export (pin its CPU).
-server.listen(PORT, "127.0.0.1", () => {
-  console.warn(`vstack server on http://localhost:${PORT}`);
-  reportCache();
-});
+server.listen(PORT, "127.0.0.1");
