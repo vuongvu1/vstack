@@ -121,10 +121,17 @@ So the name is validated rather than reconstructed, anchored to precisely
 what `slugify` and `mmss` can emit:
 
 ```
-/^[a-z0-9][a-z0-9-]*-\d{4}-\d{4}\.mp4$/
+/^[a-z0-9]+(?:-[a-z0-9]+)*-\d{4,}-\d{4,}\.mp4$/
 ```
 
-plus an `existsSync` in `OUT_DIR`. No slash, no dot-dot, no backslash, no
+`slugify` emits dash-separated alphanumeric groups — it collapses every run
+of non-alphanumerics to a single dash and never leaves a leading or trailing
+one, and never emits nothing (it falls back to `clip`) — so consecutive
+dashes are never something the pattern has to accept. `mmss` emits four
+digits or more (`mmss(7200)` is `"12000"`, past the hour), so the digit
+groups are a floor of four, not exactly four.
+
+Plus an `existsSync` in `OUT_DIR`. No slash, no dot-dot, no backslash, no
 absolute path and no non-ASCII survives that pattern. It gets the same
 exhaustive test treatment `videoIdFrom` gets, for the same reason: it is the
 check that decides which path a subprocess touches.
