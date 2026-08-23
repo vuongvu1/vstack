@@ -1,4 +1,5 @@
 import { execFile, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -227,11 +228,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     await mkdir(OUT_DIR, { recursive: true });
     const out = join(OUT_DIR, name);
     // Written under a partial name and renamed on success, the same way
-    // fetchWindow does. Two reasons: a half-written file must never be
-    // servable under a name the client can request, and the rename has to
-    // stay on one volume — $TMPDIR is a different filesystem on macOS, so
-    // rendering into the temp dir and renaming into the project risks EXDEV.
-    const partial = out.replace(/\.mp4$/, ".part.mp4");
+    // fetchWindow does. Three reasons: a half-written file must never be
+    // servable under a name the client can request; the rename has to stay
+    // on one volume — $TMPDIR is a different filesystem on macOS, so
+    // rendering into the temp dir and renaming into the project risks EXDEV;
+    // and `out`'s name is deterministic (from the starter title and the
+    // marks), so two concurrent exports of the same range — two tabs, or a
+    // re-export fired before the first finishes — would otherwise share one
+    // partial and each ffmpeg would write into the other's open fd. A UUID
+    // per call, not `process.pid`, for the same reason fetchWindow's partial
+    // carries one: the pid is constant for the life of this one process, so
+    // it can't tell two concurrent calls in it apart.
+    const partial = out.replace(/\.mp4$/, `.${randomUUID()}.part.mp4`);
     // The composite lands here first; the starter screen is prepended onto
     // it in a second pass.
     const body = join(dir, "body.mp4");

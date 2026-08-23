@@ -1,6 +1,6 @@
 # vstack
 
-Turn two 9:8 regions of a YouTube video into a 1080×1920 vertical short.
+Turn 2–4 regions of a YouTube video into a 1080×1920 vertical short.
 
 Local single-user tool. Not deployed.
 
@@ -11,12 +11,14 @@ whole video:
    YouTube's own scrub bar comes free.
 2. **Fetch** only `[start − 5s, end + 5s]` via `yt-dlp --download-sections`, cached
    under `media/`.
-3. **Frame** two independently-sized 9:8 crop boxes over a real `<video>` of that
-   clip, with a live 9:16 composite showing exactly what the export will produce.
-4. **Export** one ffmpeg pass: two crops, each scaled to 1080×960, stacked.
+3. **Frame** 2–4 independently-sized crop boxes, picked from nine layout presets,
+   over a real `<video>` of that clip, with a live 9:16 composite — white gutters
+   and rounded corners included — showing exactly what the export will produce.
+4. **Export** the composite, then prepend a spoken Vietnamese title card in a
+   second ffmpeg pass. The finished file lands in `out/`.
 
-Two boxes at 9:8 stack to 9:16, so each fills one half of the 1080×1920 output.
-Sizing is independent, which is what makes both a facecam-over-gameplay crop and a
+Each layout tiles 1080×1920 exactly across its cells; sizing within a cell is
+independent, which is what makes both a facecam-over-gameplay crop and a
 two-speakers-from-one-wide-shot crop expressible.
 
 ## Setup

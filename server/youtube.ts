@@ -26,8 +26,12 @@ export const TOKEN_PATH = join(CONFIG_DIR, "youtube-token.json");
 
 export const SCOPE = "https://www.googleapis.com/auth/youtube.upload";
 
+// `accessToken` throws this for two different causes — no OAuth client JSON
+// at all, or a client but no (or an expired) refresh token — because
+// `pnpm youtube-auth` is step one for either: it refuses with "no OAuth
+// client" for the first and performs the consent flow for the second.
 export const AUTH_HINT =
-  "YouTube publishing is not set up (or the token expired). Fix: pnpm youtube-auth";
+  "YouTube publishing is not set up, or has no client/token. Fix: pnpm youtube-auth";
 
 export type Client = { clientId: string; clientSecret: string };
 

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -207,84 +207,97 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
   const seconds = starterDuration(opts.voiceSeconds);
   const d = seconds.toFixed(3);
   const { fps, seconds: clip, hasAudio } = await probeMain(opts.main);
-  // Beside the output, so the caller's temp dir takes it away with everything
-  // else — nothing here has its own dir to clean up.
+  // `opts.out` is `out/<name>.part.mp4` now — a real file in `out/`, not a
+  // path inside a `mkdtemp` dir the caller sweeps up afterwards — so this
+  // intermediate has no other owner. `prependStarter` is the only code that
+  // knows this path, so it has to be the one that removes it too, in the
+  // `finally` below.
   const still = `${opts.out}.still.png`;
 
   try {
-    await run("ffmpeg", ["-v", "error", "-i", opts.main, "-frames:v", "1", "-y", still]);
-  } catch (err) {
-    throw toolError("ffmpeg", err);
+    try {
+      await run("ffmpeg", ["-v", "error", "-i", opts.main, "-frames:v", "1", "-y", still]);
+    } catch (err) {
+      throw toolError("ffmpeg", err);
+    }
+
+    // Inputs: 0 blurred background, 1 title art, 2 clip, 3 music, 4 voice,
+    // 5 cue, and — only when the clip is silent — 6 as its stand-in silence.
+    // The music's `-ss`/`-t` are input options, so ffmpeg seeks and then stops
+    // decoding at the screen's length instead of chewing through all 2m36s.
+    const args = [
+      "-v", "error",
+      "-loop", "1", "-t", d, "-i", still,
+      "-loop", "1", "-t", d, "-i", opts.title,
+      "-i", opts.main,
+      "-ss", String(MUSIC_START), "-t", d, "-i", MUSIC_PATH,
+      "-i", opts.voice,
+      "-i", CUE_PATH,
+    ];
+    if (!hasAudio) {
+      args.push("-f", "lavfi", "-i", `anullsrc=r=${RATE}:cl=stereo`);
+    }
+
+    const fmt = `aformat=sample_fmts=fltp:sample_rates=${RATE}:channel_layouts=stereo`;
+    // `-shortest` can't bound the silence leg: the video is already finite,
+    // but concat consumes both audio segments to EOF, so the stand-in is
+    // trimmed by the clip's own audio-free length instead.
+    const mainAudio = hasAudio
+      ? `[2:a]${fmt}[am]`
+      : `[6:a]atrim=duration=${clip.toFixed(3)},${fmt}[am]`;
+    const graph = [
+      // The intro is forced to the clip's frame rate and to yuv420p because
+      // concat requires matching parameters, and an image input defaults to
+      // 25 fps regardless of what the clip is.
+      `[0:v]gblur=sigma=${BLUR_SIGMA},fps=${fps},format=yuv420p,setsar=1[bg]`,
+      "[bg][1:v]overlay=0:0:format=auto[intro]",
+      // Both legs are pinned to square pixels. `scale=` in the export's
+      // filter graph carries the *source's* sample aspect through to the
+      // composite — an anamorphic YouTube upload lands as 1080x1920 with SAR
+      // 1214:1215 — and concat rejects a SAR mismatch outright rather than
+      // picking one. Square is also what a 1080x1920 short is supposed to be.
+      "[2:v]setsar=1[clip]",
+      "[intro][clip]concat=n=2:v=1:a=0[v]",
+      // The bed. Faded out rather than cut, because the input -t above ends
+      // it mid-bar and a hard stop clicks.
+      `[3:a]afade=t=out:st=${(seconds - MUSIC_FADE).toFixed(3)}:d=${MUSIC_FADE},` +
+        `volume=${MUSIC_GAIN},${fmt}[music]`,
+      // Both of the other two are placed by a delay: the voice after the
+      // lead-in, the cue in the tail slot the voice leaves free.
+      `[4:a]adelay=${Math.round(LEAD_IN * 1000)}:all=1,${fmt}[voice]`,
+      `[5:a]adelay=${Math.round((seconds - TAIL) * 1000)}:all=1,` +
+        `volume=${CUE_GAIN},${fmt}[cue]`,
+      // apad then atrim pins the intro's audio to exactly the video's length
+      // — amix alone ends with its longest input, which is none of the three.
+      `[music][voice][cue]amix=inputs=3:duration=longest:normalize=0,` +
+        `apad,atrim=duration=${d},${fmt}[ai]`,
+      mainAudio,
+      "[ai][am]concat=n=2:v=0:a=1[a]",
+    ].join(";");
+
+    args.push(
+      "-filter_complex", graph,
+      "-map", "[v]", "-map", "[a]",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+      "-pix_fmt", "yuv420p",
+      "-c:a", "aac", "-b:a", "128k",
+      "-movflags", "+faststart",
+      "-y", opts.out,
+    );
+
+    try {
+      await run("ffmpeg", args, { maxBuffer: 16 << 20 });
+    } catch (err) {
+      throw toolError("ffmpeg", err);
+    }
+    return opts.out;
+  } finally {
+    // force:true only suppresses ENOENT. A throwing finally would override
+    // even a clean completion, escaping this function entirely — so this
+    // cleanup must swallow its own errors rather than propagate them, the
+    // same idiom the export route's own partial/temp-dir cleanup uses.
+    await rm(still, { force: true }).catch((err: unknown) => {
+      console.error("vstack: starter still cleanup failed:", err);
+    });
   }
-
-  // Inputs: 0 blurred background, 1 title art, 2 clip, 3 music, 4 voice,
-  // 5 cue, and — only when the clip is silent — 6 as its stand-in silence.
-  // The music's `-ss`/`-t` are input options, so ffmpeg seeks and then stops
-  // decoding at the screen's length instead of chewing through all 2m36s.
-  const args = [
-    "-v", "error",
-    "-loop", "1", "-t", d, "-i", still,
-    "-loop", "1", "-t", d, "-i", opts.title,
-    "-i", opts.main,
-    "-ss", String(MUSIC_START), "-t", d, "-i", MUSIC_PATH,
-    "-i", opts.voice,
-    "-i", CUE_PATH,
-  ];
-  if (!hasAudio) {
-    args.push("-f", "lavfi", "-i", `anullsrc=r=${RATE}:cl=stereo`);
-  }
-
-  const fmt = `aformat=sample_fmts=fltp:sample_rates=${RATE}:channel_layouts=stereo`;
-  // `-shortest` can't bound the silence leg: the video is already finite, but
-  // concat consumes both audio segments to EOF, so the stand-in is trimmed by
-  // the clip's own audio-free length instead.
-  const mainAudio = hasAudio
-    ? `[2:a]${fmt}[am]`
-    : `[6:a]atrim=duration=${clip.toFixed(3)},${fmt}[am]`;
-  const graph = [
-    // The intro is forced to the clip's frame rate and to yuv420p because
-    // concat requires matching parameters, and an image input defaults to
-    // 25 fps regardless of what the clip is.
-    `[0:v]gblur=sigma=${BLUR_SIGMA},fps=${fps},format=yuv420p,setsar=1[bg]`,
-    "[bg][1:v]overlay=0:0:format=auto[intro]",
-    // Both legs are pinned to square pixels. `scale=` in the export's filter
-    // graph carries the *source's* sample aspect through to the composite —
-    // an anamorphic YouTube upload lands as 1080x1920 with SAR 1214:1215 —
-    // and concat rejects a SAR mismatch outright rather than picking one.
-    // Square is also what a 1080x1920 short is supposed to be.
-    "[2:v]setsar=1[clip]",
-    "[intro][clip]concat=n=2:v=1:a=0[v]",
-    // The bed. Faded out rather than cut, because the input -t above ends it
-    // mid-bar and a hard stop clicks.
-    `[3:a]afade=t=out:st=${(seconds - MUSIC_FADE).toFixed(3)}:d=${MUSIC_FADE},` +
-      `volume=${MUSIC_GAIN},${fmt}[music]`,
-    // Both of the other two are placed by a delay: the voice after the
-    // lead-in, the cue in the tail slot the voice leaves free.
-    `[4:a]adelay=${Math.round(LEAD_IN * 1000)}:all=1,${fmt}[voice]`,
-    `[5:a]adelay=${Math.round((seconds - TAIL) * 1000)}:all=1,` +
-      `volume=${CUE_GAIN},${fmt}[cue]`,
-    // apad then atrim pins the intro's audio to exactly the video's length —
-    // amix alone ends with its longest input, which is none of the three.
-    `[music][voice][cue]amix=inputs=3:duration=longest:normalize=0,` +
-      `apad,atrim=duration=${d},${fmt}[ai]`,
-    mainAudio,
-    "[ai][am]concat=n=2:v=0:a=1[a]",
-  ].join(";");
-
-  args.push(
-    "-filter_complex", graph,
-    "-map", "[v]", "-map", "[a]",
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-    "-pix_fmt", "yuv420p",
-    "-c:a", "aac", "-b:a", "128k",
-    "-movflags", "+faststart",
-    "-y", opts.out,
-  );
-
-  try {
-    await run("ffmpeg", args, { maxBuffer: 16 << 20 });
-  } catch (err) {
-    throw toolError("ffmpeg", err);
-  }
-  return opts.out;
 }

@@ -37,9 +37,11 @@ export type AppState = {
   outUrl: string;
   outSize: number;
   /** The upload's metadata. `ytTitle` prefills from `starterTitle` sliced to
-   *  YouTube's 100-character cap; the other two persist across a re-export
-   *  within the session, because retyping a description after a crop fix is
-   *  exactly the work this phase exists to remove. */
+   *  YouTube's 100-character cap only while it is still empty (`doExport`
+   *  does `getState().ytTitle || starterTitle.slice(0, 100)`) — so, like the
+   *  other two, it persists across a re-export within the session, because
+   *  retyping a title or description after a crop fix is exactly the work
+   *  this phase exists to remove. */
   ytTitle: string;
   ytDescription: string;
   ytTags: string;

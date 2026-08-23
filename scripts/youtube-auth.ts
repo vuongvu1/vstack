@@ -69,6 +69,11 @@ const authUrl =
     state,
   }).toString();
 
+// Ample time to click through Google's consent screen; long enough that a
+// real user is never rushed, short enough that a closed or abandoned tab
+// doesn't leave this listening on 8788 forever with nothing left to talk to.
+const CONSENT_TIMEOUT_MS = 5 * 60 * 1000;
+
 const code = await new Promise<string>((resolve, reject) => {
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", REDIRECT);
@@ -85,12 +90,35 @@ const code = await new Promise<string>((resolve, reject) => {
         ok ? "Authorised — close this tab." : "Authorisation failed — see the terminal."
       }</p>`,
     );
+    clearTimeout(timeout);
     server.close();
     if (ok && got !== null) resolve(got);
     else if (got !== null) reject(new Error("OAuth state mismatch — ignoring this callback."));
     else reject(new Error(failed ?? "No code in the callback."));
   });
-  server.on("error", reject);
+  const timeout = setTimeout(() => {
+    server.close();
+    console.error(
+      "vstack: no callback after 5 minutes — closed the browser before finishing consent? " +
+        "Run `pnpm youtube-auth` again.",
+    );
+    process.exit(1);
+  }, CONSENT_TIMEOUT_MS);
+  // EADDRINUSE is the one error case worth naming: everything else here is a
+  // one-off script, so an unhandled rejection's stack is an acceptable price,
+  // but a second concurrent `pnpm youtube-auth` deserves the same
+  // one-liner-over-stack-dump treatment server/index.ts gives port 8787.
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    clearTimeout(timeout);
+    if (err.code === "EADDRINUSE") {
+      console.error(
+        `vstack: port ${PORT} is already in use — is another \`pnpm youtube-auth\` ` +
+          `already running? Fix: lsof -nP -iTCP:${PORT} -sTCP:LISTEN`,
+      );
+      process.exit(1);
+    }
+    reject(err);
+  });
   // Loopback only, like the main server: nothing on the LAN has any business
   // completing this handshake.
   server.listen(PORT, "127.0.0.1", () => {

@@ -1722,6 +1722,12 @@ copy, public/scheduled publishing) has no task, deliberately.
 each defined once and used under the same name everywhere after. The client
 derives the Studio URL from `ytVideoId` rather than storing the `url` the
 route also returns, so there is no second copy of that string to drift.
+(as built: there *is* a second copy — `server/index.ts`'s `/api/publish`
+returns `url` and `src/main.ts` separately re-derives the same
+`https://studio.youtube.com/video/<id>/edit` shape from `ytVideoId`. Caught in
+the whole-branch review and left as is: nothing consumes the route's `url`, so
+there is nothing wired to drift, and folding the client onto the response
+value was judged not worth a task of its own for one string literal.)
 
 **One deviation from the spec, already folded back into it:** the spec first
 said the PUT would use `fetch` with `duplex: "half"`. It uses `node:https`

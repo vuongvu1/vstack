@@ -209,7 +209,7 @@ buildSnippet({ title, description, tags })  // pure
 accessToken(): Promise<string>
 uploadVideo({ path, size, snippet }): Promise<{ videoId: string }>
 publishProgress(): { sent: number; total: number }
-checkYouTube(): { ready: boolean; hint: string }
+checkYouTube(): void
 ```
 
 `buildSnippet` is the whole of the policy, and it is pure so it can be

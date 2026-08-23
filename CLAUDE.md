@@ -262,10 +262,24 @@ time the 7-day expiry Google applies to Testing-status consent screens bites.
 Setting the consent screen to "In production" — no verification needed for
 `youtube.upload` — stops the expiry.
 
-**The export writes `out/<name>.part.mp4` and renames.** A half-written file
-must never be servable under a name the client can request, and the rename
-has to stay on one volume: `$TMPDIR` is a different filesystem on macOS, so
-rendering into the temp dir and renaming into the project risks `EXDEV`.
+**The export writes `out/<name>.<uuid>.part.mp4` and renames.** A half-written
+file must never be servable under a name the client can request, and the
+rename has to stay on one volume: `$TMPDIR` is a different filesystem on
+macOS, so rendering into the temp dir and renaming into the project risks
+`EXDEV`. The UUID is the same lesson as the download partial's, applied where
+it was first missing: `out`'s name is deterministic (starter title + marks),
+so two concurrent exports of the same range would otherwise share one partial
+and each ffmpeg would write into the other's open fd — whoever renamed first
+would publish a file the other was still writing into.
+
+**No route checks `Origin` or `Host`.** Loopback-only binding predates this
+branch, but publish raises what a drive-by page open in the same browser can
+do with it: a same-origin-policy-exempt simple POST to 127.0.0.1:8787 can fire
+`/api/reveal` (spawns `open -R`) or `/api/publish` (uploads under the user's
+own OAuth grant), no preflight required. The only mitigations are needing a
+valid, already-existing `out/` name (`isOutName` plus `existsSync`) and every
+upload landing private — not a same-origin check. Deliberate for a local
+single-user tool; not something to fix here.
 
 ## Conventions
 

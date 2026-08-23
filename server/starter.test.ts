@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -166,6 +167,14 @@ describe("prependStarter", () => {
   it("prepends a blurred, titled screen and keeps the clip intact", async () => {
     const out = join(dir, "out.mp4");
     await prependStarter({ main, title: art, voice, voiceSeconds, out });
+
+    // Regression: `out` used to live inside a `mkdtemp` dir that took its
+    // `.still.png` away for free. Now that callers pass a real `out/` path
+    // (see server/index.ts), nothing but prependStarter itself knows to
+    // remove the intermediate — this fixture's own temp dir would hide the
+    // leak the same way `out/` used to, so this checks the exact sibling path
+    // rather than relying on `afterAll`'s sweep.
+    expect(existsSync(`${out}.still.png`)).toBe(false);
 
     const intro = starterDuration(voiceSeconds);
     const info = await probeOut(out);

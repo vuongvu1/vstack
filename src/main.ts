@@ -622,9 +622,6 @@ async function doExport(): Promise<void> {
       // A fresh file has not been published, whatever the last one did.
       ytVideoId: "",
     });
-    // Inside the guard, after the await: a failed export throws before this
-    // and rings nothing.
-    bell();
   });
 }
 
@@ -854,9 +851,16 @@ function renderPreview(): Node[] {
   // and flipping `busy` for it would disable the whole bar for a blink. A
   // failure still surfaces the same way everything else does.
   finder.onclick = () => {
-    void api.reveal(s.outName).catch((err: unknown) => {
-      setState({ error: err instanceof Error ? err.message : String(err) });
-    });
+    void api
+      .reveal(s.outName)
+      // guard() is what normally clears `error`, and this deliberately skips
+      // guard (see above) — so a success here has to clear it itself, or a
+      // stale callout from an earlier failure sits next to a Finder window
+      // that just opened fine.
+      .then(() => setState({ error: "" }))
+      .catch((err: unknown) => {
+        setState({ error: err instanceof Error ? err.message : String(err) });
+      });
   };
 
   const back = el("button", { className: "btn-gray", textContent: "Frame again" });
@@ -990,11 +994,16 @@ function render(): void {
   // detach/reattach fine — it just has no reason to move once it lives in
   // the persistent sourceSlot.
   if (videoEl) {
-    // Visible in preview too, paused, so the result can be compared against
-    // what it was cut from. boxesLayer's own `!== "framing"` rule below is
-    // what keeps the source from reading as still editable.
+    // Visible in preview too, so the result can be compared against what it
+    // was cut from. boxesLayer's own `!== "framing"` rule below is what keeps
+    // the source from reading as still editable.
     videoEl.hidden = s.phase !== "framing" && s.phase !== "preview";
-    if (s.phase !== "framing") videoEl.pause();
+    // Paused in every phase except framing and preview — `display:none`
+    // doesn't pause anything (see sourceIframe above), so idle/trimming still
+    // need this. Preview is exempt: doPublish's progress poll is a notifying
+    // setState every 500ms, and pausing here on each tick would fight a user
+    // who just pressed play on the source to compare it against the export.
+    if (s.phase !== "framing" && s.phase !== "preview") videoEl.pause();
   }
   if (canvasEl) canvasEl.hidden = s.phase !== "framing";
   if (outVideoEl) {
