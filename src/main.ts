@@ -628,6 +628,45 @@ async function doExport(): Promise<void> {
   });
 }
 
+/** Uploads the finished short as a private draft and remembers its id.
+ *
+ *  The percentage comes from polling rather than from this request, which
+ *  reports nothing until it finishes. Each tick is a notifying setState, so
+ *  the preview bar is rebuilt twice a second — safe only because every field
+ *  in it is disabled while `busy`, so there is no caret to lose. */
+async function doPublish(): Promise<void> {
+  const s = getState();
+  const title = s.ytTitle.trim();
+  if (title === "" || s.outName === "") return;
+  await guard("Publishing… 0%", async () => {
+    const poll = window.setInterval(() => {
+      void api
+        .publishProgress()
+        .then(({ sent, total }) => {
+          if (total > 0) {
+            setState({ busy: `Publishing… ${Math.round((sent / total) * 100)}%` });
+          }
+        })
+        // A dropped poll is not worth replacing the upload's own error with.
+        .catch(() => undefined);
+    }, 500);
+    try {
+      const { videoId } = await api.publish({
+        name: s.outName,
+        title,
+        description: s.ytDescription,
+        tags: s.ytTags,
+      });
+      setState({ ytVideoId: videoId });
+      bell();
+    } finally {
+      // Must run before guard's own finally clears `busy`, or the next tick
+      // would set it straight back and strand the bar as busy forever.
+      clearInterval(poll);
+    }
+  });
+}
+
 /** One button per layout, each drawing its own cells. The diagram is
  *  generated from `cellsOf`, so a picker swatch cannot drift from what the
  *  layout actually composes — which a hand-drawn icon set would.
@@ -800,8 +839,7 @@ function renderFraming(): Node[] {
   ];
 }
 
-/** The preview bar: what came out, and the ways out of here. Publish joins
- *  it in a later task. */
+/** The preview bar: what came out, publishing it, and the ways out of here. */
 function renderPreview(): Node[] {
   const s = getState();
   // Called for its effect: it mounts the output <video> into the persistent
@@ -824,6 +862,63 @@ function renderPreview(): Node[] {
   // re-render.
   back.onclick = () => setState({ phase: "framing" });
 
+  const published = s.ytVideoId !== "";
+
+  const title = el("input", {
+    type: "text",
+    placeholder: "YouTube title (required)",
+    ariaLabel: "YouTube title",
+    className: "field-grow",
+    maxLength: 100,
+    value: s.ytTitle,
+    disabled: Boolean(s.busy) || published,
+  });
+  const description = el("textarea", {
+    placeholder: "Description",
+    ariaLabel: "YouTube description",
+    className: "field-grow",
+    rows: 2,
+    value: s.ytDescription,
+    disabled: Boolean(s.busy) || published,
+  });
+  const tags = el("input", {
+    type: "text",
+    placeholder: "tags, comma, separated",
+    ariaLabel: "YouTube tags",
+    size: 24,
+    value: s.ytTags,
+    disabled: Boolean(s.busy) || published,
+  });
+
+  const publish = el("button", {
+    className: "btn-solid",
+    textContent: "Publish (private)",
+    disabled: s.ytTitle.trim() === "" || Boolean(s.busy),
+  });
+  publish.onclick = () => void doPublish();
+
+  // Quiet, like every other text field in this app: a notifying update per
+  // keystroke rebuilds the very input being typed into and drops the caret.
+  // But Publish's `disabled` is gated on the title, and a quiet update
+  // reaches no render — so it is flipped in place here, exactly as the
+  // starter-title field does it in renderFraming.
+  title.oninput = () => {
+    setQuiet({ ytTitle: title.value });
+    publish.disabled = title.value.trim() === "" || Boolean(getState().busy);
+  };
+  description.oninput = () => setQuiet({ ytDescription: description.value });
+  tags.oninput = () => setQuiet({ ytTags: tags.value });
+
+  // Replaces Publish once the upload lands: the next step is on YouTube, and
+  // uploading the same file twice is never what was meant.
+  const studio = el("a", {
+    className: "btn-link",
+    href: `https://studio.youtube.com/video/${s.ytVideoId}/edit`,
+    target: "_blank",
+    rel: "noreferrer",
+    textContent: "Open in YouTube Studio →",
+  });
+
   return [
     el(
       "div",
@@ -833,7 +928,18 @@ function renderPreview(): Node[] {
         className: "badge",
         textContent: `${(s.outSize / 1e6).toFixed(1)} MB`,
       }),
+      published
+        ? el("span", { className: "badge badge-info", textContent: "uploaded — private" })
+        : el("span"),
       el("div", { className: "bar-end" }, finder, back),
+    ),
+    el(
+      "div",
+      { className: "bar-row" },
+      title,
+      description,
+      tags,
+      el("div", { className: "bar-end" }, published ? studio : publish),
     ),
   ];
 }

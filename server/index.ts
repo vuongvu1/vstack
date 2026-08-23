@@ -22,7 +22,7 @@ import {
 } from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
 import { checkStarter, prependStarter, speak } from "./starter.ts";
-import { checkYouTube } from "./youtube.ts";
+import { buildSnippet, checkYouTube, publishProgress, uploadVideo } from "./youtube.ts";
 import { fetchWindow, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
@@ -303,6 +303,31 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     });
     return send(res, 200, { ok: true });
   }
+
+  if (req.url === "/api/publish") {
+    const body = await json<Record<string, unknown>>(req);
+    if (!isOutName(body.name)) return send(res, 400, { error: "Bad output name." });
+    const path = outPath(body.name);
+    if (!existsSync(path)) return send(res, 404, { error: `${body.name} is not in out/.` });
+    const video = buildSnippet({
+      title: str(body.title, "title"),
+      description: str(body.description, "description"),
+      tags: str(body.tags, "tags"),
+    });
+    // After buildSnippet, not before: it is what trims, so a title of nothing
+    // but spaces has to be caught on the other side of it.
+    if (video.snippet.title === "") return send(res, 400, { error: "title must not be blank." });
+    const videoId = await uploadVideo({ path, size: statSync(path).size, video });
+    console.warn(`vstack: uploaded ${body.name} as ${videoId} (private)`);
+    return send(res, 200, {
+      videoId,
+      url: `https://studio.youtube.com/video/${videoId}/edit`,
+    });
+  }
+
+  // Polled twice a second by the client while an upload runs. Exact string
+  // equality above means this never shadows /api/publish and vice versa.
+  if (req.url === "/api/publish/progress") return send(res, 200, publishProgress());
 
   return send(res, 404, { error: `No route ${req.url}` });
 }

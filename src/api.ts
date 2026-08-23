@@ -105,3 +105,22 @@ export async function exportClip(body: {
 export async function reveal(name: string): Promise<void> {
   await post("/api/reveal", { name });
 }
+
+export async function publish(body: {
+  name: string;
+  title: string;
+  description: string;
+  tags: string;
+}): Promise<{ videoId: string; url: string }> {
+  return (await post("/api/publish", body)).json() as Promise<{
+    videoId: string;
+    url: string;
+  }>;
+}
+
+export async function publishProgress(): Promise<{ sent: number; total: number }> {
+  return (await post("/api/publish/progress", {})).json() as Promise<{
+    sent: number;
+    total: number;
+  }>;
+}

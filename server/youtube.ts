@@ -7,7 +7,8 @@
  *  draft" and the public flip stays a manual step in YouTube Studio. That is
  *  not a limitation to route around; it is what this module does. */
 
-import { existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
+import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -107,6 +108,39 @@ export async function exchangeCode(
   return body.refresh_token;
 }
 
+/** Access tokens last an hour; a publish takes seconds. Cached with 30s of
+ *  slack so a token cannot expire between the check and the upload. */
+let cached: { token: string; expires: number } | null = null;
+
+export async function accessToken(): Promise<string> {
+  if (cached !== null && cached.expires > Date.now() + 30_000) return cached.token;
+  const client = readClient();
+  const refresh = readRefreshToken();
+  if (client === null || refresh === null) throw new Error(AUTH_HINT);
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: client.clientId,
+      client_secret: client.clientSecret,
+      refresh_token: refresh,
+      grant_type: "refresh_token",
+    }),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    // A 400 or 401 here is almost always Google having expired the refresh
+    // token, which it does after 7 days for any consent screen still in
+    // Testing publishing status. Naming the fix matters more than the raw
+    // "invalid_grant" would.
+    if (res.status === 400 || res.status === 401) throw new Error(`${AUTH_HINT}\n\n${text}`);
+    throw new Error(`Token refresh failed (${res.status}): ${text}`);
+  }
+  const body = JSON.parse(text) as { access_token: string; expires_in: number };
+  cached = { token: body.access_token, expires: Date.now() + body.expires_in * 1000 };
+  return body.access_token;
+}
+
 export type SnippetInput = { title: string; description: string; tags: string };
 
 export type VideoResource = {
@@ -147,4 +181,95 @@ export function buildSnippet(input: SnippetInput): VideoResource {
       selfDeclaredMadeForKids: false,
     },
   };
+}
+
+// ponytail: one global upload slot — this is a single-user local tool and
+// two publishes cannot overlap in the UI. Key it by output name if that ever
+// stops being true.
+let progress = { sent: 0, total: 0 };
+
+export function publishProgress(): { sent: number; total: number } {
+  return { ...progress };
+}
+
+/** The resumable protocol's second leg. Deliberately `node:https` and not
+ *  `fetch`: this PUT needs an exact `Content-Length`, and `Content-Length` is
+ *  a forbidden header name under the fetch spec — a fetch with a stream body
+ *  is free to drop it and send chunked, which this endpoint does not accept.
+ *  Piping a read stream into an https request also gives byte-level progress
+ *  from one `data` listener, with no transform stream in the way. */
+function putVideo(session: string, path: string, size: number): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const req = httpsRequest(
+      session,
+      { method: "PUT", headers: { "content-type": "video/mp4", "content-length": size } },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          if ((res.statusCode ?? 0) >= 300) {
+            // Google's own body, verbatim — the same posture yt-dlp and
+            // ffmpeg stderr already get. A 403 here is usually the ~100
+            // uploads/day this endpoint has had its own quota for since
+            // June 2026.
+            reject(new Error(`Upload failed (${res.statusCode ?? 0}): ${text}`));
+          } else {
+            resolve(text);
+          }
+        });
+      },
+    );
+    req.on("error", reject);
+    const file = createReadStream(path);
+    file.on("data", (chunk: Buffer) => {
+      progress = { sent: progress.sent + chunk.length, total: size };
+    });
+    file.on("error", reject);
+    file.pipe(req);
+  });
+}
+
+/** Uploads a finished short and returns its video id. It lands **private**
+ *  and there is no option: an unaudited API project has every videos.insert
+ *  locked to private viewing, so the public flip is a manual step in Studio. */
+export async function uploadVideo(opts: {
+  path: string;
+  size: number;
+  video: VideoResource;
+}): Promise<string> {
+  const token = await accessToken();
+  const init = await fetch(
+    "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json; charset=UTF-8",
+        "x-upload-content-length": String(opts.size),
+        "x-upload-content-type": "video/mp4",
+      },
+      body: JSON.stringify(opts.video),
+    },
+  );
+  if (!init.ok) {
+    throw new Error(`YouTube refused the upload session (${init.status}): ${await init.text()}`);
+  }
+  const session = init.headers.get("location");
+  if (session === null) {
+    throw new Error("YouTube accepted the session but returned no Location header.");
+  }
+
+  progress = { sent: 0, total: opts.size };
+  try {
+    const body = JSON.parse(await putVideo(session, opts.path, opts.size)) as { id?: string };
+    if (body.id === undefined) {
+      throw new Error("The upload succeeded but YouTube returned no video id.");
+    }
+    return body.id;
+  } finally {
+    // Reset on the failure path too — a stale 90% left behind would make the
+    // next publish look like it started three-quarters done.
+    progress = { sent: 0, total: 0 };
+  }
 }
