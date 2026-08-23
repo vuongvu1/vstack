@@ -163,7 +163,8 @@ unchanged — it is never removed, only toggled, and `.out > [hidden]` in
 `style.css` already covers it.
 
 In `preview` the canvas hides and the output video shows. The framing
-`<video>` stays **visible and paused** in the source column, so the result can
+`<video>` stays **visible and playable** in the source column — unlike every
+other phase it is hidden in, it is not force-paused here — so the result can
 be compared against what it was cut from; `videoEl.hidden` widens to
 `phase !== "framing" && phase !== "preview"`. The crop overlay needs no new
 rule — `boxesLayer`'s existing `phase !== "framing"` already hides it, which
