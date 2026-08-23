@@ -271,14 +271,24 @@ time the 7-day expiry Google applies to Testing-status consent screens bites.
 Setting the consent screen to "In production" — no verification needed for
 `youtube.upload` — stops the expiry.
 
-**A vertical thumbnail uploads fine and then renders as a black tile.**
-`thumbnails.set` accepted a 1080x1920 image without complaint — the log said
-success — and Studio showed black, because YouTube fits a thumbnail into its
-own 16:9 boxes and a 9:16 image lands in a 32%-wide strip with bars either
-side. `firstFrame` therefore scales to *cover* and crops
-(`force_original_aspect_ratio=increase` + `crop`), never `decrease` + `pad`.
-The crop is safe only because `renderTitleArt` centres the title block on
-`OUTPUT.h / 2` and the crop takes 607px around that same centre; a title of
+**`thumbnails.set` sets the 16:9 thumbnail, NOT the Shorts one — and
+Studio's Shorts thumbnail slot stays empty forever.** This looks exactly like
+a broken feature and is not one. The API stores the image (verified: the
+reply's `items` carries all five derived sizes and the signed `maxres` URL
+serves the real picture), but Studio's *Shorts* section shows a separate 9:16
+thumbnail that no Data API v3 method populates. The custom thumbnail is what
+search, embeds and suggested-video surfaces use; the Shorts player itself
+always shows a frame from the video, which here is the starter screen anyway.
+Setting the vertical Shorts thumbnail is a manual Studio job. Do not "fix"
+the empty slot — nothing in this codebase can.
+
+**The thumbnail is cropped to 16:9, never letterboxed.** Since
+`thumbnails.set` feeds 16:9 surfaces, uploading the raw 1080x1920 frame gets
+it pillarboxed into a 32%-wide strip with black either side — which at tile
+size reads as a black thumbnail. `firstFrame` therefore scales to *cover* and
+crops (`force_original_aspect_ratio=increase` + `crop`), never `decrease` +
+`pad`. The crop is safe only because `renderTitleArt` centres the title block
+on `OUTPUT.h / 2` and the crop takes 607px around that same centre; a title of
 four or more lines (180px each at `MAX_SIZE`) loses its outer lines from the
 thumbnail, though never from the video.
 

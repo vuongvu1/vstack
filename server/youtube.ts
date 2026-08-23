@@ -147,6 +147,11 @@ export async function accessToken(): Promise<string> {
   return body.access_token;
 }
 
+/** Only the part of `thumbnails.set`'s reply this module reads. */
+type ThumbnailSetResponse = {
+  items?: { maxres?: { url?: string } }[];
+};
+
 export type SnippetInput = { title: string; description: string; tags: string };
 
 export type VideoResource = {
@@ -348,12 +353,14 @@ export async function setThumbnail(videoId: string, jpeg: string): Promise<void>
     // Google's own body, verbatim, like every other failure in this module.
     throw new Error(`Thumbnail rejected (${res.status}): ${text}`);
   }
-  // A 2xx here is NOT proof the thumbnail is in use. The reply is a
-  // ThumbnailSetResponse listing the sizes YouTube actually generated, and
-  // an empty `items` is how "accepted, then not applied" looks from the
-  // outside — which a bare status check cannot tell apart from success.
-  // Logged rather than parsed: what YouTube returns here is the only view
-  // this scope has of what it stored, and `videos.list` would need a scope
-  // the auth script does not request.
-  console.warn(`vstack: thumbnails.set answered ${res.status}: ${text.trim()}`);
+  // The reply is a ThumbnailSetResponse listing the sizes YouTube generated.
+  // Only `maxres` is logged, and only because it is the one way to SEE the
+  // stored thumbnail from here: the URL is signed, so it fetches even for a
+  // private video, where the bare i.ytimg.com paths 404. `videos.list` would
+  // answer the same question but needs a scope the auth script does not
+  // request. A bare status check is not enough — an empty `items` would mean
+  // accepted-then-dropped, which looks identical to success from the status
+  // line alone.
+  const maxres = (JSON.parse(text) as ThumbnailSetResponse).items?.[0]?.maxres?.url;
+  console.warn(`vstack: thumbnail stored — ${maxres ?? "but YouTube listed no sizes"}`);
 }
