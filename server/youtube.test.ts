@@ -31,6 +31,16 @@ describe("buildSnippet", () => {
     expect(buildSnippet({ ...base, description: typed }).snippet.description).toBe(typed);
   });
 
+  // The `\b` in /#shorts\b/i is what makes this "a different word", not the
+  // tag. Without the boundary the regex matches here, no tag is appended,
+  // and the upload silently loses its #Shorts — every other test in this
+  // file passes with the boundary removed, so this is the one guarding it.
+  it("does not mistake a longer word starting with shorts for the tag", () => {
+    expect(buildSnippet({ ...base, description: "#shortsomething" }).snippet.description).toBe(
+      "#shortsomething\n\n#Shorts",
+    );
+  });
+
   it("splits tags on commas and drops the empties", () => {
     expect(buildSnippet({ ...base, tags: "an uong, com ,, nau an " }).snippet.tags).toEqual([
       "an uong",
