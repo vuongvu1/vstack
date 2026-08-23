@@ -2,7 +2,7 @@ import * as api from "./api.ts";
 import { mountEditor } from "./editor.ts";
 import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
-import { DESCRIPTION_TEMPLATE, defaultTitle } from "./defaults.ts";
+import { DESCRIPTION_TEMPLATE, TAGS_DEFAULT, defaultTitle } from "./defaults.ts";
 import { clock, parseTimestamp } from "./format.ts";
 import {
   DEFAULT_LAYOUT_ID,
@@ -623,6 +623,7 @@ async function doExport(): Promise<void> {
       // work this phase exists to remove.
       ytTitle: getState().ytTitle || defaultTitle(starterTitle),
       ytDescription: getState().ytDescription || DESCRIPTION_TEMPLATE,
+      ytTags: getState().ytTags || TAGS_DEFAULT,
       // A fresh file has not been published, whatever the last one did, and
       // its thumbnail state belongs to that upload rather than this file.
       ytVideoId: "",

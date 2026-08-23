@@ -31,6 +31,18 @@ Habi nè: https://www.youtube.com/@habine03
 Siini: https://www.youtube.com/@SiiniYT
 Sim: https://www.youtube.com/@simchan_hojo`;
 
+/** Pre-fills the tags field, which is comma-separated rather than
+ *  hashtagged — `buildSnippet` splits on commas and trims, so a `#` here
+ *  would ship a literal "#vtuber" as a tag.
+ *
+ *  Mirrors the description's tag set. "vtuber vietnam" is two words on
+ *  purpose: a hashtag has to be one token, a tag does not, and the spaced
+ *  form is what people actually type into search.
+ *
+ *  YouTube rejects an upload whose concatenated tags run past roughly 500
+ *  characters and nothing downstream truncates, so keep additions short. */
+export const TAGS_DEFAULT = "vtuber, vtubervn, vtuber vietnam, viral, shorts";
+
 /** The starter title plus the hashtags, capped for YouTube.
  *
  *  Room for the tags is reserved *first* and the title takes what is left.

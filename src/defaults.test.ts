@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DESCRIPTION_TEMPLATE, TITLE_HASHTAGS, YT_TITLE_MAX, defaultTitle } from "./defaults.ts";
+import {
+  DESCRIPTION_TEMPLATE,
+  TAGS_DEFAULT,
+  TITLE_HASHTAGS,
+  YT_TITLE_MAX,
+  defaultTitle,
+} from "./defaults.ts";
 
 describe("defaultTitle", () => {
   it("appends the hashtags to a short title", () => {
@@ -48,5 +54,27 @@ describe("DESCRIPTION_TEMPLATE", () => {
     expect(DESCRIPTION_TEMPLATE).toContain("https://www.youtube.com/@habine03");
     expect(DESCRIPTION_TEMPLATE).toContain("https://www.youtube.com/@SiiniYT");
     expect(DESCRIPTION_TEMPLATE).toContain("https://www.youtube.com/@simchan_hojo");
+  });
+});
+
+describe("TAGS_DEFAULT", () => {
+  // The field is comma-separated, not hashtags: buildSnippet splits on
+  // commas. A stray "#" would ship a literal "#vtuber" as a tag.
+  it("is comma-separated and carries no hashes", () => {
+    expect(TAGS_DEFAULT).toContain(",");
+    expect(TAGS_DEFAULT).not.toContain("#");
+  });
+
+  it("has no empty entries once split and trimmed", () => {
+    const tags = TAGS_DEFAULT.split(",").map((tag) => tag.trim());
+    expect(tags.length).toBeGreaterThan(0);
+    expect(tags.every((tag) => tag !== "")).toBe(true);
+  });
+
+  // YouTube rejects the whole upload when the concatenated tags run past
+  // roughly 500 characters, and nothing between this constant and the API
+  // truncates — so the default has to be comfortably clear of it by itself.
+  it("stays far under YouTube's total tag ceiling", () => {
+    expect(TAGS_DEFAULT.length).toBeLessThan(200);
   });
 });

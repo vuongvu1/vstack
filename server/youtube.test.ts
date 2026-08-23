@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { TAGS_DEFAULT } from "../src/defaults.ts";
 import { buildSnippet } from "./youtube.ts";
 
 const base = { title: "Ăn cơm chưa", description: "", tags: "" };
@@ -66,5 +67,20 @@ describe("buildSnippet", () => {
 
   it("files under People & Blogs", () => {
     expect(buildSnippet(base).snippet.categoryId).toBe("22");
+  });
+});
+
+describe("buildSnippet with the shipped defaults", () => {
+  // The constant and the parser have to agree, and they live on opposite
+  // sides of the client/server line — this is the assertion that fails if
+  // someone edits TAGS_DEFAULT into a space-separated or hashtagged list.
+  it("turns TAGS_DEFAULT into the tags YouTube receives", () => {
+    expect(buildSnippet({ ...base, tags: TAGS_DEFAULT }).snippet.tags).toEqual([
+      "vtuber",
+      "vtubervn",
+      "vtuber vietnam",
+      "viral",
+      "shorts",
+    ]);
   });
 });

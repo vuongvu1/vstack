@@ -321,7 +321,10 @@ verified by hand in a real browser and through a real export.
 `src/defaults.test.ts` covers `defaultTitle` — that the tags survive a
 200-character starter title, that no input can exceed 100, and that the
 description template still carries a shorts tag so `buildSnippet`'s append
-stays a no-op against it. `server/youtube.test.ts` covers `buildSnippet` and nothing else — it is where
+stays a no-op against it. `server/youtube.test.ts` feeds `TAGS_DEFAULT`
+through `buildSnippet`, which is what fails if the constant is ever edited
+into a space-separated or hashtagged list — the two live on opposite sides
+of the client/server line and nothing else makes them agree. `server/youtube.test.ts` covers `buildSnippet` and nothing else — it is where
 every decision that is awkward to change later lives (the 100-char title cap,
 `#Shorts` appended once and case-insensitively, private, not-made-for-kids).
 The HTTP calls, `open -R`, the preview bar and the auth script have no tests,
