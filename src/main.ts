@@ -180,7 +180,7 @@ function ensureSourcePlayer(videoId: string): void {
   player = null;
   sourceIframe = null;
 
-  void mountPlayer(sourceSlot, videoId)
+  void mountPlayer(sourceSlot, videoId, () => syncTransport?.())
     .then((p) => {
       if (playerFor !== videoId) return; // superseded before this resolved
       player = p;
@@ -196,6 +196,21 @@ function ensureSourcePlayer(videoId: string): void {
       setState({ error: err instanceof Error ? err.message : String(err) });
     });
 }
+
+// Relabels the Play/Pause button in place. The label has to follow the
+// *player*, not this app's clicks: YouTube's own overlay controls start and
+// stop playback without going through the wrapper, so the only honest source
+// is the API's onStateChange, which ensureSourcePlayer forwards here.
+//
+// Updated in place rather than through render(): state changes fire several
+// times per play (buffering, playing, paused), and a render per event would
+// rebuild the whole bar — dropping the cursor out of the timestamp field
+// mid-typing, exactly the hazard the quiet oninput handlers avoid. Same
+// in-place pattern as the Export button's disabled flag in renderFraming.
+//
+// renderTrimming reassigns this on every render; a stale closure just writes
+// to a detached button, which is harmless.
+let syncTransport: (() => void) | null = null;
 
 /** The playhead nudges, in seconds, in the order they appear. Signed rather
  *  than a magnitude plus a direction: the order on screen *is* the list. */
@@ -279,6 +294,53 @@ function renderTrimming(): Node[] {
     save();
   };
 
+  // Playback transport. The iframe has YouTube's own controls, but they are
+  // only reachable by clicking *into* the video — which then swallows the
+  // keyboard, and puts the pointer nowhere near the marking buttons. These
+  // sit in the bar with everything else the trim needs.
+  const transportLabel = () => (player?.playing() === true ? "Pause" : "Play");
+  const toggle = el("button", {
+    textContent: transportLabel(),
+    title: "Play or pause",
+    disabled: !ready,
+  });
+  syncTransport = () => {
+    toggle.textContent = transportLabel();
+  };
+  toggle.onclick = () => {
+    if (!player) return;
+    // The state is read *once*, before acting, and the label follows the
+    // intent rather than a re-read: YouTube reports the new state
+    // asynchronously, so a second playing() call here would still describe
+    // the old state — and would start lying the day that changes.
+    // onStateChange corrects the label anyway if the play never takes.
+    const wasPlaying = player.playing();
+    if (wasPlaying) player.pause();
+    else player.play();
+    toggle.textContent = wasPlaying ? "Play" : "Pause";
+  };
+
+  // Jump to a mark, to review the cut without hunting for it on the strip.
+  // Deliberately no pause(): YouTube's seekTo resumes a playing player and
+  // leaves a paused one paused, so a jump preserves whatever the user was
+  // doing — unlike the nudges below, where the pause is the point.
+  const jump = (label: string, at: number, enabled: boolean) => {
+    const b = el("button", {
+      className: "btn-gray",
+      textContent: label,
+      title: `Jump to ${clock(at)}`,
+      disabled: !ready || !enabled,
+    });
+    b.onclick = () => player?.seekTo(at);
+    return b;
+  };
+  // `end` is enabled only once set, which `end > 0` decides exactly: an
+  // unset end is 0, and a *set* end of 0 would be an empty trim. Start
+  // needs no such gate — an unset start is 0, which is also where the trim
+  // genuinely begins, so the button is never wrong, only redundant.
+  const toStart = jump("⇤ Start", s.start, true);
+  const toEnd = jump("End ⇥", s.end, s.end > 0);
+
   // Fine seeking. YouTube's own arrow keys move 5s, which is coarser than a
   // cut needs — and the iframe only hears them when it has focus, which it
   // loses to every button in this bar. These nudge the *playhead*, not the
@@ -328,7 +390,7 @@ function renderTrimming(): Node[] {
   });
   go.onclick = () => void openWindow();
 
-  const controls: Node[] = [setStart, setEnd, nudges];
+  const controls: Node[] = [setStart, setEnd];
   if (failed) {
     // One attempt per click, never automatic — see ensureSourcePlayer.
     const retry = el("button", { className: "btn-gray", textContent: "Retry" });
@@ -353,16 +415,16 @@ function renderTrimming(): Node[] {
     return "";
   }, !ready);
 
-  // Two rows, because one row of nine controls wrapped wherever it ran out of
-  // width — which put Continue, the only phase-advancing action, on a line of
-  // its own below everything else.
+  // Three rows, grouped by what each row is *for*, because one row of a dozen
+  // controls wrapped wherever it ran out of width — which put Continue, the
+  // only phase-advancing action, on a line of its own below everything else.
   //
   // The strip gets the first row to itself (plus the marks it describes): it
-  // is `flex: 1 1 240px`, so sharing a row with eight other controls squeezed
-  // the one control whose whole job is being clicked precisely. Every marking
-  // control is on the second row, in the order the work happens — mark, nudge
-  // the playhead, jump to a pasted timestamp — with Continue pushed to the far
-  // end, where the advancing action sits in every other phase.
+  // is `flex: 1 1 240px`, so sharing a row squeezed the one control whose
+  // whole job is being clicked precisely. Then everything that moves the
+  // playhead — play, jump to a mark, nudge — and last everything that sets
+  // one, with Continue pushed to the far end where the advancing action sits
+  // in every other phase.
   return [
     el(
       "div",
@@ -375,6 +437,7 @@ function renderTrimming(): Node[] {
       }),
       marks,
     ),
+    el("div", { className: "bar-row" }, toggle, toStart, toEnd, nudges),
     el(
       "div",
       { className: "bar-row" },

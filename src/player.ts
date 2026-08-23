@@ -2,10 +2,21 @@ type YtErrorEvent = { data: number };
 
 type YtPlayerInstance = {
   getCurrentTime(): number;
+  getPlayerState(): number;
   seekTo(s: number, allow: boolean): void;
+  playVideo(): void;
   pauseVideo(): void;
   destroy(): void;
 };
+
+/** `getPlayerState`'s codes, per
+ *  https://developers.google.com/youtube/iframe_api_reference#Playback_status.
+ *  Only the two that mean "rolling, or about to be" are named: BUFFERING
+ *  counts as playing because the user's intent while it buffers is to play,
+ *  so a Pause button has to be offered (not a Play button that would
+ *  re-issue playVideo and do nothing visible). */
+const STATE_PLAYING = 1;
+const STATE_BUFFERING = 3;
 
 type YtApi = {
   Player: new (
@@ -13,7 +24,11 @@ type YtApi = {
     opts: {
       videoId: string;
       playerVars?: Record<string, number | string>;
-      events?: { onReady?: () => void; onError?: (event: YtErrorEvent) => void };
+      events?: {
+        onReady?: () => void;
+        onError?: (event: YtErrorEvent) => void;
+        onStateChange?: () => void;
+      };
     },
   ) => YtPlayerInstance;
 };
@@ -28,6 +43,11 @@ declare global {
 export type YtPlayer = {
   currentTime(): number;
   seekTo(s: number): void;
+  /** True while playing or buffering — i.e. whenever the right control to
+   *  offer is Pause. Read on demand rather than cached: YouTube's own
+   *  overlay controls change the state without going through this wrapper. */
+  playing(): boolean;
+  play(): void;
   pause(): void;
   destroy(): void;
 };
@@ -114,7 +134,11 @@ function loadApi(): Promise<YtApi> {
  *  destroyed so its iframe doesn't linger in `host` as an orphan. A caller
  *  that retries after a rejection must not accumulate dead nodes in
  *  `host` on every attempt. */
-export async function mountPlayer(host: HTMLElement, videoId: string): Promise<YtPlayer> {
+export async function mountPlayer(
+  host: HTMLElement,
+  videoId: string,
+  onStateChange?: () => void,
+): Promise<YtPlayer> {
   const YT = await loadApi();
   const slot = document.createElement("div");
   host.append(slot);
@@ -139,6 +163,12 @@ export async function mountPlayer(host: HTMLElement, videoId: string): Promise<Y
         videoId,
         playerVars: { rel: 0, modestbranding: 1 },
         events: {
+          // Fires for YouTube's *own* controls too — clicking the video
+          // itself, or the overlay play button — which is the whole reason
+          // a caller cannot just track state through its own play()/pause()
+          // calls. Can arrive before onReady, so callers must tolerate being
+          // told about a player they have not been handed yet.
+          onStateChange,
           onReady: () => {
             if (settled) return;
             settled = true;
@@ -146,6 +176,11 @@ export async function mountPlayer(host: HTMLElement, videoId: string): Promise<Y
             resolve({
               currentTime: () => p.getCurrentTime(),
               seekTo: (s) => p.seekTo(s, true),
+              playing: () => {
+                const state = p.getPlayerState();
+                return state === STATE_PLAYING || state === STATE_BUFFERING;
+              },
+              play: () => p.playVideo(),
               pause: () => p.pauseVideo(),
               destroy: () => p.destroy(),
             });
