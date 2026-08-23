@@ -76,9 +76,13 @@ const code = await new Promise<string>((resolve, reject) => {
     const failed = url.searchParams.get("error");
     const ok = got !== null && url.searchParams.get("state") === state;
     res.writeHead(ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    // Deliberately a fixed string, never the `error` query parameter: this
+    // body is served as text/html, and echoing an attacker-supplied value
+    // into it is reflected XSS. The real reason is on the terminal, via the
+    // rejected Error below.
     res.end(
       `<!doctype html><meta charset="utf-8"><p style="font:16px system-ui">${
-        ok ? "Authorised — close this tab." : `Failed: ${failed ?? "no code"}`
+        ok ? "Authorised — close this tab." : "Authorisation failed — see the terminal."
       }</p>`,
     );
     server.close();
