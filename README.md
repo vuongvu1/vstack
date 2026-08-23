@@ -41,7 +41,7 @@ Videos under 3 minutes skip the trimming step and open straight into framing.
 
 ## Other commands
 
-    pnpm test     # 63 tests
+    pnpm test     # 150 tests
     pnpm build    # tsc && vite build
 
 ## How it behaves
@@ -54,8 +54,35 @@ Videos under 3 minutes skip the trimming step and open straight into framing.
   re-fetch returns different dimensions, since the rects are stored in source pixels.
 - **Export** blocks when the range is empty or the marks fall outside the fetched
   window; a selection over 3 minutes warns (YouTube Shorts' own cap) but is allowed.
-- **`media/`** is a cache and is gitignored. It grows without eviction; its size is
-  logged at boot and after each fetch.
+- **Exports land in `out/`**, not your Downloads folder, next to the `media/` clip
+  they were cut from. The finished file plays back in the app before you decide
+  whether to publish it.
+- **`media/`** and **`out/`** are both caches and both gitignored. Neither evicts;
+  `media/`'s size is logged at boot and after each fetch.
+
+## Publishing
+
+A finished short can be uploaded straight to your YouTube channel from the
+preview screen. Uploads land **private** — an unaudited YouTube Data API project
+cannot upload public video — so making one public is a manual step in YouTube
+Studio afterwards.
+
+One-time setup, in [Google Cloud Console](https://console.cloud.google.com):
+
+1. Create a project and enable the **YouTube Data API v3**.
+2. OAuth consent screen → External → add yourself as a test user → set
+   publishing status to **In production** (needs no verification for this
+   scope; left on Testing, Google expires the token after 7 days).
+3. Credentials → Create credentials → OAuth client ID → **Desktop app**.
+4. Download the JSON to `~/.vstack/youtube-client.json`.
+
+Then run the one-off auth dance:
+
+    pnpm youtube-auth
+
+It opens Google's consent screen and writes `~/.vstack/youtube-token.json`. Run
+it again any time publishing fails with an authorisation error. Without either
+file, everything except Publish still works.
 
 ## Troubleshooting
 

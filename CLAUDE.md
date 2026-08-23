@@ -17,7 +17,11 @@ are out of scope and that `xstack` produces `[v]` directly, plus
 `docs/specs/2026-08-22-vstack-starter-screen-design.md`, which covers the
 title card prepended to every export and supersedes the layouts doc's
 `/api/export` body again (`starterTitle` + `titlePng` on top of `layoutId` +
-`boxes`, and no `title` — the starter title names the file now).
+`boxes`, and no `title` — the starter title names the file now), plus
+`docs/specs/2026-08-23-vstack-publish-design.md`, which covers `out/`, the
+`preview` phase and publishing, and supersedes the starter-screen doc's
+`/api/export` *response* — that route answers with JSON now and leaves the
+file on disk rather than streaming an attachment back.
 `docs/plans/2026-08-20-vstack.md` is the historical build plan and carries
 inline "as built" corrections; treat it as a record, not as instructions.
 
@@ -26,9 +30,10 @@ inline "as built" corrections; treat it as a record, not as instructions.
 ```
 pnpm server   # backend on 127.0.0.1:8787   (node runs .ts directly, no build)
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 131 tests
+pnpm test     # vitest, 150 tests
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's TTS voice (see below)
+pnpm youtube-auth  # one-off OAuth setup for publishing (see server/youtube.ts)
 ```
 
 Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH, plus macOS `say` with a
@@ -39,8 +44,9 @@ all of it at boot and exits with an install hint if any is missing.
 
 ```
 server/errors.ts   HttpError (status + message), toolError (stderr tail)
-server/ffmpeg.ts   MEDIA_DIR, clipName/clipPath, probeFile, buildFilter,
-                   assertBoxes, exportClip, reportCache
+server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, outName/outPath,
+                   isOutName, probeFile, buildFilter, assertBoxes, exportClip,
+                   reportCache
 server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
 server/starter.ts  MUSIC_PATH/CUE_PATH, VOICE, starterDuration, checkStarter,
                    installedVoices, speak, prependStarter (the title card,
@@ -48,34 +54,44 @@ server/starter.ts  MUSIC_PATH/CUE_PATH, VOICE, starterDuration, checkStarter,
 scripts/audition.ts  `pnpm voices` — speaks a title in each installed voice
 server/assets/     starter-music.mp3 (the bed), before-video-start-sound.mp3
                    (the cue before the cut)
+server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
+                   buildSnippet, accessToken, uploadVideo, publishProgress
+scripts/youtube-auth.ts  `pnpm youtube-auth` — the one-off OAuth dance
 server/ytdlp.ts    videoIdFrom, probe, fetchWindow
-server/index.ts    3 routes, body validators, boot checks
+server/index.ts    6 routes, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/layout.ts      nine layout presets, cellsOf, ratioOf, defaultBoxes
 src/frame.ts       GUTTER/CORNER_RADIUS, windowOf/windowsOf, maskRgba
 src/starter.ts     TITLE_FONT, renderTitleArt (title → transparent PNG)
 src/state.ts       AppState, setState/setQuiet, save/restore
-src/api.ts         3 fetch wrappers
+src/api.ts         6 fetch wrappers
 src/format.ts      mmss / clock / slugify (shared client + server)
 src/player.ts      YT IFrame API wrapper + trim strip
 src/editor.ts      crop-box drag/resize overlay
 src/preview.ts     canvas composite rAF loop
-src/main.ts        persistent shell, phase machine, all three phases
+src/main.ts        persistent shell, phase machine, all four phases
 media/             clip cache (gitignored)
+out/               finished shorts (gitignored)
 ```
 
-Layering is strict and acyclic: `errors ← {ffmpeg, starter} ← {ytdlp, mask} ←
-index` on the server, `geometry ← layout ← frame ← everything` on the client.
+Layering is strict and acyclic: `errors ← {ffmpeg, starter, youtube} ←
+{ytdlp, mask} ← index` on the server, `geometry ← layout ← frame ←
+everything` on the client.
 `starter.ts` sits beside `ffmpeg.ts`, not above it, because it takes paths in
-the caller's temp dir and never needs `MEDIA_DIR`.
+the caller's temp dir and never needs `MEDIA_DIR`. `youtube.ts` sits beside
+both for the same reason — it re-derives `CONFIG_DIR` under `~/.vstack/`
+itself rather than importing `MEDIA_DIR` or `OUT_DIR` from `ffmpeg.ts`.
 `geometry.ts` never imports `layout.ts` — that is why `defaultBoxes` lives in
 `layout.ts` instead of `geometry.ts`. `mask.ts` sits *above* `ffmpeg.ts`
 because it needs `MEDIA_DIR`, which is why the mask path is passed into
 `exportClip` as `ExportOpts.mask` rather than resolved inside it.
 
-Three phases: `idle` (URL) → `trimming` (YouTube iframe, mark start/end, no
-download) → `framing` (real `<video>` of the fetched window, crop boxes, canvas
-composite, export). Videos under `SKIP_TRIM_UNDER` (180s) skip `trimming`.
+Four phases: `idle` (URL) → `trimming` (YouTube iframe, mark start/end, no
+download) → `framing` (real `<video>` of the fetched window, crop boxes,
+canvas composite, export) → `preview` (the finished file from `out/`, played
+back, with publish-to-YouTube). Export no longer downloads: it writes
+`out/<slug>-<mmss>-<mmss>.mp4` and advances the phase. Videos under
+`SKIP_TRIM_UNDER` (180s) skip `trimming`.
 Marking is `trimming`-only — the framing bar has no Set Start/Set End, so a
 skipped-trim video reaches marking through "Back to trim". The transport row
 drives the iframe from the bar because YouTube's own controls are only
@@ -128,6 +144,23 @@ and a fractional overlay offset does not survive ffmpeg.
 **Geometry uses `/api/window`'s dimensions, never `/api/probe`'s.** Probe reports the best available format — 3840×2160 for a video whose fetched clip is 1920×1080. Framing on probe's numbers mis-crops every export.
 
 Two invariants are mutation-tested and should stay that way: swapping two entries in `buildFilter`'s `xstack` `layout=` string fails the 3-cell pixel assertions in `server/ffmpeg.test.ts`; making `clampToBounds` shrink fails 3 geometry tests.
+
+**`isOutName` is the one client-supplied path component this API accepts.**
+Everywhere else the server takes window bounds or an id and reconstructs a
+path itself, so there is nothing to validate. Preview breaks that — publish
+and reveal both name a file that already exists — so the name is checked
+against exactly what `slugify` + `mmss` can emit (the `OUT_NAME` regex in
+`server/ffmpeg.ts`), plus an `existsSync` in `OUT_DIR`. Loosen the pattern and
+`open -R` and an upload both point at whatever the caller asked for.
+
+**Uploads are private and there is no option.** An unaudited YouTube Data API
+project has every `videos.insert` locked to private viewing. `buildSnippet`
+hardcodes `privacyStatus: "private"` and `selfDeclaredMadeForKids: false` —
+the second is required by the API, and an upload without it is rejected.
+
+**The preview URL carries the file's mtime.** The output name is stable
+across re-exports, so `/out/<name>` with no cache-buster re-shows the
+*previous* render — a fixed crop looks like it changed nothing.
 
 ## Gotchas that each cost real time
 
@@ -199,6 +232,41 @@ overlays the title art and concatenates. Folding it into the export's graph
 means a `split`/`trim`/`loop` chain *and* turning `-ss`/`-t` into filters,
 because an output `-t` would truncate the concatenation rather than the clip.
 
+**Vite's dev server serves the project root statically.** That is why
+`/media/<id>/<clip>.mp4` and `/out/<name>.mp4` reach the browser with no
+route behind them — and equally why nothing private may sit under the project
+root. Credentials live in `~/.vstack/`; a `secrets/` directory here would be
+readable at `/secrets/youtube-token.json` by any page the browser has open.
+
+**The resumable upload's PUT uses `node:https`, not `fetch`.** It needs an
+exact `Content-Length`, and `Content-Length` is a forbidden header name under
+the fetch spec — a fetch with a stream body may drop it and send chunked,
+which the endpoint refuses. `https.request` also gives byte progress from one
+`data` listener.
+
+**A response stream with no `error` listener can hang a promise forever.**
+Node swallows a destroyed `http.IncomingMessage` that nobody listens to —
+`end` never fires, so nothing ever settles. `putVideo`'s `res.on("error",
+fail)` exists because a reviewer reproduced exactly that: `busy` stuck and the
+progress poll ticking with no way out but a reload. The 10-minute
+`req.setTimeout` covers the sibling failure, a connection that stalls with
+neither a FIN nor an RST to trigger either handler. `seenResponse` then
+decides who owns a failure once both sides can throw: after headers arrive, a
+write-side `EPIPE` is just the already-closed socket noticing, so reporting
+it instead of Google's real response body would trade an actionable message
+for a bare `EPIPE`.
+
+**`prompt=consent`, not just `access_type=offline`.** The first gets a
+refresh token at all; the second gets one *again* on a re-run, which is every
+time the 7-day expiry Google applies to Testing-status consent screens bites.
+Setting the consent screen to "In production" — no verification needed for
+`youtube.upload` — stops the expiry.
+
+**The export writes `out/<name>.part.mp4` and renames.** A half-written file
+must never be servable under a name the client can request, and the rename
+has to stay on one volume: `$TMPDIR` is a different filesystem on macOS, so
+rendering into the temp dir and renaming into the project risks `EXDEV`.
+
 ## Conventions
 
 - `import type` for type-only imports; explicit `.ts` extensions on relative imports (Node requires them; Vite accepts them).
@@ -227,6 +295,13 @@ assertion that caught `hasAudio` reading the wrong ffprobe line). Each window
 is one where only that layer can be heard, so all four are load-bearing. `src/starter.ts` is DOM-driven and untested like the rest — it was
 verified by hand in a real browser and through a real export.
 `state.test.ts` covers the save-gating that guards against erasing framed boxes. `ytdlp.test.ts` covers `videoIdFrom`, the trust boundary that decides whether a subprocess spawns.
+`server/youtube.test.ts` covers `buildSnippet` and nothing else — it is where
+every decision that is awkward to change later lives (the 100-char title cap,
+`#Shorts` appended once and case-insensitively, private, not-made-for-kids).
+The HTTP calls, `open -R`, the preview bar and the auth script have no tests,
+like the rest of the network and DOM surface. The out-name tests in
+`server/ffmpeg.test.ts` are the traversal guard and get the same exhaustive
+treatment `videoIdFrom` does.
 
 DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by design — vitest runs `environment: "node"` here and those behaviours are verified by hand.
 
@@ -238,3 +313,11 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
 - The bundled `starter-music.mp3` opens on a soft intro (mean -14 dB at 0:00 against -3 dB by 0:20) and the screen is only a couple of seconds long, so the bed hears the quietest part of the track. `MUSIC_START` and `MUSIC_GAIN` in `server/starter.ts` are the two knobs.
 - The starter screen makes macOS-only tooling a hard dependency: `say` and its `Linh` (vi_VN) voice. `checkStarter` fails the boot with the System Settings path if the voice is missing, and `server/starter.test.ts` will fail on a machine without it.
 - **`Linh` is the only Vietnamese voice macOS installs.** The novelty family (Eddy, Flo, Grandma, Rocko…) ships for 14 locales and vi_VN is not one of them, so "use a different voice" means either downloading one (an Enhanced/Premium `Linh` keeps the same name, so no code change) or accepting a non-Vietnamese voice mangling the diacritics. Audition with `pnpm voices [title] [voice...]` — it writes one file per voice to `$TMPDIR/vstack-voices` and speaks each aloud unless `--quiet`. Select with `VSTACK_VOICE="<name>" pnpm server`; the name must match `say -v '?'` exactly, parentheses and all, and `checkStarter` rejects it at boot if not.
+- `out/` grows without eviction, like `media/`. Nothing prunes it.
+- Publishing needs `~/.vstack/youtube-client.json` (a **Desktop app** OAuth
+  client from Google Cloud Console, with YouTube Data API v3 enabled) and a
+  token from `pnpm youtube-auth`. Missing either is a boot *warning*, not a
+  boot failure — everything except Publish works without them.
+- Uploads land private and cannot be made public from here; that is Google's
+  audit rule for unaudited API projects, not a missing feature. The endpoint
+  also has its own ~100 uploads/day quota.
