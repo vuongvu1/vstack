@@ -243,16 +243,26 @@ export async function exportClip(opts: ExportOpts): Promise<string> {
   return opts.out;
 }
 
-/** The first frame of a finished export, as a JPEG — which for a vstack
- *  output is the starter screen: the blurred opening frame with the title
- *  over it. That is the thumbnail, so there is nothing to render here, only
- *  a frame to lift.
+/** The first frame of a finished export, as a 1280x720 JPEG — which for a
+ *  vstack output is the starter screen: the blurred opening frame with the
+ *  title over it. There is nothing to render here, only a frame to lift and
+ *  reshape.
+ *
+ *  **16:9, cropped, never letterboxed.** YouTube accepts a 1080x1920
+ *  thumbnail and then fits it into its own 16:9 boxes, which leaves the
+ *  picture in a 32%-wide strip with black either side — at the tile size a
+ *  thumbnail is actually viewed, that reads as blank. Verified against a
+ *  real upload: the API took the vertical image without complaint and
+ *  Studio showed black. So the frame is scaled to *cover* and cropped.
+ *
+ *  Cropping is safe because `renderTitleArt` centres the title block
+ *  vertically (`OUTPUT.h / 2`), and the crop is 607px of source height taken
+ *  around that same centre. Its limit: lines are 180px at `MAX_SIZE`, so a
+ *  title of four or more lines loses its outer lines from the *thumbnail*.
+ *  The video itself is untouched either way.
  *
  *  `-q:v 3` rather than lossless because `thumbnails.set` refuses anything
- *  over 2 MB, and a 1080x1920 still can clear that uncompressed. The output
- *  keeps the source's dimensions: YouTube accepts a vertical thumbnail and
- *  Shorts surfaces show it upright, which is the whole point of using the
- *  title card.
+ *  over 2 MB.
  *
  *  The caller owns `out` and must put it somewhere disposable — never in
  *  OUT_DIR, which is servable and is swept by nothing. */
@@ -260,7 +270,17 @@ export async function firstFrame(input: string, out: string): Promise<string> {
   try {
     await run(
       "ffmpeg",
-      ["-v", "error", "-i", input, "-frames:v", "1", "-q:v", "3", "-y", out],
+      [
+        "-v", "error",
+        "-i", input,
+        "-frames:v", "1",
+        // increase + crop, not decrease + pad: cover the 16:9 box and trim
+        // the overflow, rather than fitting inside it and filling the rest
+        // with bars.
+        "-vf", "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720",
+        "-q:v", "3",
+        "-y", out,
+      ],
       { maxBuffer: 16 << 20 },
     );
   } catch (err) {

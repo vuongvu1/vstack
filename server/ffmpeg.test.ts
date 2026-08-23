@@ -376,23 +376,61 @@ describe("exportClip", () => {
   });
 });
 
-describe("firstFrame", () => {
-  // The published thumbnail is this call's output, so the two things YouTube
-  // refuses are what get asserted: a non-JPEG body and anything over 2 MB.
-  it("writes the source's first frame as a JPEG at the source's size", async () => {
-    const thumb = join(dir, "thumb.jpg");
-    await firstFrame(src, thumb);
+/** Like pixelAt, but for a still of arbitrary width — the thumbnail is
+ *  1280 wide, not the 1080 pixelAt's stride assumes. */
+async function pixelIn(path: string, width: number, x: number, y: number) {
+  const { stdout } = await run(
+    "ffmpeg",
+    ["-v", "error", "-i", path, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+    { encoding: "buffer", maxBuffer: 64 << 20 },
+  );
+  const buf = stdout as unknown as Buffer;
+  const i = (y * width + x) * 3;
+  return { r: buf[i] ?? 0, g: buf[i + 1] ?? 0, b: buf[i + 2] ?? 0 };
+}
 
-    const { width, height } = await probeFile(thumb);
-    expect({ width, height }).toEqual({ width: 1920, height: 1080 });
+describe("firstFrame", () => {
+  // A 1080x1920 source in three stacked bands, red over green over blue. A
+  // 16:9 crop of it is 607px of source height taken around the centre, which
+  // lands entirely inside the green band — so every CORNER of the output
+  // being green is what proves the frame was cropped full-bleed. Letterboxing
+  // a vertical image into 16:9 is the bug this replaced: it put the picture
+  // in a 32%-wide strip and black in those corners, which reads as a blank
+  // thumbnail at the size YouTube actually shows one.
+  it("crops a vertical source to a full-bleed 1280x720 JPEG", async () => {
+    const vert = join(dir, "vertical.mp4");
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i", "color=c=red:s=1080x640:d=1:r=10",
+      "-f", "lavfi", "-i", "color=c=green:s=1080x640:d=1:r=10",
+      "-f", "lavfi", "-i", "color=c=blue:s=1080x640:d=1:r=10",
+      "-filter_complex", "[0:v][1:v][2:v]vstack=inputs=3[v]",
+      "-map", "[v]", "-pix_fmt", "yuv420p", "-y", vert,
+    ]);
+
+    const thumb = join(dir, "thumb.jpg");
+    await firstFrame(vert, thumb);
+
+    expect(await probeFile(thumb)).toEqual({ width: 1280, height: 720 });
+
+    for (const [x, y] of [[4, 4], [1275, 4], [4, 715], [1275, 715], [640, 360]]) {
+      const px = await pixelIn(thumb, 1280, x ?? 0, y ?? 0);
+      expect(px.g).toBeGreaterThan(120);
+      expect(px.r).toBeLessThan(100);
+      expect(px.b).toBeLessThan(100);
+    }
+  });
+
+  it("writes a JPEG small enough for thumbnails.set", async () => {
+    const thumb = join(dir, "wide.jpg");
+    await firstFrame(src, thumb);
 
     // The API takes image/jpeg by MIME and validates the bytes; a PNG under a
     // .jpg name is rejected. SOI marker, not the extension.
     const bytes = await readFile(thumb);
     expect(bytes.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]));
 
-    // thumbnails.set caps uploads at 2 MB. This is what the quality flag is
-    // for — a lossless still of a 1080p frame would clear it easily.
+    // thumbnails.set caps uploads at 2 MB.
     expect((await stat(thumb)).size).toBeLessThan(2 << 20);
   });
 });

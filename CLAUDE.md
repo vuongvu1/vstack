@@ -271,6 +271,17 @@ time the 7-day expiry Google applies to Testing-status consent screens bites.
 Setting the consent screen to "In production" — no verification needed for
 `youtube.upload` — stops the expiry.
 
+**A vertical thumbnail uploads fine and then renders as a black tile.**
+`thumbnails.set` accepted a 1080x1920 image without complaint — the log said
+success — and Studio showed black, because YouTube fits a thumbnail into its
+own 16:9 boxes and a 9:16 image lands in a 32%-wide strip with bars either
+side. `firstFrame` therefore scales to *cover* and crops
+(`force_original_aspect_ratio=increase` + `crop`), never `decrease` + `pad`.
+The crop is safe only because `renderTitleArt` centres the title block on
+`OUTPUT.h / 2` and the crop takes 607px around that same centre; a title of
+four or more lines (180px each at `MAX_SIZE`) loses its outer lines from the
+thumbnail, though never from the video.
+
 **The export writes `out/<name>.<uuid>.part.mp4` and renames.** A half-written
 file must never be servable under a name the client can request, and the
 rename has to stay on one volume: `$TMPDIR` is a different filesystem on
@@ -348,8 +359,9 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
   token from `pnpm youtube-auth`. Missing either is a boot *warning*, not a
   boot failure — everything except Publish works without them.
 - The thumbnail is the export's own first frame — the starter screen —
-  lifted by `firstFrame` and posted with `thumbnails.set`, which accepts the
-  `youtube.upload` scope the auth script already requests, so no re-consent.
+  lifted by `firstFrame`, cropped to 1280x720, and posted with
+  `thumbnails.set`, which accepts the `youtube.upload` scope the auth script
+  already requests, so no re-consent.
   It needs a **phone-verified channel**; an unverified one answers 403 and
   the bar shows a `thumbnail skipped` badge rather than failing a publish
   whose video is already up. The JPEG goes to a temp dir, never `out/`.
