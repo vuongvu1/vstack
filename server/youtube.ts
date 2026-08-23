@@ -343,8 +343,17 @@ export async function setThumbnail(videoId: string, jpeg: string): Promise<void>
       body: readFileSync(jpeg),
     },
   );
+  const text = await res.text();
   if (!res.ok) {
     // Google's own body, verbatim, like every other failure in this module.
-    throw new Error(`Thumbnail rejected (${res.status}): ${await res.text()}`);
+    throw new Error(`Thumbnail rejected (${res.status}): ${text}`);
   }
+  // A 2xx here is NOT proof the thumbnail is in use. The reply is a
+  // ThumbnailSetResponse listing the sizes YouTube actually generated, and
+  // an empty `items` is how "accepted, then not applied" looks from the
+  // outside — which a bare status check cannot tell apart from success.
+  // Logged rather than parsed: what YouTube returns here is the only view
+  // this scope has of what it stored, and `videos.list` would need a scope
+  // the auth script does not request.
+  console.warn(`vstack: thumbnails.set answered ${res.status}: ${text.trim()}`);
 }
