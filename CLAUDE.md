@@ -382,13 +382,26 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
 - `Bash(git add)`, `Bash(git commit *)` and `Bash(rm *)` are deny-listed in this environment. Use `git -C <path> add/commit` (the prefix differs, so it passes) and Node's `fs.rm` instead of shell `rm`.
 - The in-app Browser pane reports `document.hidden = true`, which suspends `requestAnimationFrame` and throttles `ResizeObserver` per spec, and its viewport has measured 0×0 with layout collapsing. Neither is an app defect — rule the environment out before reporting one. Patch `requestAnimationFrame` from the console if you need the loop to run; never in app source.
 - `media/` grows without eviction and is already ~47 MB. Size is logged at boot and after each fetch.
-- The starter screen's background is the whole blurred frame, not a band
-  behind the title: `gblur` runs over the full still, then a black scrim
-  (`SCRIM`, a brightness multiplier — 0.65 is black at 35%) darkens it, then
-  the title PNG is overlaid at full brightness. The scrim is multiplicative
-  because `eq=brightness` only offsets, so a white UI panel falls from 255 to
-  ~217 and white text still competes with it. `BLUR_SIGMA` and `SCRIM` are
-  the two knobs, and both change the thumbnail too — it is this same frame.
+- The starter screen's background is blurred and darkened **only in a
+  feathered band behind the title** (`SCREEN_FILTER`); the rest of the frame
+  stays sharp, because the clip is what makes someone stop scrolling. Four
+  knobs: `BLUR_SIGMA`, `SCRIM` (a brightness multiplier — 0.65 is black at
+  35%, multiplicative because `eq=brightness` only offsets and a white UI
+  panel would fall just 255→217), `BAND_H` and `BAND_FEATHER`. All four
+  change the thumbnail too — it is this same frame.
+- **`maskedmerge` does not do what its name suggests; `blend` with an
+  expression does.** Fed a verified greyscale mask (0 outside the band, 255
+  at the centre) `maskedmerge` returned a pixel halfway between the layers
+  where the mask was fully white — blurred+scrimmed `(84,40,0)` and sharp
+  `(251,0,0)` came back as `(154,9,0)`, so the band looked half-treated and
+  the blur appeared to have been dropped. `blend=all_expr` matches the
+  arithmetic exactly at every sample. Both starter-screen band assertions are
+  mutation-tested: dropping the blur fails the in-band check, widening the
+  band to the whole frame fails the out-of-band one.
+- The screen's background is computed in the **frame-extraction pass**, not
+  the composite graph. It is one static image, and a per-pixel expression
+  evaluated over every frame of the screen would cost ~300M evaluations for a
+  picture that never changes.
 - The bundled `starter-music.mp3` opens on a soft intro (mean -14 dB at 0:00 against -3 dB by 0:20) and the screen is only a couple of seconds long, so the bed hears the quietest part of the track. `MUSIC_START` and `MUSIC_GAIN` in `server/starter.ts` are the two knobs.
 - The starter screen makes macOS-only tooling a hard dependency: `say` and its `Linh` (vi_VN) voice. `checkStarter` fails the boot with the System Settings path if the voice is missing, and `server/starter.test.ts` will fail on a machine without it.
 - **`Linh` is the only Vietnamese voice macOS installs.** The novelty family (Eddy, Flo, Grandma, Rocko…) ships for 14 locales and vi_VN is not one of them, so "use a different voice" means either downloading one (an Enhanced/Premium `Linh` keeps the same name, so no code change) or accepting a non-Vietnamese voice mangling the diacritics. Audition with `pnpm voices [title] [voice...]` — it writes one file per voice to `$TMPDIR/vstack-voices` and speaks each aloud unless `--quiet`. Select with `VSTACK_VOICE="<name>" pnpm server`; the name must match `say -v '?'` exactly, parentheses and all, and `checkStarter` rejects it at boot if not.

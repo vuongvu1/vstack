@@ -192,12 +192,25 @@ describe("prependStarter", () => {
     expect(titled.b).toBeGreaterThan(200);
     expect(titled.g).toBeLessThan(80);
 
-    // At the seam, the screen is the clip's first frame blurred — so both
-    // channels are present. This is the assertion that fails if the blur is
-    // dropped: an unblurred seam pixel is one pure colour or the other.
-    const blurred = await pixelAt(out, 0.2, SEAM, OUTPUT.h - 100);
+    // Inside the band, at the seam, the screen is the clip's first frame
+    // blurred — so both channels are present. This is the assertion that
+    // fails if the blur is dropped: an unblurred seam pixel is one pure
+    // colour or the other.
+    //
+    // Sampled at the vertical centre, NOT near the bottom: only a band around
+    // OUTPUT.h / 2 is blurred now, and a sample outside it passes on chroma
+    // bleed alone — which is a test that no longer guards anything.
+    const blurred = await pixelAt(out, 0.2, SEAM, OUTPUT.h / 2);
     expect(blurred.r).toBeGreaterThan(30);
     expect(blurred.g).toBeGreaterThan(30);
+
+    // …and outside the band the frame is untouched: full strength, no blur,
+    // no scrim. This is the other half of the pair — it fails if the blur
+    // ever goes back to covering the whole frame, which would drag this
+    // pixel down by the scrim factor.
+    const sharp = await pixelAt(out, 0.2, SEAM + 200, OUTPUT.h - 100);
+    expect(sharp.r).toBeGreaterThan(200);
+    expect(sharp.g).toBeLessThan(60);
 
     // Past the screen, the clip itself, unblurred and untitled.
     const clipPixel = await pixelAt(out, intro + 0.3, SEAM + 200, OUTPUT.h - 100);

@@ -54,6 +54,52 @@ const BLUR_SIGMA = 30;
  *  two knobs for how the screen reads; it also changes the thumbnail, which
  *  is this same frame. */
 const SCRIM = 0.65;
+/** How tall the blurred band behind the title is, and how soft its edges are.
+ *
+ *  Only a band, not the whole frame: the clip is what makes someone stop
+ *  scrolling, and blurring all of it throws that away. `renderTitleArt`
+ *  centres the title block on `OUTPUT.h / 2`, so the band is centred there
+ *  too.
+ *
+ *  820 covers roughly four lines at `MAX_SIZE` (180px each). A longer title
+ *  spills onto sharp video — still readable thanks to the outline, just less
+ *  deliberate. The exact fix is for the client to report the block's real
+ *  height alongside the PNG; this is the approximation until that is worth a
+ *  field on `/api/export`.
+ *
+ *  ponytail: fixed band. Have `renderTitleArt` return its block height when a
+ *  long title actually looks wrong. */
+const BAND_H = 820;
+/** Feathering the mask is what stops the band reading as a bar across the
+ *  frame — a hard edge shows two visible seams. */
+const BAND_FEATHER = 60;
+
+/** Turns the clip's first frame into the starter screen's background: sharp
+ *  everywhere except a feathered band across the middle, which is blurred and
+ *  darkened so the title has something quiet to sit on.
+ *
+ *  `blend` with an explicit expression rather than `maskedmerge` with a
+ *  feathered mask. maskedmerge looked like the obvious filter and is not: fed
+ *  a correct greyscale mask (verified 0 outside the band, 255 at the centre)
+ *  it returned a pixel halfway between the two layers where the mask was
+ *  fully white — blurred+scrimmed `(84,40,0)` and sharp `(251,0,0)` merged to
+ *  `(154,9,0)`. `blend`'s output matches the arithmetic exactly at every
+ *  sample.
+ *
+ *  A is the sharp layer, B the treated one; the weight ramps 0→1 across
+ *  BAND_FEATHER pixels at each edge. `H` is the frame height, so nothing here
+ *  needs to know OUTPUT.
+ *
+ *  Applied in the frame-extraction pass, not the composite: the background is
+ *  one static image, and a per-pixel expression evaluated across every frame
+ *  of the screen would be paying ~300M evaluations for a picture that never
+ *  changes. */
+const SCREEN_FILTER =
+  "[0:v]format=rgb24,split=2[sharp][tosoften];" +
+  `[tosoften]gblur=sigma=${BLUR_SIGMA},` +
+  `colorchannelmixer=rr=${SCRIM}:gg=${SCRIM}:bb=${SCRIM},format=rgb24[soft];` +
+  "[sharp][soft]blend=all_expr='" +
+  `A+(B-A)*clip(min(Y-(H-${BAND_H})/2\,(H+${BAND_H})/2-Y)/${BAND_FEATHER}\,0\,1)'`;
 /** The music is a bed under a voice, so it sits well below it. The cue is a
  *  transition, not scenery, so it does not. */
 const MUSIC_GAIN = 0.35;
@@ -229,7 +275,13 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
 
   try {
     try {
-      await run("ffmpeg", ["-v", "error", "-i", opts.main, "-frames:v", "1", "-y", still]);
+      await run("ffmpeg", [
+      "-v", "error",
+      "-i", opts.main,
+      "-frames:v", "1",
+      "-filter_complex", SCREEN_FILTER,
+      "-y", still,
+    ]);
     } catch (err) {
       throw toolError("ffmpeg", err);
     }
@@ -262,9 +314,10 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
       // The intro is forced to the clip's frame rate and to yuv420p because
       // concat requires matching parameters, and an image input defaults to
       // 25 fps regardless of what the clip is.
-      `[0:v]gblur=sigma=${BLUR_SIGMA},` +
-        `colorchannelmixer=rr=${SCRIM}:gg=${SCRIM}:bb=${SCRIM},` +
-        `fps=${fps},format=yuv420p,setsar=1[bg]`,
+      // The still arrives already treated — blurred and darkened behind the
+      // title, sharp elsewhere. See SCREEN_FILTER: it runs once, in the
+      // frame-extraction pass, rather than per pixel on every frame here.
+      `[0:v]fps=${fps},format=yuv420p,setsar=1[bg]`,
       "[bg][1:v]overlay=0:0:format=auto[intro]",
       // Both legs are pinned to square pixels. `scale=` in the export's
       // filter graph carries the *source's* sample aspect through to the
