@@ -41,6 +41,19 @@ const TAIL = 0.45;
  *  screen at all. */
 const MIN_DURATION = 1.6;
 const BLUR_SIGMA = 30;
+/** A black scrim under the title, as a brightness multiplier: 0.65 is the
+ *  same as compositing black at 35% over the blurred frame.
+ *
+ *  Multiplicative, not `eq=brightness`. Brightness adds a constant offset, so
+ *  a white UI panel — which is most of what gets clipped here — only falls
+ *  from 255 to about 217 and white text still competes with it. Multiplying
+ *  crushes the whites proportionally, which is the whole point.
+ *
+ *  Applied to the background BEFORE the title is overlaid, so the title
+ *  itself keeps full brightness. 1 disables it. This and BLUR_SIGMA are the
+ *  two knobs for how the screen reads; it also changes the thumbnail, which
+ *  is this same frame. */
+const SCRIM = 0.65;
 /** The music is a bed under a voice, so it sits well below it. The cue is a
  *  transition, not scenery, so it does not. */
 const MUSIC_GAIN = 0.35;
@@ -249,7 +262,9 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
       // The intro is forced to the clip's frame rate and to yuv420p because
       // concat requires matching parameters, and an image input defaults to
       // 25 fps regardless of what the clip is.
-      `[0:v]gblur=sigma=${BLUR_SIGMA},fps=${fps},format=yuv420p,setsar=1[bg]`,
+      `[0:v]gblur=sigma=${BLUR_SIGMA},` +
+        `colorchannelmixer=rr=${SCRIM}:gg=${SCRIM}:bb=${SCRIM},` +
+        `fps=${fps},format=yuv420p,setsar=1[bg]`,
       "[bg][1:v]overlay=0:0:format=auto[intro]",
       // Both legs are pinned to square pixels. `scale=` in the export's
       // filter graph carries the *source's* sample aspect through to the
