@@ -93,8 +93,13 @@ because it needs `MEDIA_DIR`, which is why the mask path is passed into
 
 Four phases: `idle` (URL) → `trimming` (YouTube iframe, mark start/end, no
 download) → `framing` (real `<video>` of the fetched window, crop boxes,
-canvas composite, export) → `preview` (the finished file from `out/`, played
-back, with publish-to-YouTube). Export no longer downloads: it writes
+canvas composite, export) → `preview` (the finished file played back on the
+right, with the upload's title/description/tags in a panel on the left where
+the framing `<video>` was — it has nothing left to say once the export
+exists). `publishForm` is a child of `sourceSlot`, not a third `.stage`
+column, and `sourceSlot` itself is never hidden: that would put the YouTube
+iframe's ancestor into `display:none`, and only its children are ever
+toggled. Export no longer downloads: it writes
 `<OUT_DIR>/<slug>-<mmss>-<mmss>.mp4`, saves the opening frame beside it as a
 vertical `.jpg` for Studio's Shorts thumbnail slot, and advances the phase. Videos under
 `SKIP_TRIM_UNDER` (180s) skip `trimming`.
@@ -179,7 +184,9 @@ across re-exports, so `/out/<name>` with no cache-buster re-shows the
 
 ## Gotchas that each cost real time
 
-**Never empty `sourceSlot` or `outSlot`.** Removing an `<iframe>`'s *ancestor* from the document runs its removing steps and discards its nested browsing context — so re-appending even the identical node reloads the YouTube player. `main.ts` builds a persistent shell once; `render()` only ever `replaceChildren`s `barSlot` and the status slot. Long-lived media is shown/hidden with the `hidden` property.
+**Never empty `sourceSlot` or `outSlot`.** They hold the trimming iframe,
+the framing `<video>`, the crop overlay, the composite canvas, the output
+`<video>` and the publish panel — all built once and toggled with `hidden`. Removing an `<iframe>`'s *ancestor* from the document runs its removing steps and discards its nested browsing context — so re-appending even the identical node reloads the YouTube player. `main.ts` builds a persistent shell once; `render()` only ever `replaceChildren`s `barSlot` and the status slot. Long-lived media is shown/hidden with the `hidden` property.
 
 **`hidden` alone is not enough.** `style.css` carries `.source > [hidden], .out > [hidden] { display: none; }` because the author-origin `display: block` on the media children beats the UA's `[hidden]` rule. Without it the DOM property looks correct while the element stays fully visible. Keep the selector list generic — it already covers the iframe, the `<video>`, the canvas and the `.boxes` layer.
 
@@ -190,7 +197,11 @@ across re-exports, so `/out/<name>` with no cache-buster re-shows the
 **A layout change must not reassign `video.src`.** `ensureFraming` splits its clip guard (`sameClip`) from its layout guard (`sameLayout`, tracked by `editorFor`) for exactly this reason — assigning the same `src` reloads the element and restarts playback. `sameClip` is captured before `framingFor` is reassigned, so a layout switch mid-clip rebuilds the editor and preview without touching the video.
 
 **A quiet update reaches no render, so anything gated on it must be toggled
-in place.** The starter-title input uses `setQuiet` (see below), and Export is
+in place.** In `preview` this crosses two render functions: the Publish
+button is built by the bar and the title that gates it by the panel, so the
+bar hands its button to `publishBtn` for the panel's `oninput` to flip. Both
+are rebuilt in the same `render()` pass, so the reference cannot go stale
+before a keystroke can fire. The starter-title input uses `setQuiet` (see below), and Export is
 disabled on that same value — so its `disabled` is flipped inside the input
 handler. Without that it stays disabled until an unrelated `setState` happens
 along, which reads as "Export is broken" rather than "type a title first".

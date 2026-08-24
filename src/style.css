@@ -207,11 +207,13 @@ input {
 }
 input::placeholder { color: var(--slate-9); }
 input:focus { outline: none; box-shadow: inset 0 0 0 2px var(--blue-8); }
-input:disabled, .bar textarea:disabled { background: var(--slate-a2); color: var(--slate-11); }
+input:disabled, textarea:disabled { background: var(--slate-a2); color: var(--slate-11); }
 
-/* Same surface as the text inputs, just taller. `resize: vertical` only —
-   a horizontal drag would fight `.bar-row`'s flex sizing. */
-.bar textarea {
+/* Same surface as the text inputs, just taller. Global rather than scoped to
+   `.bar` because the publish panel has one too, and `input` above is global
+   for the same reason. `resize: vertical` only — a horizontal drag would
+   fight `.bar-row`'s flex sizing. */
+textarea {
   font: inherit;
   /* 6px has no matching --space-N token (--space-1 is 4px, --space-2 is
      8px); left raw rather than rounding to a spacing step that isn't this
@@ -223,6 +225,52 @@ input:disabled, .bar textarea:disabled { background: var(--slate-a2); color: var
   color: var(--slate-12);
   resize: vertical;
 }
+textarea::placeholder { color: var(--slate-9); }
+textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); border-color: var(--blue-8); }
+
+/* The publish phase's left column. It replaces the framing <video> in the
+   same `1fr` grid track — sourceSlot itself is never hidden, only its
+   children, so the YouTube iframe's ancestor never enters display:none. */
+.publish-form {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  overflow-y: auto;
+  /* `.source` is `place-items: center`, which would otherwise centre every
+     label's text as well as the panel itself. */
+  text-align: left;
+}
+
+.publish-heading {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--slate-11);
+  letter-spacing: 0.02em;
+}
+
+.field { display: flex; flex-direction: column; gap: var(--space-1); }
+/* The description is the reason this panel exists — it takes whatever height
+   the other fields leave. */
+.field:has(textarea) { flex: 1; min-height: 0; }
+.field:has(textarea) textarea { flex: 1; min-height: 120px; }
+
+.field-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--slate-11);
+}
+
+/* YouTube's 100-character cap is reachable by typing an ordinary title, since
+   defaultTitle already spends 22 of them on hashtags. */
+.field-count { font-variant-numeric: tabular-nums; color: var(--slate-9); }
+.field-count-full { color: var(--amber-11); }
 
 /* An <a> that has to sit in a button row without being a button. */
 .btn-link {

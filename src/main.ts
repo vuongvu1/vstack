@@ -2,7 +2,12 @@ import * as api from "./api.ts";
 import { mountEditor } from "./editor.ts";
 import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
-import { DESCRIPTION_TEMPLATE, TAGS_DEFAULT, defaultTitle } from "./defaults.ts";
+import {
+  DESCRIPTION_TEMPLATE,
+  TAGS_DEFAULT,
+  YT_TITLE_MAX,
+  defaultTitle,
+} from "./defaults.ts";
 import { clock, parseTimestamp } from "./format.ts";
 import {
   DEFAULT_LAYOUT_ID,
@@ -53,7 +58,13 @@ const sourcePlaceholder = el("p", { textContent: "No video loaded." });
 const outPlaceholder = el("p", { textContent: "Output preview." });
 // Tasks 8-11 append the real iframe/video/canvas into these slots and
 // toggle these placeholders' `hidden` instead of removing anything here.
-const sourceSlot = el("div", { className: "source" }, sourcePlaceholder);
+// The publish phase's metadata panel. Part of the persistent shell like
+// everything else here: it takes over the left column in `preview`, where the
+// framing <video> has nothing left to say, and is only ever hidden — never
+// removed, and never by hiding sourceSlot itself, which would put the YouTube
+// iframe's ancestor into display:none.
+const publishForm = el("div", { className: "publish-form", hidden: true });
+const sourceSlot = el("div", { className: "source" }, sourcePlaceholder, publishForm);
 const outSlot = el("div", { className: "out" }, outPlaceholder);
 const barSlot = el("div", { className: "bar" });
 const statusSlot = el("div", { className: "status" });
@@ -847,6 +858,82 @@ function renderFraming(): Node[] {
 }
 
 /** The preview bar: what came out, publishing it, and the ways out of here. */
+/** The Publish button is rendered into the bar, but the title that gates it
+ *  is rendered into the left panel — two functions, one render pass. A quiet
+ *  keystroke reaches no render, so the panel flips the button in place, and
+ *  this is how it reaches it. Both are rebuilt in the same render() call, so
+ *  this is never stale by the time a keystroke can fire. */
+let publishBtn: HTMLButtonElement | null = null;
+
+/** The left column during `preview`: everything about the upload that is
+ *  editable. It moved out of the bar because a description is the one field
+ *  here worth more than one line, and the source <video> it replaces was
+ *  showing a clip the user had already finished with. */
+function renderPublishForm(): Node[] {
+  const s = getState();
+  // Publishing locks the form, and so does a completed publish: the fields
+  // stop describing anything editable once the video is on YouTube.
+  const locked = Boolean(s.busy) || s.ytVideoId !== "";
+
+  const count = el("span", { className: "field-count" });
+  const showCount = (text: string) => {
+    count.textContent = `${text.length}/${YT_TITLE_MAX}`;
+    // `defaultTitle` already spends 22 of those characters on hashtags, so
+    // the ceiling is reachable by typing an ordinary Vietnamese title.
+    count.classList.toggle("field-count-full", text.length >= YT_TITLE_MAX);
+  };
+
+  const title = el("input", {
+    type: "text",
+    placeholder: "Required",
+    maxLength: YT_TITLE_MAX,
+    value: s.ytTitle,
+    disabled: locked,
+  });
+  showCount(s.ytTitle);
+
+  const description = el("textarea", {
+    placeholder: "Shown under the video on YouTube",
+    rows: 10,
+    value: s.ytDescription,
+    disabled: locked,
+  });
+
+  const tags = el("input", {
+    type: "text",
+    placeholder: "comma, separated",
+    value: s.ytTags,
+    disabled: locked,
+  });
+
+  // Quiet, like every other text field in this app: a notifying update per
+  // keystroke would rebuild the very input being typed into and drop the
+  // caret — and during a publish this panel is re-rendered twice a second by
+  // the progress poll, which makes that a certainty rather than a risk.
+  title.oninput = () => {
+    setQuiet({ ytTitle: title.value });
+    showCount(title.value);
+    if (publishBtn) publishBtn.disabled = title.value.trim() === "" || Boolean(getState().busy);
+  };
+  description.oninput = () => setQuiet({ ytDescription: description.value });
+  tags.oninput = () => setQuiet({ ytTags: tags.value });
+
+  const field = (label: string, control: Node, extra?: Node) =>
+    el(
+      "label",
+      { className: "field" },
+      el("span", { className: "field-label" }, label, extra ?? el("span")),
+      control,
+    );
+
+  return [
+    el("h2", { className: "publish-heading", textContent: "Publish details" }),
+    field("Title", title, count),
+    field("Description", description),
+    field("Tags", tags),
+  ];
+}
+
 function renderPreview(): Node[] {
   const s = getState();
   // Called for its effect: it mounts the output <video> into the persistent
@@ -878,50 +965,14 @@ function renderPreview(): Node[] {
 
   const published = s.ytVideoId !== "";
 
-  const title = el("input", {
-    type: "text",
-    placeholder: "YouTube title (required)",
-    ariaLabel: "YouTube title",
-    className: "field-grow",
-    maxLength: 100,
-    value: s.ytTitle,
-    disabled: Boolean(s.busy) || published,
-  });
-  const description = el("textarea", {
-    placeholder: "Description",
-    ariaLabel: "YouTube description",
-    className: "field-grow",
-    rows: 2,
-    value: s.ytDescription,
-    disabled: Boolean(s.busy) || published,
-  });
-  const tags = el("input", {
-    type: "text",
-    placeholder: "tags, comma, separated",
-    ariaLabel: "YouTube tags",
-    size: 24,
-    value: s.ytTags,
-    disabled: Boolean(s.busy) || published,
-  });
-
   const publish = el("button", {
     className: "btn-solid",
     textContent: "Publish (private)",
     disabled: s.ytTitle.trim() === "" || Boolean(s.busy),
   });
   publish.onclick = () => void doPublish();
-
-  // Quiet, like every other text field in this app: a notifying update per
-  // keystroke rebuilds the very input being typed into and drops the caret.
-  // But Publish's `disabled` is gated on the title, and a quiet update
-  // reaches no render — so it is flipped in place here, exactly as the
-  // starter-title field does it in renderFraming.
-  title.oninput = () => {
-    setQuiet({ ytTitle: title.value });
-    publish.disabled = title.value.trim() === "" || Boolean(getState().busy);
-  };
-  description.oninput = () => setQuiet({ ytDescription: description.value });
-  tags.oninput = () => setQuiet({ ytTags: tags.value });
+  // Handed to the panel, which owns the title this is gated on.
+  publishBtn = publish;
 
   // Replaces Publish once the upload lands: the next step is on YouTube, and
   // uploading the same file twice is never what was meant.
@@ -955,15 +1006,11 @@ function renderPreview(): Node[] {
             textContent: "thumbnail skipped",
           })
         : el("span"),
-      el("div", { className: "bar-end" }, finder, back),
-    ),
-    el(
-      "div",
-      { className: "bar-row" },
-      title,
-      description,
-      tags,
-      el("div", { className: "bar-end" }, published ? studio : publish),
+      // One row: the fields moved to the left panel, so what is left is the
+      // facts about the file and the three things you can do with it. Order
+      // mirrors the framing bar — utility, then step back, then the action
+      // that ends the phase.
+      el("div", { className: "bar-end" }, finder, back, published ? studio : publish),
     ),
   ];
 }
@@ -1011,16 +1058,12 @@ function render(): void {
   // detach/reattach fine — it just has no reason to move once it lives in
   // the persistent sourceSlot.
   if (videoEl) {
-    // Visible in preview too, so the result can be compared against what it
-    // was cut from. boxesLayer's own `!== "framing"` rule below is what keeps
-    // the source from reading as still editable.
-    videoEl.hidden = s.phase !== "framing" && s.phase !== "preview";
-    // Paused in every phase except framing and preview — `display:none`
-    // doesn't pause anything (see sourceIframe above), so idle/trimming still
-    // need this. Preview is exempt: doPublish's progress poll is a notifying
-    // setState every 500ms, and pausing here on each tick would fight a user
-    // who just pressed play on the source to compare it against the export.
-    if (s.phase !== "framing" && s.phase !== "preview") videoEl.pause();
+    videoEl.hidden = s.phase !== "framing";
+    // `display:none` doesn't pause anything (see sourceIframe above), so
+    // whatever is being hidden is paused explicitly. Preview used to keep
+    // this visible for comparison; the left column belongs to publishForm
+    // now, and this clip is one the user has already finished with.
+    if (s.phase !== "framing") videoEl.pause();
   }
   if (canvasEl) canvasEl.hidden = s.phase !== "framing";
   if (outVideoEl) {
@@ -1034,10 +1077,17 @@ function render(): void {
   // without losing drag state or its ResizeObserver.
   if (boxesLayer) boxesLayer.hidden = s.phase !== "framing";
 
+  publishForm.hidden = s.phase !== "preview";
+
   if (s.phase === "idle") barSlot.replaceChildren(...renderIdle(s));
   else if (s.phase === "trimming") barSlot.replaceChildren(...renderTrimming());
   else if (s.phase === "framing") barSlot.replaceChildren(...renderFraming());
-  else barSlot.replaceChildren(...renderPreview());
+  else {
+    // Bar first: it assigns publishBtn, which the panel's title handler flips
+    // in place on a quiet keystroke.
+    barSlot.replaceChildren(...renderPreview());
+    publishForm.replaceChildren(...renderPublishForm());
+  }
 
   const status: Node[] = [];
   const meta: Node[] = [];

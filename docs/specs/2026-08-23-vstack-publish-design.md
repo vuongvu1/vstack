@@ -162,13 +162,15 @@ One more long-lived element: `outVideoEl` (`controls`, `loop`), appended into
 unchanged — it is never removed, only toggled, and `.out > [hidden]` in
 `style.css` already covers it.
 
-In `preview` the canvas hides and the output video shows. The framing
-`<video>` stays **visible and playable** in the source column — unlike every
-other phase it is hidden in, it is not force-paused here — so the result can
-be compared against what it was cut from; `videoEl.hidden` widens to
-`phase !== "framing" && phase !== "preview"`. The crop overlay needs no new
-rule — `boxesLayer`'s existing `phase !== "framing"` already hides it, which
-is what keeps the source from reading as still editable.
+In `preview` the canvas hides and the output video shows.
+
+*As built:* the framing `<video>` was first kept visible and playable in the
+source column, so the result could be compared against what it was cut from.
+That column belongs to the publish form now — the source clip is one the user
+has already finished with by this point, and the description is the field
+that actually needed the room. `videoEl` is back to `hidden` and paused
+outside `framing`. The crop overlay needed no rule either way:
+`boxesLayer`'s existing `phase !== "framing"` already hides it.
 
 ### The bar
 
