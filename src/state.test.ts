@@ -80,6 +80,7 @@ describe("save", () => {
         { x: 0, y: 0, w: 180, h: 160 },
         { x: 10, y: 10, w: 180, h: 160 },
       ],
+      customs: [],
       sourceW: 1920,
       sourceH: 1080,
     });
@@ -129,6 +130,7 @@ describe("save", () => {
         { x: 0, y: 0, w: 180, h: 160 },
         { x: 5, y: 5, w: 180, h: 160 },
       ],
+      customs: [],
       sourceW: 1920,
       sourceH: 1080,
     });
@@ -159,6 +161,7 @@ describe("save", () => {
         { x: 1, y: 1, w: 180, h: 160 },
         { x: 2, y: 2, w: 180, h: 160 },
       ],
+      customs: [],
       sourceW: 1920,
       sourceH: 1080,
     });
@@ -226,6 +229,7 @@ describe("save", () => {
       starterTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
+      customs: [],
       sourceW: 0,
       sourceH: 0,
     });
@@ -251,6 +255,7 @@ describe("save", () => {
       starterTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
+      customs: [],
       sourceW: 0,
       sourceH: 0,
     });
@@ -315,6 +320,7 @@ describe("save", () => {
       starterTitle: "Ăn cơm chưa bạn ơi",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
+      customs: [],
       sourceW: 0,
       sourceH: 0,
     });
@@ -363,6 +369,7 @@ describe("restore", () => {
         { x: 0, y: 0, w: 180, h: 160 },
         { x: 1, y: 1, w: 180, h: 160 },
       ],
+      customs: [],
     });
   });
 
@@ -398,6 +405,7 @@ describe("restore", () => {
         { x: 3, y: 3, w: 180, h: 160 },
         { x: 4, y: 4, w: 180, h: 160 },
       ],
+      customs: [],
     });
   });
 
@@ -427,6 +435,7 @@ describe("restore", () => {
       starterTitle: "",
       layoutId: "2h-1",
       boxes: [],
+      customs: [],
     });
   });
 
@@ -500,5 +509,69 @@ describe("restore", () => {
       JSON.stringify({ start: 0, end: 5, layoutId: "1-1", boxes: "nope", sourceW: 1920, sourceH: 1080 }),
     );
     expect(restore(videoId, { w: 1920, h: 1080 })).toMatchObject({ boxes: [] });
+  });
+});
+
+describe("save / restore — custom boxes", () => {
+  const source = { w: 1920, h: 1080 };
+  const custom = {
+    out: { x: 300, y: 700, w: 480, h: 480 },
+    crop: { x: 0, y: 100, w: 480, h: 480 },
+  };
+
+  it("round-trips the pieces alongside the boxes", () => {
+    const videoId = "customs-round-trip";
+    setState({
+      videoId,
+      phase: "framing",
+      layoutId: DEFAULT_LAYOUT_ID,
+      source,
+      boxes: [
+        { x: 0, y: 100, w: 900, h: 800 },
+        { x: 1020, y: 100, w: 900, h: 800 },
+      ],
+      customs: [custom],
+    });
+    save();
+    expect(restore(videoId, source).customs).toEqual([custom]);
+  });
+
+  it("does not persist pieces outside framing", () => {
+    // MUTATION TEST: drop the phase gate and this record gains a customs
+    // array written from a phase where the source size is still probe's
+    // informational one.
+    const videoId = "customs-gated";
+    setState({ videoId, phase: "trimming", source, boxes: [], customs: [custom] });
+    save();
+    expect(readRaw(videoId)).not.toHaveProperty("customs", [custom]);
+  });
+
+  it("drops pieces that are illegal against the restored source", () => {
+    const videoId = "customs-illegal";
+    localStorage.setItem(
+      `vstack:${videoId}`,
+      JSON.stringify({
+        start: 0,
+        end: 10,
+        layoutId: DEFAULT_LAYOUT_ID,
+        boxes: [
+          { x: 0, y: 100, w: 900, h: 800 },
+          { x: 1020, y: 100, w: 900, h: 800 },
+        ],
+        customs: [{ out: { x: 301, y: 700, w: 480, h: 480 }, crop: custom.crop }],
+        sourceW: 1920,
+        sourceH: 1080,
+      }),
+    );
+    expect(restore(videoId, source).customs).toEqual([]);
+  });
+
+  it("returns no pieces for a record that predates the feature", () => {
+    const videoId = "customs-legacy";
+    localStorage.setItem(
+      `vstack:${videoId}`,
+      JSON.stringify({ start: 1, end: 2, layoutId: DEFAULT_LAYOUT_ID, sourceW: 0, sourceH: 0 }),
+    );
+    expect(restore(videoId, source).customs).toEqual([]);
   });
 });

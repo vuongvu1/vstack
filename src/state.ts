@@ -1,3 +1,5 @@
+import { isValidCustom } from "./custom.ts";
+import type { CustomBox } from "./custom.ts";
 import { isValidBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
 import { DEFAULT_LAYOUT_ID, cellsOf, layoutById, ratioOf, resolveLayout } from "./layout.ts";
@@ -39,6 +41,11 @@ export type AppState = {
    *  "not framed yet" — the only other legal length is the layout's cell
    *  count, which is what `save`'s gate and `restore` both check. */
   boxes: Rect[];
+  /** Floating pieces over the layout, in z order — last on top. Empty is the
+   *  normal case. Unlike `boxes` these survive a layout change: a custom
+   *  box's ratio is its own and its `out` is frame space, so nothing about it
+   *  is invalidated by the cells changing. */
+  customs: CustomBox[];
   /** The finished export. Set by doExport, cleared by nothing — a new
    *  export overwrites them. None of these are persisted: an export belongs
    *  to the session that made it, so save()/restore() do not touch them. */
@@ -80,6 +87,7 @@ const initial: AppState = {
   source: { w: 0, h: 0 },
   layoutId: DEFAULT_LAYOUT_ID,
   boxes: [],
+  customs: [],
   outName: "",
   outUrl: "",
   outSize: 0,
@@ -121,6 +129,7 @@ type Saved = {
   starterTitle: string;
   layoutId: string;
   boxes: Rect[];
+  customs: CustomBox[];
   sourceW: number;
   sourceH: number;
 };
@@ -178,6 +187,7 @@ function readSaved(videoId: string): Saved | null {
     starterTitle: typeof s.starterTitle === "string" ? s.starterTitle : "",
     layoutId: s.layoutId ?? DEFAULT_LAYOUT_ID,
     boxes: migrated ?? (Array.isArray(s.boxes) ? s.boxes : []),
+    customs: Array.isArray(s.customs) ? s.customs : [],
     sourceW: s.sourceW ?? 0,
     sourceH: s.sourceH ?? 0,
   };
@@ -226,6 +236,10 @@ export function save(): void {
     starterTitle: state.starterTitle,
     layoutId: framed ? layout.id : (prev?.layoutId ?? DEFAULT_LAYOUT_ID),
     boxes: framed ? state.boxes : (prev?.boxes ?? []),
+    // Same gate as boxes, for the same reason: an `out` is frame space and
+    // always meaningful, but a `crop` is source pixels and means nothing
+    // before /api/window has reported the clip's real size.
+    customs: framed ? state.customs : (prev?.customs ?? []),
     sourceW: framed ? state.source.w : (prev?.sourceW ?? 0),
     sourceH: framed ? state.source.h : (prev?.sourceH ?? 0),
   };
@@ -263,11 +277,16 @@ export function restore(videoId: string, source: Size | null): Partial<AppState>
       const box = s.boxes[i];
       return box !== undefined && isValidBox(box, source, ratioOf(cell));
     });
+  // Computed independently of `usable`: a bad piece must not cost the
+  // boxes, and a bad box must not cost the pieces.
+  const usableCustoms =
+    source !== null && sameSource && s.customs.every((c) => isValidCustom(c, source));
   return {
     start: Number.isFinite(s.start) ? s.start : initial.start,
     end: Number.isFinite(s.end) ? s.end : initial.end,
     starterTitle: s.starterTitle,
     layoutId: layout ? layout.id : DEFAULT_LAYOUT_ID,
     boxes: usable ? s.boxes : [],
+    customs: usableCustoms ? s.customs : [],
   };
 }
