@@ -145,10 +145,11 @@ describe("isValidCustom", () => {
 
   it("rejects a crop that is off the box's own ratio", () => {
     // The custom-box version of "a box is only legal for its own cell": a
-    // perfect square crop under a 2:1 out would export stretched.
+    // crop two px off the ratio its own out demands would export
+    // stretched. `out` stays legal here on purpose — otherwise
+    // isValidOut short-circuits and this never reaches the ratio check.
     const custom = defaultCustom(HD, 0);
-    const stretched = { out: { ...custom.out, w: custom.out.w * 2 }, crop: custom.crop };
-    expect(isValidCustom(stretched, HD)).toBe(false);
+    expect(isValidCustom({ ...custom, crop: { ...custom.crop, w: custom.crop.w + 2 } }, HD)).toBe(false);
   });
 
   it("rejects a crop hanging over the source edge", () => {
