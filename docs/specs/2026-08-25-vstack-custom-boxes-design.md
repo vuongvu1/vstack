@@ -155,16 +155,20 @@ mountEditor({
   media: HTMLElement,              // was HTMLVideoElement; a canvas has the same box API
   bounds: () => Size,              // was source(): source px, or OUTPUT for the canvas
   count: number,                   // fixed at mount, as the cell list is today
-  ratios: () => (number | null)[], // live; null = free resize
+  move / resize: (rect, …, index) => Rect  // injected; the editor holds no geometry
   boxes, onChange, onCommit,
 })
 ```
 
+Injected rather than a `ratios()` getter, so the aspect-locked source rules
+and the free-aspect output rules each stay in the module that tests them.
+
 - **Source overlay** (over `videoEl`, as today): `count = cells.length +
-  customs.length`; `ratios()` yields `ratioOf(cell)` per cell then
-  `out.w / out.h` per custom. A live getter, not a fixed array — a custom's
-  ratio changes *while* the user resizes it on the preview, and the crop
-  handles have to follow within that same drag.
+  customs.length`; the injected `resize` closure calls `resizeFromCorner(rect,
+  corner, dx, dy, source, ratioOf(cell))` for a cell index and each custom's
+  own crop-resize rule for a custom index. A closure, not a live getter, is
+  what lets a custom's ratio change *while* the user resizes it on the
+  preview, since the crop handles have to follow within that same drag.
 - **Output overlay** (new, over `canvasEl`): `count = customs.length`,
   `bounds = () => OUTPUT`, every ratio `null`. Preset cells get no nodes —
   presets stay presets.

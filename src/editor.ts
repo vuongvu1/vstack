@@ -1,5 +1,4 @@
-import { displayScale, moveBy, resizeFromCorner, toDisplay } from "./geometry.ts";
-import { ratioOf } from "./layout.ts";
+import { displayScale, toDisplay } from "./geometry.ts";
 import type { Corner, Rect, Size } from "./geometry.ts";
 
 const CORNERS: Corner[] = ["nw", "ne", "sw", "se"];
@@ -12,46 +11,75 @@ type Drag = {
   startRect: Rect;
 };
 
-/** Mounts the draggable/resizable crop-box overlay into `opts.host` (the
- *  persistent `sourceSlot`, already `position: relative`) and returns a
- *  teardown function. Only ever appends its own `.boxes` layer — never
- *  touches the host's existing children (the <video>/<iframe>), because
- *  removing or rebuilding a sibling here is exactly the persistent-shell
- *  hazard this app is built to avoid. */
+/** Mounts a draggable/resizable box overlay into `opts.host` and returns a
+ *  teardown function. Two of these are mounted during framing: one over the
+ *  source <video> for crop rects, one over the composite <canvas> for the
+ *  floating pieces' output rects.
+ *
+ *  The editor knows no geometry — `move` and `resize` are injected, so the
+ *  aspect-locked source rules and the free-aspect output rules each stay in
+ *  the module that tests them. It only ever appends its own `.boxes` layer
+ *  and never touches the host's existing children, because removing or
+ *  rebuilding a sibling here is exactly the persistent-shell hazard this app
+ *  is built to avoid. */
 export function mountEditor(opts: {
   host: HTMLElement;
-  media: HTMLVideoElement;
-  source: () => Size;
-  /** Output-space cells in cellsOf order. Fixed for this mount — main.ts
-   *  remounts the editor when the layout changes, because the node count
-   *  is derived from it. A plain array, not a getter: unlike `boxes` (read
-   *  every drag frame, because a box moves within a mount) this is read
-   *  exactly once, at mount, and a getter here would advertise a liveness
-   *  the mount never honours — the node count is fixed at construction, so
-   *  a live cell list would drift out of sync with it. */
-  cells: Rect[];
+  /** The element the overlay is laid out against — a <video> or a <canvas>.
+   *  Only its box and its `loadedmetadata` event are used. */
+  media: HTMLElement;
+  /** The coordinate space `boxes()` are expressed in, for the display
+   *  scale: source pixels for the crop overlay, OUTPUT for the output one. */
+  bounds: () => Size;
+  /** Node count, fixed for this mount — main.ts remounts when it changes,
+   *  the same rule the cell list has always had. */
+  count: number;
+  /** The index the first node carries, for its label and its colour. The
+   *  output overlay passes the cell count so its pieces keep the same
+   *  numbers and tints they have on the source overlay. */
+  labelFrom?: number;
   boxes: () => Rect[];
+  move: (rect: Rect, dx: number, dy: number, index: number) => Rect;
+  resize: (rect: Rect, corner: Corner, dx: number, dy: number, index: number) => Rect;
   onChange(index: number, rect: Rect): void;
   onCommit(): void;
+  /** When given, each node carries a × that removes it. */
+  onRemove?: (index: number) => void;
 }): () => void {
   const layer = document.createElement("div");
   layer.className = "boxes";
   opts.host.append(layer);
 
-  const cells = opts.cells;
-  const nodes = cells.map((_, i) => makeBox(i));
+  const labelFrom = opts.labelFrom ?? 0;
+  const nodes = Array.from({ length: opts.count }, (_, i) => makeBox(i));
   layer.append(...nodes);
 
   function makeBox(index: number): HTMLDivElement {
     const box = document.createElement("div");
-    // box-c0..c3 carry the per-index colour; four is the maximum cell count
-    // any layout declares.
-    box.className = `box box-c${index}`;
+    // box-c0..c5 carry the per-index colour: four cells at most, plus two
+    // floating pieces.
+    box.className = `box box-c${labelFrom + index}`;
     box.dataset.index = String(index);
     const label = document.createElement("span");
     label.className = "box-label";
-    label.textContent = String(index + 1);
+    label.textContent = String(labelFrom + index + 1);
     box.append(label);
+    if (opts.onRemove) {
+      const remove = document.createElement("button");
+      remove.className = "box-remove";
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.title = "Remove this box";
+      remove.ariaLabel = `Remove box ${labelFrom + index + 1}`;
+      // pointerdown, not click: the layer's own pointerdown starts a drag,
+      // and stopping propagation here is what keeps a removal from also
+      // grabbing the box.
+      remove.addEventListener("pointerdown", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        opts.onRemove?.(index);
+      });
+      box.append(remove);
+    }
     for (const c of CORNERS) {
       const h = document.createElement("div");
       h.className = `handle handle-${c}`;
@@ -63,11 +91,11 @@ export function mountEditor(opts: {
 
   let drag: Drag | null = null;
 
-  /** The overlay is positioned over the rendered video, so display px per
-   *  source px is derived from the element's actual box each time — the
-   *  video resizes with the window. */
+  /** The overlay is positioned over the rendered media element, so display
+   *  px per bounds-unit is derived from the element's actual box each time —
+   *  it resizes with the window. */
   function scale(): number {
-    return displayScale(opts.source(), opts.media.clientWidth);
+    return displayScale(opts.bounds(), opts.media.clientWidth);
   }
 
   function place(): void {
@@ -126,18 +154,14 @@ export function mountEditor(opts: {
   layer.addEventListener("pointermove", (e) => {
     if (!drag) return;
     const s = scale();
-    // Pointer deltas are display px; geometry works in source px.
+    // Pointer deltas are display px; the geometry works in the bounds' own
+    // units — source px for crops, output px for the floating pieces.
     const dx = (e.clientX - drag.originX) / s;
     const dy = (e.clientY - drag.originY) / s;
-    const source = opts.source();
-    const cell = cells[drag.index];
-    // pointerdown only sets `drag` for an index that has both a node and a
-    // box, and nodes are built from `cells`, so this is always present.
-    if (!cell) return;
     const next =
       drag.corner === null
-        ? moveBy(drag.startRect, dx, dy, source)
-        : resizeFromCorner(drag.startRect, drag.corner, dx, dy, source, ratioOf(cell));
+        ? opts.move(drag.startRect, dx, dy, drag.index)
+        : opts.resize(drag.startRect, drag.corner, dx, dy, drag.index);
     opts.onChange(drag.index, next);
     place();
   });

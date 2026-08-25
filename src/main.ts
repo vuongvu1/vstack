@@ -7,7 +7,7 @@ import titleSound from "../server/assets/start-title-sound.mp3";
 import * as api from "./api.ts";
 import type { CustomBox } from "./custom.ts";
 import { mountEditor } from "./editor.ts";
-import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
+import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER, moveBy, resizeFromCorner } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
 import {
   DESCRIPTION_TEMPLATE,
@@ -21,6 +21,7 @@ import {
   LAYOUTS,
   cellsOf,
   defaultBoxes,
+  ratioOf,
   resolveLayout,
 } from "./layout.ts";
 import { mountPlayer, renderStrip } from "./player.ts";
@@ -586,9 +587,17 @@ function ensureFraming(): void {
   stopEditor = mountEditor({
     host: sourceSlot,
     media: videoEl,
-    source: () => getState().source,
-    cells,
+    bounds: () => getState().source,
+    count: cells.length,
     boxes: currentBoxes,
+    move: (rect, dx, dy) => moveBy(rect, dx, dy, getState().source),
+    resize: (rect, corner, dx, dy, index) => {
+      const cell = cells[index];
+      // pointerdown only sets a drag for an index that has both a node and a
+      // box, and nodes are built from `cells`, so this is always present.
+      if (!cell) return rect;
+      return resizeFromCorner(rect, corner, dx, dy, getState().source, ratioOf(cell));
+    },
     // Dragging must not trigger a full re-render — that would rebuild the
     // video element mid-drag. The editor moves its own nodes and the rAF
     // loop reads the new rect; state is written without notifying.
