@@ -1,7 +1,7 @@
 # vstack — custom floating boxes
 
 Date: 2026-08-25
-Status: designed
+Status: implemented
 Extends: `docs/specs/2026-08-21-vstack-layouts-design.md` (the layout system)
 and `docs/specs/2026-08-22-vstack-frame-borders-design.md` (the gutters and
 the frame overlay). Neither is superseded: cells, `ratioOf`, `xstack` and the

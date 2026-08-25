@@ -21,9 +21,16 @@ title card prepended to every export and supersedes the layouts doc's
 `docs/specs/2026-08-23-vstack-publish-design.md`, which covers `out/`, the
 `preview` phase and publishing, and supersedes the starter-screen doc's
 `/api/export` *response* — that route answers with JSON now and leaves the
-file on disk rather than streaming an attachment back. No spec covers the
-speech engine: every one of them describes macOS `say` and its `Linh` voice,
-which this codebase no longer uses at all (see "the voice" below).
+file on disk rather than streaming an attachment back, plus
+`docs/specs/2026-08-25-vstack-custom-boxes-design.md`, which covers the up to
+two floating pieces a user can drop over a layout's cells, extends the
+layouts doc and the frame-borders doc without superseding either (cells,
+`ratioOf`, `xstack` and the paint-over-the-composite rule all survive
+intact), and supersedes the layouts doc's `/api/export` body once more —
+`customs` on top of `layoutId` + `boxes` + `starterTitle` + `titlePng` +
+`voice`. No spec covers the speech engine: every one of them describes macOS
+`say` and its `Linh` voice, which this codebase no longer uses at all (see
+"the voice" below).
 `docs/plans/2026-08-20-vstack.md` is the historical build plan and carries
 inline "as built" corrections; treat it as a record, not as instructions.
 
@@ -34,7 +41,7 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 166 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 206 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -76,7 +83,10 @@ server/index.ts    9 routes (8 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/layout.ts      nine layout presets, cellsOf, ratioOf, defaultBoxes
-src/frame.ts       GUTTER/CORNER_RADIUS, windowOf/windowsOf, maskRgba
+src/custom.ts      CustomBox, MAX_CUSTOM/MIN_OUT_SIDE, clampOut/moveOut/
+                   resizeOut, resnapCrop, isValidOut/isValidCustom,
+                   defaultCustom
+src/frame.ts       GUTTER/CORNER_RADIUS, windowOf/windowsOf, ringOf, maskRgba
 src/starter.ts     TITLE_FONT, renderTitleArt (title → transparent PNG)
 src/state.ts       AppState, setState/setQuiet, save/restore
 src/api.ts         8 fetch wrappers
@@ -95,8 +105,14 @@ media/             clip cache (gitignored)
 ```
 
 Layering is strict and acyclic: `errors ← {ffmpeg, starter, youtube} ←
-{ytdlp, mask} ← index` on the server, `geometry ← layout ← frame ←
-everything` on the client.
+{ytdlp, mask} ← index` on the server, `geometry ← {layout, custom} ← frame ←
+everything` on the client. `custom.ts` sits beside `layout.ts`, not above or
+below it, because a floating piece's ratio is its own rather than a cell's —
+it imports only `geometry.ts`, the same as `layout.ts` does, and never needs
+`cellsOf` or `ratioOf`. `frame.ts` imports both: `windowsOf` still walks
+`cellsOf`, and `maskRgba`'s `customs` parameter takes bare `Rect`s rather than
+importing `CustomBox` at all, so `frame.ts` does not need to know the crop
+half of a custom box exists.
 `starter.ts` sits beside `ffmpeg.ts`, not above it, because it takes paths in
 the caller's temp dir and never needs `MEDIA_DIR` — it re-derives
 `~/.vstack/vieneu` itself for the same reason `youtube.ts` re-derives
@@ -210,6 +226,50 @@ away from fixed; a clipped hashtag reads as a typo to every viewer.
 across re-exports, so `/out/<name>` with no cache-buster re-shows the
 *previous* render — a fixed crop looks like it changed nothing.
 
+**A custom box's `out` is even on all four fields.** An `overlay` at an odd
+offset in yuv420p lands on a half-chroma-sample boundary. `clampOut` and
+`resizeOut` snap every field down to even (down, not nearest, so a value
+already clamped to a maximum cannot round back past it); `isValidOut` rejects
+odd on both sides of the wire — `restore` (client) and `assertCustoms`
+(server) share it, the same split-validator posture `isValidBox` already has
+for cell boxes. Skip the snap or the check anywhere and the failure is a
+chroma-plane shift nobody notices until they zoom into an export's seam.
+
+**The mask arbitrates in priority order: a custom's window beats a gutter,
+its ring∪nub beats everything.** `maskRgba` tests, per sample, whether it's
+inside a custom's window first (transparent — the piece shows, even where it
+straddles a cell seam), then inside that custom's ring∪nub region (opaque —
+draws the ring and cuts the piece's square corners over whatever cell
+happens to sit underneath), then outside every cell window (opaque — today's
+gutters and frame margin), else transparent. Reordering these is silent
+until someone inspects an export closely: putting the gutter rule ahead of
+the window rule threads a seam's white stripe straight through a piece that
+straddles it; dropping the ring∪nub rule leaves a piece's square corner
+showing wherever it happens to land over a cell's window.
+
+**A custom box survives a layout switch; a cell's box does not.** Switching
+layouts clears `boxes` because a preset's cells just changed shape or count,
+but `customs` is left alone — a piece's ratio is its own and its `out` is
+frame space, so nothing about a custom is invalidated by the cells changing.
+
+**The canvas protects the pieces with one `clip()` per piece, not one
+combined even-odd path.** `clip()` intersects, so intersecting "frame minus
+this piece" once per piece is the complement of the *union* of the pieces —
+exactly what `maskRgba`'s `customs.some(...)` computes. A single even-odd
+path built from every piece's rect at once is a *parity* test instead: two
+overlapping pieces cancel back to unprotected, so the white gutter fill would
+paint over their intersection in the preview while the export's mask (built
+from the union) leaves it alone. Silent preview/export divergence, and only
+visible once two pieces overlap.
+
+**`maskRgba`'s alpha must stay `255 - Math.round(transparent * 255 / SUB²)`,
+never the complementary `Math.round(opaque * 255 / SUB²)`.** `255 / 16`
+(`SUB = 4`) is not an integer, so the two forms are not the same number at
+every coverage level — at 8/16 coverage both round the halfway point up, and
+the two expressions land one apart. That shifts 16 corner-arc pixels per
+layout, a difference the five-pixel spot check in `server/mask.test.ts` does
+not sample and so does not catch.
+
 ## Gotchas that each cost real time
 
 **Never empty `sourceSlot` or `outSlot`.** They hold the trimming iframe,
@@ -267,7 +327,11 @@ option on the mask and lose the frame-accurate seek on the clip.
 id.** The mask is cached in `media/masks/` and outlives the process. Keyed on
 the layout alone, editing either constant would keep serving the old border to
 exports while the preview — which recomputes the overlay every frame — showed
-the new one.
+the new one. The filename also carries the floating pieces' digest
+(`maskPath`'s `-c<8 hex of sha1 over the out rects>`), but *only* when there
+are any customs — a layout with none keeps today's exact filename, so every
+mask cached before this feature shipped keeps hitting, and editing a custom's
+`out` rect changes the digest so it can never serve a stale border either.
 
 **`/api/export` takes window bounds, never a file path.** Its body is
 `videoId` + window/mark bounds + `layoutId` + `boxes` + `starterTitle` +
@@ -397,11 +461,14 @@ single-user tool; not something to fix here.
 
 ## Testing posture
 
-`geometry.ts` and `layout.ts` are the two modules with exhaustive coverage, deliberately — their bugs are silent. `layout.test.ts` asserts the nine presets tile 1080×1920 exactly, that only the three documented cell shapes occur, and that `defaultBoxes` returns per-cell-valid boxes: a mis-tiled layout survives preview and only shows up as a seam in an exported clip. `server/ffmpeg.test.ts` shells out to real ffmpeg and asserts output pixels; it is the only thing proving the preview/export agreement from the ffmpeg side — now including the border, via white pixels in the seam and at a corner cut's diagonal against the source's colour just inside a piece. `frame.test.ts` covers the window insets (every internal seam and frame margin
+`geometry.ts`, `layout.ts` and `custom.ts` are the modules with exhaustive coverage, deliberately — their bugs are silent. `src/custom.test.ts` covers `clampOut`/`moveOut`/`resizeOut`'s even-snapping, the `MIN_OUT_SIDE` floor, idempotence under repeated drags from every anchor corner, `resnapCrop`'s exact-ratio re-snap (and that it does not drift under repeated calls), and `isValidOut`/`isValidCustom` against everything `clampOut`/`defaultCustom` can emit and everything illegal. `layout.test.ts` asserts the nine presets tile 1080×1920 exactly, that only the three documented cell shapes occur, and that `defaultBoxes` returns per-cell-valid boxes: a mis-tiled layout survives preview and only shows up as a seam in an exported clip. `server/ffmpeg.test.ts` shells out to real ffmpeg and asserts output pixels; it is the only thing proving the preview/export agreement from the ffmpeg side — now including the border, via white pixels in the seam and at a corner cut's diagonal against the source's colour just inside a piece, and now including a real export with one floating piece straddling a cell seam, asserting the piece's own colour survives the seam, the ring around it is white, and the stack's colour resumes just past the ring. `frame.test.ts` covers the window insets (every internal seam and frame margin
 exactly one gutter, adjacency decided on the *cells* because every pair of
 windows has a positive gap) and the mask's alpha, including the assertion that
 a window's square corner is opaque — the one that fails if `CORNER_RADIUS`
-goes to 0. `server/mask.test.ts` decodes the rendered PNG back to RGBA and
+goes to 0 — plus, with a custom in play, that a corner nub stays opaque over a
+cell window and that a piece straddling a seam stays free of the seam's white
+stripe; both of those are mutation-tested against exactly the failure modes
+the mask's priority order exists to prevent. `server/mask.test.ts` decodes the rendered PNG back to RGBA and
 checks it against those windows.
 `server/starter.test.ts` shells out to real ffmpeg *and* the real speech
 engine, so it needs `pnpm tts-setup` to have run and it pays the model load:
