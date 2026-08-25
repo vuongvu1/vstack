@@ -223,10 +223,14 @@ describe("prependStarter", () => {
     // be heard. Thresholds separate signal from silence rather than naming a
     // level — silence reads below 0.0001 here.
     //
-    // The bed, in the beat before the voice starts. Its threshold is small
-    // because the bundled track opens soft (see MUSIC_START), so this is
-    // still three orders of magnitude above silence.
-    expect(await peakAt(out, 0.05, 0.25)).toBeGreaterThan(0.0005);
+    // The title hit, at the top of the screen with the title itself. The bed
+    // alone peaks three orders of magnitude below this, so only the hit
+    // clears it.
+    expect(await peakAt(out, 0, 0.3)).toBeGreaterThan(0.1);
+    // The bed has no isolated window in this fixture any more — the title hit
+    // now covers the head, and past starterDuration's 1.6s floor the voice
+    // ends exactly where the cue begins. It gets its own test below, with a
+    // fixture built to leave a gap.
     // The voice, over the bed.
     expect(await peakAt(out, 0.4, 0.5)).toBeGreaterThan(0.05);
     // The cue, in the tail slot the voice leaves free. Only the cue is loud
@@ -238,6 +242,32 @@ describe("prependStarter", () => {
     // silent and mixed against a silence stand-in. The fixture's own sine
     // peaks around 0.13 and aac shaves a little off.
     expect(await peakAt(out, intro + 0.2)).toBeGreaterThan(0.05);
+  });
+
+  // The bed is the one layer with nothing to isolate it in the main fixture:
+  // the title hit owns the head, and once a real spoken title pushes the
+  // screen past starterDuration's 1.6s floor, the screen is exactly
+  // LEAD_IN + voice + TAIL and the voice ends on the frame the cue starts.
+  //
+  // So this one hands prependStarter a deliberately short, silent voice. The
+  // floor then applies, the voice is over by 0.55s and the cue does not begin
+  // until 1.15s, which leaves a window where only the music can be playing —
+  // the title hit is 40 dB down by then.
+  it("keeps the music bed playing under the whole screen", async () => {
+    const quiet = join(dir, "quiet.aiff");
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i", "anullsrc=r=22050:cl=mono",
+      "-t", "0.2", "-y", quiet,
+    ]);
+
+    const out = join(dir, "bed-out.mp4");
+    await prependStarter({ main, title: art, voice: quiet, voiceSeconds: 0.2, out });
+
+    // Guard the premise rather than assume it: if the floor ever stops
+    // applying here, the window below silently stops being bed-only.
+    expect(starterDuration(0.2)).toBe(1.6);
+    expect(await peakAt(out, 0.9, 0.2)).toBeGreaterThan(0.03);
   });
 
   it("squares the pixels of an anamorphic clip instead of failing to concat", async () => {

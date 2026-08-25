@@ -54,7 +54,8 @@ server/starter.ts  MUSIC_PATH/CUE_PATH, VOICE, starterDuration, checkStarter,
                    pass 2 of the export)
 scripts/audition.ts  `pnpm voices` — speaks a title in each installed voice
 server/assets/     starter-music.mp3 (the bed), before-video-start-sound.mp3
-                   (the cue before the cut)
+                   (the cue before the cut), start-title-sound.mp3 (the hit
+                   at t=0, and the app's own phase-advance chime)
 server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
                    buildSnippet, accessToken, uploadVideo, publishProgress,
                    setThumbnail
@@ -402,6 +403,21 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
   the composite graph. It is one static image, and a per-pixel expression
   evaluated over every frame of the screen would cost ~300M evaluations for a
   picture that never changes.
+- `start-title-sound.mp3` is used twice: as the fourth audio layer of the
+  starter screen (at t=0, with the title, `TITLE_GAIN`) and as `bell()` in
+  `src/main.ts`, which rings on every phase advance. `src/main.ts` therefore
+  imports across the client/server line — deliberate, so the app and the
+  video say the same thing with the same file rather than two copies. It is
+  3s long with ~1s of audible decay, so `atrim` truncates silence, not a
+  sound.
+- **The starter screen's audio inputs are positional and one of them is
+  conditional.** The silence stand-in is only appended when the clip has no
+  audio, so it is the *last* index — adding an input above it moves the
+  stand-in and breaks silent clips only. `server/starter.test.ts` checks each
+  layer in a window where only that layer can be heard, which is why the bed
+  has its own test with a deliberately short voice: the title hit now owns
+  the head, and past `starterDuration`'s 1.6s floor the voice ends on the
+  frame the cue starts, leaving the bed nothing to be isolated in.
 - The bundled `starter-music.mp3` opens on a soft intro (mean -14 dB at 0:00 against -3 dB by 0:20) and the screen is only a couple of seconds long, so the bed hears the quietest part of the track. `MUSIC_START` and `MUSIC_GAIN` in `server/starter.ts` are the two knobs.
 - The starter screen makes macOS-only tooling a hard dependency: `say` and its `Linh` (vi_VN) voice. `checkStarter` fails the boot with the System Settings path if the voice is missing, and `server/starter.test.ts` will fail on a machine without it.
 - **`Linh` is the only Vietnamese voice macOS installs.** The novelty family (Eddy, Flo, Grandma, Rocko…) ships for 14 locales and vi_VN is not one of them, so "use a different voice" means either downloading one (an Enhanced/Premium `Linh` keeps the same name, so no code change) or accepting a non-Vietnamese voice mangling the diacritics. Audition with `pnpm voices [title] [voice...]` — it writes one file per voice to `$TMPDIR/vstack-voices` and speaks each aloud unless `--quiet`. Select with `VSTACK_VOICE="<name>" pnpm server`; the name must match `say -v '?'` exactly, parentheses and all, and `checkStarter` rejects it at boot if not.

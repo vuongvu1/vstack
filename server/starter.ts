@@ -19,6 +19,16 @@ export const MUSIC_PATH = asset("starter-music.mp3");
  *  gitignored clip cache. */
 export const CUE_PATH = asset("before-video-start-sound.mp3");
 
+/** The hit that lands with the title, at the very start of the screen. A
+ *  sharp attack with about a second of audible decay inside a 3s file — the
+ *  tail is already at -57 dB by the time the screen ends, so the `atrim`
+ *  below truncates silence rather than cutting a sound off.
+ *
+ *  The app plays this same file when a phase completes (`bell` in
+ *  `src/main.ts`), which is why it lives here and is imported across the
+ *  client/server line rather than duplicated. */
+export const TITLE_SOUND_PATH = asset("start-title-sound.mp3");
+
 /** The voice that reads the title. `Linh` is macOS' Vietnamese voice and the
  *  only one installed for vi_VN by default — the novelty family (Eddy, Flo,
  *  Rocko…) ships for 14 locales and Vietnamese is not among them.
@@ -112,6 +122,10 @@ const MUSIC_GAIN = 0.35;
  *  livelier bar, or raise MUSIC_GAIN. This and the gain are the two knobs. */
 const MUSIC_START = 0;
 const CUE_GAIN = 0.9;
+/** The title hit peaks at -6 dB in the file, louder than the bed at
+ *  MUSIC_GAIN, and it overlaps the start of the voice. Turned down so it
+ *  announces the title without burying the first syllable. */
+const TITLE_GAIN = 0.6;
 /** Long enough not to click, short enough to still be under the cue. */
 const MUSIC_FADE = 0.35;
 /** Every leg going into `concat` is forced to this, so the two segments'
@@ -298,6 +312,7 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
       "-ss", String(MUSIC_START), "-t", d, "-i", MUSIC_PATH,
       "-i", opts.voice,
       "-i", CUE_PATH,
+      "-i", TITLE_SOUND_PATH,
     ];
     if (!hasAudio) {
       args.push("-f", "lavfi", "-i", `anullsrc=r=${RATE}:cl=stereo`);
@@ -309,7 +324,10 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
     // trimmed by the clip's own audio-free length instead.
     const mainAudio = hasAudio
       ? `[2:a]${fmt}[am]`
-      : `[6:a]atrim=duration=${clip.toFixed(3)},${fmt}[am]`;
+      // Index 7, not 6: the title sound took 6 above. This leg only exists
+      // when the clip is silent, so a stale index here would be wrong only
+      // for silent clips — the quietest possible way to break.
+      : `[7:a]atrim=duration=${clip.toFixed(3)},${fmt}[am]`;
     const graph = [
       // The intro is forced to the clip's frame rate and to yuv420p because
       // concat requires matching parameters, and an image input defaults to
@@ -335,9 +353,12 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
       `[4:a]adelay=${Math.round(LEAD_IN * 1000)}:all=1,${fmt}[voice]`,
       `[5:a]adelay=${Math.round((seconds - TAIL) * 1000)}:all=1,` +
         `volume=${CUE_GAIN},${fmt}[cue]`,
+      // No adelay: the title is on screen from the first frame, so its sound
+      // starts with it and fills the lead-in the voice leaves quiet.
+      `[6:a]volume=${TITLE_GAIN},${fmt}[titlehit]`,
       // apad then atrim pins the intro's audio to exactly the video's length
       // — amix alone ends with its longest input, which is none of the three.
-      `[music][voice][cue]amix=inputs=3:duration=longest:normalize=0,` +
+      `[music][voice][cue][titlehit]amix=inputs=4:duration=longest:normalize=0,` +
         `apad,atrim=duration=${d},${fmt}[ai]`,
       mainAudio,
       "[ai][am]concat=n=2:v=0:a=1[a]",

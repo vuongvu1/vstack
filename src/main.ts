@@ -1,3 +1,9 @@
+// The same file the exported video plays under its title card — one sound
+// for "this step landed", whether that step is a phase advance in the app or
+// the title appearing in the short. Imported rather than fetched by path so
+// Vite fingerprints it and a build carries it; `vite/client` types make an
+// mp3 import a string URL.
+import titleSound from "../server/assets/start-title-sound.mp3";
 import * as api from "./api.ts";
 import { mountEditor } from "./editor.ts";
 import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
@@ -1103,29 +1109,31 @@ function render(): void {
   statusSlot.replaceChildren(...status);
 }
 
-/** A short beep, so a phase advance is noticeable while looking elsewhere.
+/** Rings when a step lands, so a phase advance is noticeable while looking
+ *  elsewhere — trimming to framing, framing to preview, and the export that
+ *  gets you there.
  *
- *  ponytail: an oscillator rather than an audio file — nothing to ship, cache
- *  or 404. A fresh AudioContext per ring, closed on ended: a long-lived one
- *  starts suspended until the first gesture and would need resuming, whereas
- *  every ring here follows a click. Swap in an `<audio>` and a real sample if
- *  a nicer sound ever matters. */
+ *  The starter screen's own title sound, deliberately: the app and the video
+ *  say the same thing the same way. It is a 3s file with about a second of
+ *  audible decay, so it reads as a chime rather than a clip.
+ *
+ *  A fresh Audio per ring rather than one reused element — replaying a shared
+ *  one means resetting currentTime and racing an in-flight play(). Every ring
+ *  here follows a click, so autoplay policy is satisfied, but play() still
+ *  returns a promise that rejects when it is not, and an unhandled rejection
+ *  must not be the cost of a sound effect. */
 function bell(): void {
   try {
-    const ctx = new AudioContext();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.frequency.value = 880;
-    // Ramp down rather than a hard stop, which clicks.
-    gain.gain.setValueAtTime(0.12, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.22);
-    osc.connect(gain).connect(ctx.destination);
-    osc.onended = () => void ctx.close();
-    osc.start();
-    osc.stop(ctx.currentTime + 0.22);
-  } catch {
-    // No audio device, or the browser refused to start a context. A missing
+    const audio = new Audio(titleSound);
+    // The file peaks at -6 dB, which is mixed for a video rather than for a
+    // UI chime sitting under someone's headphones.
+    audio.volume = 0.5;
+    // Both guards are needed: play() rejects asynchronously, and the
+    // constructor itself can throw where audio is unavailable. A missing
     // bell must never break the phase advance that triggered it.
+    void audio.play().catch(() => undefined);
+  } catch {
+    /* no audio device, or the browser refused it */
   }
 }
 
