@@ -126,8 +126,9 @@ export function maskRgba(windows: Rect[], customs: Rect[] = []): Uint8Array {
           }
         }
       }
-      if (opaque === SUB * SUB) continue;
-      buf[(y * OUTPUT.w + x) * 4 + 3] = Math.round((opaque * 255) / (SUB * SUB));
+      const transparent = SUB * SUB - opaque;
+      if (transparent === 0) continue;
+      buf[(y * OUTPUT.w + x) * 4 + 3] = 255 - Math.round((transparent * 255) / (SUB * SUB));
     }
   }
   return buf;
