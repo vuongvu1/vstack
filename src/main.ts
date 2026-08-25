@@ -638,6 +638,9 @@ async function doExport(): Promise<void> {
       titlePng: await renderTitleArt(starterTitle),
       layoutId: layout.id,
       boxes,
+      // ponytail: placeholder until Task 9 adds the custom-box state field
+      // and the +Box UI; the client sends no floating pieces yet.
+      customs: [],
       voice: currentVoice(s),
     });
     setState({

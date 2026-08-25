@@ -9,10 +9,12 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Rect } from "../src/geometry.ts";
 import { layoutById } from "../src/layout.ts";
+import type { CustomBox } from "../src/custom.ts";
 import { HttpError } from "./errors.ts";
 import {
   OUT_DIR,
   assertBoxes,
+  assertCustoms,
   clipPath,
   exportClip,
   firstFrame,
@@ -345,6 +347,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // non-arrays, non-objects and non-integers instead of throwing a
     // TypeError.
     const boxes = raw.boxes as Rect[];
+    // Same posture as boxes: shape here, legality below via assertCustoms.
+    // Absent means none, so a body from a client that predates this feature
+    // still exports.
+    const customs = (raw.customs ?? []) as CustomBox[];
 
     if (!videoId) return send(res, 400, { error: "Bad video id." });
     if (!(end > start)) return send(res, 400, { error: "End must be after start." });
@@ -385,6 +391,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // wrong for a client-supplied box).
     try {
       assertBoxes(layout, boxes, { w: source.width, h: source.height });
+      assertCustoms(customs, { w: source.width, h: source.height });
     } catch (err) {
       throw new HttpError(400, err instanceof Error ? err.message : String(err));
     }
@@ -422,10 +429,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         duration: end - start,
         layout,
         boxes,
+        customs,
         source: { w: source.width, h: source.height },
-        // Rendered on first export of each layout and cached from then on,
-        // keyed on the layout id plus GUTTER and CORNER_RADIUS.
-        mask: await ensureMask(layout),
+        // Rendered on first export of each layout+pieces combination and
+        // cached from then on, keyed on the layout id, GUTTER, CORNER_RADIUS
+        // and a digest of the pieces' output rects.
+        mask: await ensureMask(layout, customs.map((c) => c.out)),
         out: body,
       });
       const voicePath = join(dir, "voice.wav");

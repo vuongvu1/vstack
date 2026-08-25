@@ -1,4 +1,5 @@
 import type { Rect } from "./geometry.ts";
+import type { CustomBox } from "./custom.ts";
 
 export type ProbeResult = {
   videoId: string;
@@ -98,6 +99,9 @@ export async function exportClip(body: {
   titlePng: string;
   layoutId: string;
   boxes: Rect[];
+  /** Floating pieces over the layout, in z order — last on top. Always
+   *  sent, empty when there are none. */
+  customs: CustomBox[];
   /** Which preset reads the title. Validated server-side against the engine's
    *  own table — it reaches a subprocess as argv. */
   voice: string;
