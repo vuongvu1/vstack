@@ -5,6 +5,7 @@
 // mp3 import a string URL.
 import titleSound from "../server/assets/start-title-sound.mp3";
 import * as api from "./api.ts";
+import type { CustomBox } from "./custom.ts";
 import { mountEditor } from "./editor.ts";
 import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
@@ -579,7 +580,7 @@ function ensureFraming(): void {
     save();
   }
 
-  stopPreview = startPreview(canvasEl, videoEl, cells, currentBoxes);
+  stopPreview = startPreview(canvasEl, videoEl, cells, currentBoxes, currentCustoms);
 
   stopEditor?.();
   stopEditor = mountEditor({
@@ -609,6 +610,12 @@ function currentBoxes(): Rect[] {
   const layout = resolveLayout(cur.layoutId);
   const cells = cellsOf(layout);
   return cur.boxes.length === cells.length ? cur.boxes : defaultBoxes(cur.source, layout);
+}
+
+/** The current floating pieces. Read fresh on every preview frame and every
+ *  drag, like currentBoxes. */
+function currentCustoms(): CustomBox[] {
+  return getState().customs;
 }
 
 /** Renders the clip and moves to the preview phase. The file lands in `out/`
