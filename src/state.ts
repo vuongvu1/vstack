@@ -18,6 +18,15 @@ export type AppState = {
    *  export — the screen reads it aloud — and unrelated to `title`, which is
    *  YouTube's own and only names the downloaded file. */
   starterTitle: string;
+  /** Which speech preset reads the starter title. Empty means "whatever the
+   *  server's default is" — the name is not duplicated client-side, it
+   *  arrives from /api/voices, so the two sides cannot drift apart.
+   *
+   *  Persisted by `saveVoice`, NOT by `save()`: it is keyed globally rather
+   *  than per video, because the voice of a channel is not a property of one
+   *  clip. Putting it in the per-video record meant every new video reverted
+   *  to the server's fallback, which is the whole bug this split fixes. */
+  voice: string;
   duration: number;
   start: number;
   end: number;
@@ -61,6 +70,7 @@ const initial: AppState = {
   videoId: "",
   title: "",
   starterTitle: "",
+  voice: "",
   duration: 0,
   start: 0,
   end: 0,
@@ -121,6 +131,22 @@ type Saved = {
 type Legacy = { boxTop?: Rect | null; boxBottom?: Rect | null };
 
 const key = (videoId: string) => `vstack:${videoId}`;
+
+/** The voice, stored once for the whole app rather than per video.
+ *
+ *  Its own key for the same reason `vstack:theme` has one: it is a preference,
+ *  not a property of any one clip. Read through a function instead of baked
+ *  into `initial` because `initial` is evaluated at module load, and under
+ *  vitest that happens before the localStorage stub exists. */
+const VOICE_KEY = "vstack:voice";
+
+export function savedVoice(): string {
+  return localStorage.getItem(VOICE_KEY) ?? "";
+}
+
+export function saveVoice(name: string): void {
+  localStorage.setItem(VOICE_KEY, name);
+}
 
 /** Parses and normalizes whatever is stored under a video's key, or `null`
  *  if there is nothing usable. Shared by `save()` (to preserve fields it

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -29,15 +30,33 @@ export const CUE_PATH = asset("before-video-start-sound.mp3");
  *  client/server line rather than duplicated. */
 export const TITLE_SOUND_PATH = asset("start-title-sound.mp3");
 
-/** The voice that reads the title. `Linh` is macOS' Vietnamese voice and the
- *  only one installed for vi_VN by default — the novelty family (Eddy, Flo,
- *  Rocko…) ships for 14 locales and Vietnamese is not among them.
+/** The venv `pnpm tts-setup` builds, holding VieNeu-TTS and its wheels.
  *
- *  Overridable so picking a different one costs no code edit: audition with
- *  `pnpm voices`, then `VSTACK_VOICE="<name>" pnpm server`. Checked at boot
- *  (`checkStarter`), because a name that `say` does not know is an install or
- *  typo problem, not an export-time surprise. */
-export const VOICE = process.env.VSTACK_VOICE ?? "Linh";
+ *  Under `$HOME`, never the repo: Vite serves the project root statically, so
+ *  a 750 MB site-packages tree there would be fetchable by any page the
+ *  browser has open. `youtube.ts` already established `~/.vstack/` as where
+ *  this tool keeps what must stay out of that root, and this module
+ *  re-derives the directory for the same reason that one does — so neither
+ *  has to import the other. */
+const VENV = join(homedir(), ".vstack", "vieneu");
+const PYTHON = join(VENV, "bin", "python");
+const TTS = fileURLToPath(new URL("tts.py", import.meta.url));
+
+/** The voice that reads the title when the client names none.
+ *
+ *  macOS `say` used to do this job and no longer can. Its only Vietnamese
+ *  voice is `Linh`, and even `Linh (Enhanced)` — a separate name, not a
+ *  silent upgrade — tops out at `quality=2`; vi_VN has no `quality=3`
+ *  premium tier at all. The Siri voices System Settings offers under
+ *  Read & Speak are unreachable from any app: their `gryphon-neural` bundles
+ *  appear in neither `say -v '?'` nor `AVSpeechSynthesisVoice.speechVoices()`,
+ *  so picking one there changes what macOS reads aloud and nothing else.
+ *
+ *  VieNeu-TTS ships twenty presets instead, and the client picks one per
+ *  export — this constant is only the fallback. `VSTACK_VOICE` still
+ *  overrides it, and `checkStarter` rejects a name the engine does not know
+ *  at boot rather than at export time. */
+export const VOICE = process.env.VSTACK_VOICE ?? "Thùy Dung";
 
 /** The screen's shape: music alone, then the voice, then the cue.
  *
@@ -136,9 +155,12 @@ export function starterDuration(voiceSeconds: number): number {
   return Math.max(MIN_DURATION, LEAD_IN + voiceSeconds + TAIL);
 }
 
-/** Boot check: the voice and the sting. Both are hard requirements of every
- *  export, so a missing one should stop the server rather than fail the
- *  render after the download and the encode have already been paid for. */
+/** Boot check: the voice engine and the sting. Both are hard requirements of
+ *  every export, so a missing one should stop the server rather than fail the
+ *  render after the download and the encode have already been paid for.
+ *
+ *  This is also what fills the preset cache `knownVoices` serves, which is
+ *  why it runs before any route does. */
 export async function checkStarter(): Promise<void> {
   for (const path of [MUSIC_PATH, CUE_PATH]) {
     if (!existsSync(path)) {
@@ -146,63 +168,113 @@ export async function checkStarter(): Promise<void> {
       process.exit(1);
     }
   }
-  let voices: Voice[];
-  try {
-    voices = await installedVoices();
-  } catch {
-    console.error('vstack: "say" not found — the starter screen needs macOS text-to-speech.');
+  if (!existsSync(PYTHON)) {
+    console.error(
+      `vstack: no text-to-speech venv at ${VENV}. Fix: \`pnpm tts-setup\` ` +
+        "(builds it and downloads ~285 MB of VieNeu-TTS model on first run).",
+    );
     process.exit(1);
   }
-  if (!voices.some((v) => v.name === VOICE)) {
+  try {
+    presets = await installedVoices();
+  } catch (err) {
     console.error(
-      `vstack: "say" has no voice named ${VOICE}. Fix: install it under System ` +
-        "Settings → Accessibility → Spoken Content → System Voice → Manage " +
-        "Voices…, or pick one you have with `pnpm voices`.",
+      `vstack: the text-to-speech venv at ${VENV} cannot list its voices. ` +
+        "Fix: `pnpm tts-setup` to rebuild it.",
+      err,
+    );
+    process.exit(1);
+  }
+  if (!presets.some((v) => v.name === VOICE)) {
+    console.error(
+      `vstack: VieNeu-TTS has no voice named ${VOICE}. Fix: pick one with ` +
+        "`pnpm voices`, or unset VSTACK_VOICE.",
     );
     process.exit(1);
   }
 }
 
-export type Voice = { name: string; locale: string };
+export type Voice = {
+  name: string;
+  /** `male` / `female`, straight from the preset table. */
+  gender: string;
+  /** `Bắc` / `Trung` / `Nam` — the accent, which the UI groups by. Note this
+   *  collides confusingly with `gender: "male"`, whose Vietnamese label is
+   *  also "Nam"; they are different columns and both are the engine's words. */
+  region: string;
+  /** The delivery: news read, natural, storytelling. */
+  style: string;
+};
 
-/** Every voice `say` can use, as name + locale.
+/** The preset table, cached by `checkStarter` at boot.
  *
- *  Parsed rather than grepped because a voice name can contain spaces and
- *  parentheses — "Eddy (English (US))" — so the locale token is the only
- *  reliable delimiter, and matching a name by regex would mean escaping it.
- *  Shared by `checkStarter` and the audition script so there is one parser. */
+ *  `/api/export` validates the client's voice against this, so it has to be
+ *  populated before any route can serve — hence filled at boot rather than
+ *  lazily. Empty only in tests, which call `speak` directly. */
+let presets: Voice[] = [];
+
+export function knownVoices(): Voice[] {
+  return presets;
+}
+
+/** Every voice the engine ships, as name + gender + region + style.
+ *
+ *  Cheap on purpose: `tts.py --list` reads the preset JSON out of the
+ *  installed wheel without constructing a `Vieneu`, which is 0.06s against
+ *  the 4.2s an ONNX session costs. Boot pays it on every restart, and
+ *  `node --watch` restarts a lot. */
 export async function installedVoices(): Promise<Voice[]> {
   let stdout: string;
   try {
-    ({ stdout } = await run("say", ["-v", "?"], { maxBuffer: 1 << 20 }));
+    ({ stdout } = await run(PYTHON, [TTS, "--list"], { maxBuffer: 1 << 20 }));
   } catch (err) {
-    throw toolError("say", err);
+    throw toolError("vieneu", err);
   }
   const voices: Voice[] = [];
   for (const line of stdout.split("\n")) {
-    const m = /^(.+?)\s+([a-z]{2}_[A-Z]{2})\s/.exec(line);
-    if (m?.[1] && m[2]) voices.push({ name: m[1].trim(), locale: m[2] });
+    const [name, gender = "", region = "", style = ""] = line.split("\t");
+    if (name) voices.push({ name, gender, region, style });
   }
   return voices;
 }
 
-/** Reads the title aloud into `out` (AIFF) and returns its duration.
+/** Speaks `text` once per job, all in one process.
  *
- *  The text goes via a file, not argv: `say -f` cannot mistake a title that
- *  starts with "-" for an option, and there is no argv length ceiling to
- *  think about. `execFile` means no shell either way. */
-export async function speak(text: string, dir: string, out: string): Promise<number> {
+ *  Batched because the ONNX session setup is ~4.2s and each voice after it is
+ *  ~0.4s: auditioning all twenty presets is ~12s this way and ~84s as twenty
+ *  separate spawns. `speak` is the single-job case.
+ *
+ *  The text goes via a file, not argv — a title starting with "-" must not be
+ *  readable as an option, and there is no argv length ceiling to think about.
+ *  `execFile` means no shell either way. Voice names *are* argv, which is why
+ *  `/api/export` checks the client's against `knownVoices` first. */
+export async function synthesize(
+  text: string,
+  dir: string,
+  jobs: { voice: string; out: string }[],
+): Promise<void> {
+  if (jobs.length === 0) return;
   const script = join(dir, "title.txt");
   await writeFile(script, text, "utf8");
   try {
-    await run("say", ["-v", VOICE, "-f", script, "-o", out]);
+    await run(PYTHON, [TTS, script, ...jobs.flatMap((j) => [j.voice, j.out])]);
   } catch (err) {
-    throw toolError("say", err);
+    throw toolError("vieneu", err);
   }
+}
+
+/** Reads the title aloud into `out` (48 kHz WAV) and returns its duration. */
+export async function speak(
+  text: string,
+  dir: string,
+  out: string,
+  voice: string = VOICE,
+): Promise<number> {
+  await synthesize(text, dir, [{ voice, out }]);
   const data = (await probeJson(out, ["format=duration"])) as Probed;
   const seconds = Number(data.format?.duration);
   if (!Number.isFinite(seconds) || seconds <= 0) {
-    throw new Error(`say produced no audible title (${out}).`);
+    throw new Error(`vieneu produced no audible title (${out}).`);
   }
   return seconds;
 }

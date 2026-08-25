@@ -1,27 +1,28 @@
 import { execFile } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { VOICE, installedVoices } from "../server/starter.ts";
+import { VOICE, installedVoices, synthesize } from "../server/starter.ts";
 
 const run = promisify(execFile);
 
 /** Auditions the starter screen's voice.
  *
- *  `pnpm voices`                          — every Vietnamese voice installed
+ *  `pnpm voices`                          — all twenty VieNeu-TTS presets
  *  `pnpm voices "Ăn cơm chưa bạn ơi"`     — …reading your own title
- *  `pnpm voices "Chào bạn" Linh "Eddy (English (US))"`
- *                                         — named voices, any language
+ *  `pnpm voices "Chào bạn" "Mai Anh" "Thùy Dung"`
+ *                                         — named voices only
  *  `pnpm voices --quiet`                  — write the files, play nothing
  *
  *  Each one is spoken aloud *and* written to a file, so a second pass needs no
- *  re-synthesis. Pick one, then run the server with it:
- *  `VSTACK_VOICE="<name>" pnpm server`.
+ *  re-synthesis. Pick one in the framing bar's dropdown, or make it the
+ *  server's fallback with `VSTACK_VOICE="<name>" pnpm server`.
  *
- *  ponytail: a script, not a UI. Choosing a voice is a once-ever decision, and
- *  a dropdown would mean an AppState field, a /api/voices route, a preview
- *  endpoint and save/restore migration. Add all that the day it changes often.
+ *  All of them are synthesised in a single `synthesize` call, because the ONNX
+ *  session setup is ~4.2s against ~0.4s per voice — twenty separate spawns
+ *  would be ~84s instead of ~12s. That is also why playback is a second pass
+ *  over the files rather than interleaved with generating them.
  */
 const DEFAULT_TITLE = "Ăn cơm chưa bạn ơi";
 
@@ -31,8 +32,7 @@ const quiet = argv.includes("--quiet");
 const [title = DEFAULT_TITLE, ...named] = argv.filter((a) => a !== "--quiet");
 
 const all = await installedVoices();
-const vietnamese = all.filter((v) => v.locale === "vi_VN");
-const names = named.length > 0 ? named : vietnamese.map((v) => v.name);
+const names = named.length > 0 ? named : all.map((v) => v.name);
 
 const unknown = names.filter((n) => !all.some((v) => v.name === n));
 if (unknown.length > 0) {
@@ -42,37 +42,34 @@ if (unknown.length > 0) {
 
 const dir = join(tmpdir(), "vstack-voices");
 await mkdir(dir, { recursive: true });
-const script = join(dir, "title.txt");
-// Via a file for the same reason `speak` does it: a title starting with "-"
-// must not be read as an option.
-await writeFile(script, title, "utf8");
+
+// Slugged, because a preset name has spaces and Vietnamese diacritics in it.
+const jobs = names.map((name) => ({
+  voice: name,
+  out: join(dir, `${name.replace(/[^\dA-Za-z]+/g, "-")}.wav`),
+}));
 
 const verb = quiet ? "saved to" : "spoken and saved to";
-console.warn(`\n“${title}”\n${names.length} voice(s), each ${verb} ${dir}\n`);
+console.warn(`\n“${title}”\n${jobs.length} voice(s), each ${verb} ${dir}`);
+console.warn("Loading the model…\n");
+await synthesize(title, dir, jobs);
 
-for (const name of names) {
-  // Slugged, because a voice name has spaces and parentheses in it.
-  const file = join(dir, `${name.replace(/[^\dA-Za-z]+/g, "-")}.aiff`);
-  await run("say", ["-v", name, "-f", script, "-o", file]);
+for (const { voice, out } of jobs) {
   const { stdout } = await run("ffprobe", [
     "-v", "error",
     "-show_entries", "format=duration",
     "-of", "default=nw=1:nk=1",
-    file,
+    out,
   ]);
   const seconds = Number(stdout.trim()).toFixed(2);
-  console.warn(`  ▶ ${name}${name === VOICE ? "  (current)" : ""}  —  ${seconds}s`);
-  // Live, after the file, so the printed label is on screen while it plays.
-  if (!quiet) await run("say", ["-v", name, "-f", script]);
+  const label = all.find((v) => v.name === voice);
+  const about = label ? `  ${label.region} · ${label.gender === "female" ? "Nữ" : "Nam"}` : "";
+  console.warn(`  ▶ ${voice}${voice === VOICE ? "  (default)" : ""}${about}  —  ${seconds}s`);
+  // Live, after the line is printed, so the label is on screen while it plays.
+  if (!quiet) await run("afplay", [out]);
 }
 
-if (named.length === 0 && vietnamese.length === 1) {
-  console.warn(
-    "\nOnly one Vietnamese voice is installed. More live under System Settings" +
-      " → Accessibility → Spoken Content → System Voice → Manage Voices… →" +
-      " Vietnamese (an Enhanced/Premium Linh keeps the same name, so nothing" +
-      " needs changing here).\nOr audition any language:" +
-      ' `pnpm voices "<title>" "Eddy (English (US))"`.',
-  );
-}
-console.warn(`\nTo use one: VSTACK_VOICE="<name>" pnpm server\n`);
+console.warn(
+  "\nPick one in the framing bar's dropdown, or make it the fallback with" +
+    ' `VSTACK_VOICE="<name>" pnpm server`.\n',
+);

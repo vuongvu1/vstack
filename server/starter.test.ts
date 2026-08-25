@@ -1,12 +1,19 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { OUTPUT } from "../src/geometry.ts";
-import { VOICE, installedVoices, prependStarter, speak, starterDuration } from "./starter.ts";
+import {
+  VOICE,
+  installedVoices,
+  prependStarter,
+  speak,
+  starterDuration,
+  synthesize,
+} from "./starter.ts";
 
 const run = promisify(execFile);
 
@@ -139,27 +146,51 @@ async function probeOut(path: string) {
 }
 
 describe("installedVoices", () => {
-  it("parses voice names whole, spaces and parentheses included", async () => {
+  it("parses the preset table into whole names, gender, region and style", async () => {
     const voices = await installedVoices();
     expect(voices.length).toBeGreaterThan(10);
-    // The name a grep or a split on whitespace gets wrong: macOS' localised
-    // voices are called things like "Eddy (English (US))", and that whole
-    // string is what `say -v` wants back.
-    const parenthesised = voices.find((v) => v.name.includes("("));
-    expect(parenthesised?.name).toMatch(/\)$/);
-    // The default voice has to be here, or checkStarter fails the boot.
+    // Names carry spaces and Vietnamese diacritics — "Thùy Dung", "Minh Đức" —
+    // so the TSV split has to keep each field whole. A parser that split on
+    // whitespace would halve every one of them.
+    const spaced = voices.find((v) => v.name.includes(" "));
+    expect(spaced?.name).toMatch(/^\S+ \S+/u);
+    // Every row is fully populated: an empty region would collapse the
+    // dropdown's grouping into one unnamed pile.
+    for (const v of voices) {
+      expect(v.gender).toMatch(/^(male|female)$/);
+      expect(v.region).not.toBe("");
+      expect(v.style).not.toBe("");
+    }
+    // The fallback voice has to be here, or checkStarter fails the boot.
     expect(voices).toEqual(
-      expect.arrayContaining([expect.objectContaining({ name: VOICE, locale: "vi_VN" })]),
+      expect.arrayContaining([expect.objectContaining({ name: VOICE })]),
     );
   });
 });
 
 describe("speak", () => {
   it("reads the title in Vietnamese and reports a real duration", () => {
-    // Six syllables — anything near zero means `say` wrote an empty file and
-    // the screen would be sized around nothing.
+    // Six syllables — anything near zero means the engine wrote an empty file
+    // and the screen would be sized around nothing.
     expect(voiceSeconds).toBeGreaterThan(0.5);
     expect(starterDuration(voiceSeconds)).toBeGreaterThan(voiceSeconds);
+  });
+
+  it("pairs argv into voices and outputs when given several jobs", async () => {
+    // The variadic contract: `tts.py` walks argv in twos after the text file,
+    // so an off-by-one in that stride would write one voice into the other's
+    // path — or synthesise the second file with the first voice, which no
+    // single-job call can catch. Both files existing with different bytes is
+    // what proves the pairing held.
+    const [a, b] = [join(dir, "a.wav"), join(dir, "b.wav")];
+    const voices = (await installedVoices()).slice(0, 2).map((v) => v.name);
+    await synthesize("Ăn cơm chưa bạn ơi", dir, [
+      { voice: voices[0] ?? VOICE, out: a },
+      { voice: voices[1] ?? VOICE, out: b },
+    ]);
+    expect(existsSync(a)).toBe(true);
+    expect(existsSync(b)).toBe(true);
+    expect(readFileSync(a).equals(readFileSync(b))).toBe(false);
   });
 });
 

@@ -21,7 +21,9 @@ title card prepended to every export and supersedes the layouts doc's
 `docs/specs/2026-08-23-vstack-publish-design.md`, which covers `out/`, the
 `preview` phase and publishing, and supersedes the starter-screen doc's
 `/api/export` *response* — that route answers with JSON now and leaves the
-file on disk rather than streaming an attachment back.
+file on disk rather than streaming an attachment back. No spec covers the
+speech engine: every one of them describes macOS `say` and its `Linh` voice,
+which this codebase no longer uses at all (see "the voice" below).
 `docs/plans/2026-08-20-vstack.md` is the historical build plan and carries
 inline "as built" corrections; treat it as a record, not as instructions.
 
@@ -32,15 +34,19 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 150 tests
+pnpm test     # vitest, 166 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
-pnpm voices   # audition the starter screen's TTS voice (see below)
+pnpm voices   # audition the starter screen's 20 TTS presets (see below)
+pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
 pnpm youtube-auth  # one-off OAuth setup for publishing (see server/youtube.ts)
 ```
 
-Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH, plus macOS `say` with a
-Vietnamese voice (`Linh`) and both files in `server/assets/`. The server checks
-all of it at boot and exits with an install hint if any is missing.
+Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH, the speech venv from
+`pnpm tts-setup`, and both audio files in `server/assets/`. The server checks
+all of it at boot and exits with an install hint if any is missing. Nothing
+here needs macOS `say` any more — the starter screen's voice is VieNeu-TTS,
+and the only remaining macOS dependency is `afplay` in `pnpm voices` and
+`open -R` in `/api/reveal`.
 
 ## Architecture
 
@@ -52,9 +58,12 @@ server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, outName/outPath,
                    reportCache
 server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
 server/starter.ts  MUSIC_PATH/CUE_PATH, VOICE, starterDuration, checkStarter,
-                   installedVoices, speak, prependStarter (the title card,
-                   pass 2 of the export)
-scripts/audition.ts  `pnpm voices` — speaks a title in each installed voice
+                   installedVoices, knownVoices, synthesize, speak,
+                   prependStarter (the title card, pass 2 of the export)
+server/tts.py      VieNeu-TTS front end: `--list` (preset table, no model) and
+                   variadic `<text-file> <voice> <out.wav> ...` synthesis
+scripts/tts-setup.ts `pnpm tts-setup` — builds ~/.vstack/vieneu
+scripts/audition.ts  `pnpm voices` — speaks a title in each preset voice
 server/assets/     starter-music.mp3 (the bed), before-video-start-sound.mp3
                    (the cue before the cut), start-title-sound.mp3 (the hit
                    at t=0, and the app's own phase-advance chime)
@@ -63,14 +72,14 @@ server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
                    setThumbnail
 scripts/youtube-auth.ts  `pnpm youtube-auth` — the one-off OAuth dance
 server/ytdlp.ts    videoIdFrom, probe, fetchWindow
-server/index.ts    7 routes (6 POST + GET /out/<name>), serveOut range
+server/index.ts    9 routes (8 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/layout.ts      nine layout presets, cellsOf, ratioOf, defaultBoxes
 src/frame.ts       GUTTER/CORNER_RADIUS, windowOf/windowsOf, maskRgba
 src/starter.ts     TITLE_FONT, renderTitleArt (title → transparent PNG)
 src/state.ts       AppState, setState/setQuiet, save/restore
-src/api.ts         6 fetch wrappers
+src/api.ts         8 fetch wrappers
 src/format.ts      mmss / clock / slugify (shared client + server)
 src/player.ts      YT IFrame API wrapper + trim strip
 src/editor.ts      crop-box drag/resize overlay
@@ -80,13 +89,19 @@ media/             clip cache (gitignored)
 ~/Desktop/vstack/  finished shorts, plus a vertical .jpg still beside each
                    one (OUT_DIR; VSTACK_OUT_DIR overrides). Outside the repo,
                    so the user sweeps it, not .gitignore
+~/.vstack/vieneu/  the speech venv (~750 MB of wheels). Also outside the repo,
+                   but for a different reason — see the static-root rule
+~/.cache/huggingface/  the ~285 MB VieNeu model, pulled on first export
 ```
 
 Layering is strict and acyclic: `errors ← {ffmpeg, starter, youtube} ←
 {ytdlp, mask} ← index` on the server, `geometry ← layout ← frame ←
 everything` on the client.
 `starter.ts` sits beside `ffmpeg.ts`, not above it, because it takes paths in
-the caller's temp dir and never needs `MEDIA_DIR`. `youtube.ts` sits beside
+the caller's temp dir and never needs `MEDIA_DIR` — it re-derives
+`~/.vstack/vieneu` itself for the same reason `youtube.ts` re-derives
+`CONFIG_DIR`. `tts.py` is not in the layering at all: it is a subprocess, and
+`starter.ts` is the only thing that ever spawns it. `youtube.ts` sits beside
 both for the same reason — it re-derives `CONFIG_DIR` under `~/.vstack/`
 itself rather than importing `MEDIA_DIR` or `OUT_DIR` from `ffmpeg.ts`.
 `geometry.ts` never imports `layout.ts` — that is why `defaultBoxes` lives in
@@ -159,6 +174,16 @@ and a fractional overlay offset does not survive ffmpeg.
 
 Two invariants are mutation-tested and should stay that way: swapping two entries in `buildFilter`'s `xstack` `layout=` string fails the 3-cell pixel assertions in `server/ffmpeg.test.ts`; making `clampToBounds` shrink fails 3 geometry tests.
 
+**The voice is the other client-supplied string that reaches a subprocess.**
+`/api/export`'s `voice` becomes argv of `tts.py`, so it is checked against
+`knownVoices()` — the engine's own preset table, cached at boot by
+`checkStarter` — and not against a pattern. A table lookup is the same posture
+as `layoutById`: there is no regex to get subtly wrong, and the set of legal
+values is by definition whatever the installed engine ships. `checkStarter`
+filling that cache is therefore load-bearing for the *validator*, not just for
+the boot hint — an empty cache rejects every export rather than accepting
+every voice, which is the right way for it to fail.
+
 **`isOutName` is the one client-supplied path component this API accepts.**
 Everywhere else the server takes window bounds or an id and reconstructs a
 path itself, so there is nothing to validate. Preview breaks that — publish
@@ -214,6 +239,17 @@ along, which reads as "Export is broken" rather than "type a title first".
 
 **`starterTitle` persists unconditionally, like the marks.** The framing-only gate below is for values that are meaningless before `/api/window` has reported the clip's real size; a title is not one of them.
 
+**The voice is persisted globally, NOT in the per-video record.** `saveVoice`
+/ `savedVoice` own a `vstack:voice` key of their own, the way `vstack:theme`
+does, and `save()`/`restore()` never touch it. Keyed per video it looked
+correct in every test and still reverted to the server's fallback on every
+*new* video, because a fresh id has no stored entry to read a voice out of —
+the failure only shows on the second video, which is exactly when nobody is
+looking for it. `src/state.test.ts` mutation-tests the exclusion: putting
+`voice` back into `save()`'s record fails on `not.toHaveProperty("voice")`.
+`restore` must stay silent about it too, or loading a video would overwrite
+the global choice with nothing.
+
 **`save()` only persists boxes/dimensions when `phase === "framing"` with a full set of boxes for the current layout.** Otherwise it carries the stored values forward. Before framing, `state.source` still holds probe's informational dimensions and `boxes` is empty — writing them would erase a set framed in an earlier session, and the half-built states `ensureFraming` passes through (some cells boxed, some not) would truncate a complete stored set.
 
 **Two yt-dlp format selectors, tried in order, and they are complementary.** `best[height<=1080]` 403s on videos with no HLS rendition (only progressive itag 18, which the ANDROID_VR client can't fetch); `bv*+ba` 403s on videos that do have HLS. Measured on real videos. yt-dlp's own `/` fallback cannot help — the 403 arrives at *download* time, after the format is chosen — so the retry lives in `fetchWindow`.
@@ -233,7 +269,9 @@ the layout alone, editing either constant would keep serving the old border to
 exports while the preview — which recomputes the overlay every frame — showed
 the new one.
 
-**`/api/export` takes window bounds, never a file path.** The server reconstructs the cache filename itself, so there is no client-supplied path to validate for traversal. The starter screen's `titlePng` is the one exception — an image the client rendered, because this machine's ffmpeg *cannot rasterise text at all* — so it is length-capped and checked against the PNG signature before it reaches ffmpeg. Keep both of those that way.
+**`/api/export` takes window bounds, never a file path.** Its body is
+`videoId` + window/mark bounds + `layoutId` + `boxes` + `starterTitle` +
+`titlePng` + `voice`. The server reconstructs the cache filename itself, so there is no client-supplied path to validate for traversal. The starter screen's `titlePng` is the one exception — an image the client rendered, because this machine's ffmpeg *cannot rasterise text at all* — so it is length-capped and checked against the PNG signature before it reaches ffmpeg. Keep both of those that way.
 
 **This ffmpeg has no `drawtext`.** Homebrew 8.1.1 here is built without
 libfreetype, libass and librsvg; `ffmpeg -h filter=drawtext` says `Unknown
@@ -365,10 +403,14 @@ windows has a positive gap) and the mask's alpha, including the assertion that
 a window's square corner is opaque — the one that fails if `CORNER_RADIUS`
 goes to 0. `server/mask.test.ts` decodes the rendered PNG back to RGBA and
 checks it against those windows.
-`server/starter.test.ts` shells out to real ffmpeg *and* real `say`: the
-output's duration is the screen plus the clip, the seam pixel is mixed over
+`server/starter.test.ts` shells out to real ffmpeg *and* the real speech
+engine, so it needs `pnpm tts-setup` to have run and it pays the model load:
+the output's duration is the screen plus the clip, the seam pixel is mixed over
 the screen (the assertion that fails if the blur is dropped) and pure over the
-clip, and a non-square-SAR clip concatenates at all. Audio is checked one
+clip, and a non-square-SAR clip concatenates at all. It also covers the two
+things `tts.py` can get silently wrong — the TSV parse (every row's gender,
+region and style non-empty, names kept whole through their spaces and
+diacritics) and the variadic argv stride, which is mutation-tested. Audio is checked one
 layer per window — the bed before the voice starts, the voice, the cue in the
 tail slot the voice leaves free, and the clip's own sound after the cut (the
 assertion that caught `hasAudio` reading the wrong ffprobe line). Each window
@@ -432,8 +474,74 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
   the head, and past `starterDuration`'s 1.6s floor the voice ends on the
   frame the cue starts, leaving the bed nothing to be isolated in.
 - The bundled `starter-music.mp3` opens on a soft intro (mean -14 dB at 0:00 against -3 dB by 0:20) and the screen is only a couple of seconds long, so the bed hears the quietest part of the track. `MUSIC_START` and `MUSIC_GAIN` in `server/starter.ts` are the two knobs.
-- The starter screen makes macOS-only tooling a hard dependency: `say` and its `Linh` (vi_VN) voice. `checkStarter` fails the boot with the System Settings path if the voice is missing, and `server/starter.test.ts` will fail on a machine without it.
-- **`Linh` is the only Vietnamese voice macOS installs.** The novelty family (Eddy, Flo, Grandma, Rocko…) ships for 14 locales and vi_VN is not one of them, so "use a different voice" means either downloading one (an Enhanced/Premium `Linh` keeps the same name, so no code change) or accepting a non-Vietnamese voice mangling the diacritics. Audition with `pnpm voices [title] [voice...]` — it writes one file per voice to `$TMPDIR/vstack-voices` and speaks each aloud unless `--quiet`. Select with `VSTACK_VOICE="<name>" pnpm server`; the name must match `say -v '?'` exactly, parentheses and all, and `checkStarter` rejects it at boot if not.
+- **The starter screen's voice is VieNeu-TTS, not macOS `say`.** `tts.py`
+  shells out to a venv at `~/.vstack/vieneu` built by `pnpm tts-setup`; the
+  ~285 MB model lands in `~/.cache/huggingface` on the first export. Twenty
+  Vietnamese presets across three accents (Bắc / Trung / Nam), picked
+  per-export from a dropdown in the framing bar and persisted per video.
+  Apache 2.0, torch-free ONNX int8 — the README's own recommendation on Apple
+  Silicon, where the CPU path beats the MPS build.
+- **`say` was abandoned because it has no ceiling left, not because it broke.**
+  Its only Vietnamese voice is `Linh`, and `Linh (Enhanced)` is a separate
+  *name* rather than a silent upgrade of it — both appear in `say -v '?'` once
+  the 133 MB download lands. Enhanced is `quality=2` and vi_VN has no
+  `quality=3` premium tier at all, so that was the whole public ceiling. Don't
+  revisit `say` expecting to find more there.
+- **The Siri voices under Accessibility → Read & Speak are unreachable from
+  any app, and picking one changes nothing here.** Selecting "Siri Voice 3"
+  writes a `com.apple.ttsbundle.gryphon-neural_…_premium` id into
+  `com.apple.Accessibility`, and those bundles appear in *neither* `say -v '?'`
+  *nor* `AVSpeechSynthesisVoice.speechVoices()` — verified on macOS 26.6.2,
+  where the only vi entries are `com.apple.voice.{compact,enhanced}.vi-VN.Linh`.
+  They drive macOS' own reader and Siri, nothing else. (macOS 26 renamed that
+  pane from "Spoken Content" to "Read & Speak"; the anchor is still
+  `AX_FEATURE_SPOKENCONTENT`.)
+- **`tts.py --list` must never construct a `Vieneu`.** The preset table is a
+  static JSON shipped inside the wheel
+  (`vieneu/assets/voices_v3_turbo.json` — speaker embeddings plus pre-encoded
+  reference codes), so reading it directly costs 0.06s where an ONNX session
+  costs 4.2s. Boot calls `--list` on every start and `node --watch` restarts on
+  every server edit, so routing this through the model would put four seconds
+  on every save. It is located with `importlib.util.find_spec`, which does not
+  execute the package.
+- **`synthesize` is variadic because the model load dominates.** ~4.2s of ONNX
+  session setup, then ~0.4s per voice: `pnpm voices` over all twenty presets is
+  ~12s in one process against ~84s as twenty spawns. `speak` is the one-job
+  case and the export path. `tts.py` walks argv in twos after the text file,
+  and `server/starter.test.ts` mutation-tests that stride — changing it to 1
+  fails with `ValueError: Voice '/…/a.wav' not found`.
+- **An export pays ~4.6s for the voice and that is deliberate.** A resident
+  process would reclaim it, at the cost of something to start, health-check and
+  shut down; the export already spends far longer in two ffmpeg passes.
+  VieNeu has a `mode="remote"` if that ever stops being true.
+- The engine's `region` and `gender` columns collide in Vietnamese: a Southern
+  voice is `region: "Nam"`, and a male voice's label is also "Nam" (`gender` is
+  the English `male`/`female`). Different columns, both the engine's words —
+  `pnpm voices` prints `Nam · Nữ` for a Southern woman and that is correct.
+- Audition with `pnpm voices [title] [voice...]` — one file per voice in
+  `$TMPDIR/vstack-voices`, each played through `afplay` unless `--quiet`.
+  `VSTACK_VOICE="<name>" pnpm server` sets the *fallback* the dropdown starts
+  from; `checkStarter` rejects a name the engine doesn't know at boot.
+- **`/api/say` answers the WAV itself and keeps nothing.** The framing bar's
+  Try button hears the real title in the selected voice without an export. It
+  runs `/api/export`'s two validators (`readTitle`, then the voice against
+  `knownVoices`) and synthesises into a `mkdtemp` dir it removes in a
+  `finally` — verified as three requests leaving zero directories. A server
+  killed mid-sample does strand one, deliberately un-tracked: unlike an export
+  partial it is in `$TMPDIR`, is not servable, and has no name a client could
+  request, which were the three reasons `inFlight` exists.
+- The voice dropdown writes through `saveVoice` rather than `save()`, and
+  `main.ts` reads it back with `setQuiet({ voice: savedVoice() })` immediately
+  before the first `render()` — so the control opens on the last-picked voice
+  instead of flashing the server's fallback. `savedVoice` is a function rather
+  than a value folded into `initial` because `initial` is evaluated at module
+  load, which under vitest is before the localStorage stub exists.
+- **The Try button carries its own busy state, not `guard`'s.** A global
+  `busy` re-renders the bar — rebuilding the title input mid-iteration — and
+  disables Export and the transport for the ~4.6s the model takes. Same
+  reasoning as the Export button's in-place `disabled` flip: the title field
+  updates via `setQuiet`, so both buttons are toggled from inside its
+  `oninput` rather than by a render.
 - `~/Desktop/vstack/` grows without eviction, two files per export (the
   `.mp4` and its vertical `.jpg`). Nothing prunes it — deliberately the
   user's to clear, which is why it sits on the Desktop rather than in the

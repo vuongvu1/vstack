@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_LAYOUT_ID } from "./layout.ts";
-import { restore, save, setState } from "./state.ts";
+import { restore, save, saveVoice, savedVoice, setState } from "./state.ts";
 
 /** vitest's config runs this file under Node, which has no `localStorage`
  *  global. `state.ts` is pure logic over whatever object sits at
@@ -254,6 +254,36 @@ describe("save", () => {
       sourceW: 0,
       sourceH: 0,
     });
+  });
+
+  it("keeps the voice out of the per-video record", () => {
+    // The regression this split fixes: the voice used to ride along in each
+    // video's entry, so every *new* video opened on the server's fallback
+    // instead of the voice already chosen. toMatchObject would pass either
+    // way — the point is the key's absence, so this reads the raw object.
+    const videoId = "voice-not-per-video";
+    saveVoice("Mai Anh");
+    setState({
+      videoId,
+      phase: "framing",
+      voice: "Mai Anh",
+      start: 1,
+      end: 9,
+      layoutId: "1-1",
+      boxes: [
+        { x: 1, y: 1, w: 180, h: 160 },
+        { x: 2, y: 2, w: 180, h: 160 },
+      ],
+      source: { w: 1920, h: 1080 },
+    });
+    save();
+
+    expect(readRaw(videoId)).not.toHaveProperty("voice");
+    // …and restoring that video must not hand a voice back either, or it
+    // would overwrite the global choice with nothing on every load.
+    expect(restore(videoId, { w: 1920, h: 1080 })).not.toHaveProperty("voice");
+    // The global key is where it actually lives, untouched by either call.
+    expect(savedVoice()).toBe("Mai Anh");
   });
 
   it("is a no-op without a videoId", () => {

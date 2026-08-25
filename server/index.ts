@@ -1,7 +1,7 @@
 import { execFile, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createReadStream, existsSync, statSync, unlinkSync } from "node:fs";
-import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -23,7 +23,7 @@ import {
   reportCache,
 } from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
-import { checkStarter, prependStarter, speak } from "./starter.ts";
+import { VOICE, checkStarter, knownVoices, prependStarter, speak } from "./starter.ts";
 import {
   buildSnippet,
   checkYouTube,
@@ -95,8 +95,8 @@ export function num(v: unknown, name: string): number {
 }
 
 /** The starter screen's title. Trimmed here so the same string is what gets
- *  spoken, and length-capped because it is handed to `say`, which will
- *  cheerfully read a novel. */
+ *  spoken, and length-capped because it is handed to a speech engine that
+ *  will cheerfully read a novel. */
 const TITLE_MAX = 200;
 
 export function readTitle(v: unknown): string {
@@ -339,6 +339,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const starterTitle = readTitle(raw.starterTitle);
     const titlePng = png(raw.titlePng, "titlePng");
     const layoutId = str(raw.layoutId, "layoutId");
+    const voiceName = str(raw.voice, "voice");
     // Shape is checked here; legality (integers, per-cell ratio, in-bounds)
     // is checked below via assertBoxes/isValidBox, which safely reject null,
     // non-arrays, non-objects and non-integers instead of throwing a
@@ -356,6 +357,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // instead of a file path.
     const layout = layoutById(layoutId);
     if (!layout) return send(res, 400, { error: `Unknown layout ${layoutId}.` });
+
+    // The voice reaches a subprocess as argv, so it is checked against the
+    // engine's own preset table rather than pattern-matched — the same
+    // posture as the layout lookup above and `isOutName` below. This and the
+    // out name are the only client-supplied strings this API acts on.
+    if (!knownVoices().some((v) => v.name === voiceName)) {
+      return send(res, 400, { error: `Unknown voice ${voiceName}.` });
+    }
 
     // Window bounds in, never a path: the cache filename is reconstructed
     // here from videoId + window bounds, so there is no client-supplied
@@ -419,12 +428,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         mask: await ensureMask(layout),
         out: body,
       });
-      const voice = join(dir, "voice.aiff");
+      const voicePath = join(dir, "voice.wav");
       await prependStarter({
         main: body,
         title: art,
-        voice,
-        voiceSeconds: await speak(starterTitle, dir, voice),
+        voice: voicePath,
+        voiceSeconds: await speak(starterTitle, dir, voicePath, voiceName),
         out: partial,
       });
       await rename(partial, out);
@@ -466,8 +475,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const path = outPath(body.name);
     if (!existsSync(path)) return send(res, 404, { error: `${body.name} is not in out/.` });
     // Fire and forget: `open` has done its job by the time it exits, and
-    // revealing a file is not worth an error banner. macOS is already a hard
-    // dependency here — `say` and the Linh voice.
+    // revealing a file is not worth an error banner. This is now one of only
+    // two macOS-only calls left — the other is `afplay` in `pnpm voices` —
+    // since the voice moved off `say` onto VieNeu-TTS.
     execFile("open", ["-R", path], (err) => {
       if (err) console.warn(`vstack: could not reveal ${path}:`, err);
     });
@@ -499,6 +509,40 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // Polled twice a second by the client while an upload runs. Exact string
   // equality above means this never shadows /api/publish and vice versa.
   if (req.url === "/api/publish/progress") return send(res, 200, publishProgress());
+
+  // The framing bar's voice dropdown. Served from the boot cache, so it costs
+  // nothing and cannot disagree with what /api/export will accept.
+  if (req.url === "/api/voices") return send(res, 200, { voices: knownVoices(), default: VOICE });
+
+  // The Try button beside that dropdown: the real title in the real voice,
+  // without paying for an export. Answers the WAV itself rather than writing
+  // it anywhere servable — a sample is not an artifact, and `out/` is for
+  // things the user meant to keep.
+  if (req.url === "/api/say") {
+    const raw = await json<Record<string, unknown>>(req);
+    // The same two validators /api/export runs, for the same two reasons: the
+    // title reaches an engine that would read a novel, and the voice reaches
+    // a subprocess as argv.
+    const starterTitle = readTitle(raw.starterTitle);
+    const voiceName = str(raw.voice, "voice");
+    if (!knownVoices().some((v) => v.name === voiceName)) {
+      return send(res, 400, { error: `Unknown voice ${voiceName}.` });
+    }
+    const dir = await mkdtemp(join(tmpdir(), "vstack-say-"));
+    // ponytail: not tracked in `inFlight` like the export partials are. A
+    // server killed mid-sample does strand this directory, but unlike a
+    // partial it is in $TMPDIR, is not servable, and carries no name a client
+    // could ask for — the three reasons that Set exists. macOS sweeps it.
+    try {
+      const out = join(dir, "voice.wav");
+      await speak(starterTitle, dir, out, voiceName);
+      const wav = await readFile(out);
+      res.writeHead(200, { "content-type": "audio/wav", "content-length": wav.length });
+      return void res.end(wav);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
 
   return send(res, 404, { error: `No route ${req.url}` });
 }

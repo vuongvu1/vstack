@@ -98,8 +98,29 @@ export async function exportClip(body: {
   titlePng: string;
   layoutId: string;
   boxes: Rect[];
+  /** Which preset reads the title. Validated server-side against the engine's
+   *  own table — it reaches a subprocess as argv. */
+  voice: string;
 }): Promise<ExportResult> {
   return (await post("/api/export", body)).json() as Promise<ExportResult>;
+}
+
+export type Voice = { name: string; gender: string; region: string; style: string };
+
+/** The speech presets, for the framing bar's dropdown. Answered from the
+ *  server's boot cache, so it cannot disagree with what `exportClip` accepts. */
+export async function voices(): Promise<{ voices: Voice[]; default: string }> {
+  return (await post("/api/voices", {})).json() as Promise<{
+    voices: Voice[];
+    default: string;
+  }>;
+}
+
+/** The title spoken in one voice, as a WAV, for the Try button. A blob rather
+ *  than a URL because the sample is never written anywhere servable — the
+ *  route answers the bytes and keeps nothing. */
+export async function say(body: { starterTitle: string; voice: string }): Promise<Blob> {
+  return (await post("/api/say", body)).blob();
 }
 
 export async function reveal(name: string): Promise<void> {

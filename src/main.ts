@@ -27,7 +27,16 @@ import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
 import { renderTitleArt } from "./starter.ts";
 import type { AppState } from "./state.ts";
-import { getState, restore, save, setQuiet, setState, subscribe } from "./state.ts";
+import {
+  getState,
+  restore,
+  save,
+  saveVoice,
+  savedVoice,
+  setQuiet,
+  setState,
+  subscribe,
+} from "./state.ts";
 
 const appEl = document.querySelector<HTMLDivElement>("#app");
 if (!appEl) throw new Error("#app missing");
@@ -629,6 +638,7 @@ async function doExport(): Promise<void> {
       titlePng: await renderTitleArt(starterTitle),
       layoutId: layout.id,
       boxes,
+      voice: currentVoice(s),
     });
     setState({
       phase: "preview",
@@ -819,9 +829,13 @@ function renderFraming(): Node[] {
   // render — so the button is flipped in place here. Without that it would
   // stay disabled until some unrelated setState happened along, which reads
   // as "Export is broken" rather than "type a title first".
+  const tryVoice = renderTryVoice(s, title);
   title.oninput = () => {
     setQuiet({ starterTitle: title.value });
     download.disabled = !exportable(title.value);
+    // Same in-place flip, same reason — Try reads the title aloud too, so a
+    // blank one leaves it with nothing to say.
+    tryVoice.disabled = title.value.trim() === "";
   };
   // On blur rather than per keystroke: the value is settled by then, and
   // save() notifies nothing, so the caret is safe either way.
@@ -856,11 +870,142 @@ function renderFraming(): Node[] {
       "div",
       { className: "bar-row" },
       title,
+      renderVoicePicker(s),
+      tryVoice,
       // Re-fetch first: it is the odd one out, a utility rather than a step,
       // so it sits furthest from the action that ends the phase.
       el("div", { className: "bar-end" }, refetch, back, download),
     ),
   ];
+}
+
+/** The speech presets, fetched once at startup.
+ *
+ *  The dropdown is built from this, and an empty `state.voice` resolves
+ *  against `voiceDefault` — so the default voice's *name* lives on the server
+ *  alone and the two sides cannot drift. Fire-and-forget: `framing` is a URL
+ *  paste, a trim and a download away, which is many seconds, and a failed
+ *  fetch just leaves the dropdown holding whatever was already persisted.
+ *
+ *  ponytail: no retry and no error surface. A voice list that failed to load
+ *  shows one option and Export still works on the server's default. Add a
+ *  retry the day the fetch is flaky, which on loopback is never. */
+let voiceList: api.Voice[] = [];
+let voiceDefault = "";
+
+void api
+  .voices()
+  .then((r) => {
+    voiceList = r.voices;
+    voiceDefault = r.default;
+    // The dropdown may already be on screen showing a lone fallback option.
+    render();
+  })
+  .catch(() => {
+    /* Export falls back to the server's own default. */
+  });
+
+/** What `doExport` sends and the dropdown shows as selected. */
+const currentVoice = (s: AppState): string => s.voice || voiceDefault;
+
+/** North-to-south, which is also how the engine's own labels read. A region
+ *  the table grows later still renders — it lands in the trailing group. */
+const REGIONS = ["B\u1eafc", "Trung", "Nam"];
+
+/** "Ph\u1ecfng c\u00e1ch tin t\u1ee9c" -> "tin t\u1ee9c": the prefix is on every
+ *  row, so it is pure noise inside a dropdown of nothing but styles. */
+const styleOf = (v: api.Voice) =>
+  v.style.replace(/^(Phong c\u00e1ch|Gi\u1ecdng \u0111\u1ecdc)\s+/u, "");
+
+/** The voice picker. Grouped by accent because that is the choice a viewer
+ *  actually hears first; gender and delivery ride along in each label. */
+function renderVoicePicker(s: AppState): HTMLSelectElement {
+  const chosen = currentVoice(s);
+  const select = el("select", {
+    title: "Which voice reads the starter title",
+    ariaLabel: "Starter screen voice",
+    disabled: Boolean(s.busy),
+  });
+  // Before the list lands (or if it never does) the select still has to show
+  // the voice that will actually be used, or it reads as "no voice picked".
+  const groups = voiceList.length > 0 ? voiceList : [];
+  if (groups.length === 0 && chosen !== "") {
+    select.append(el("option", { value: chosen, textContent: chosen, selected: true }));
+  }
+  const seen = new Set<string>();
+  for (const region of [...REGIONS, ...groups.map((v) => v.region)]) {
+    if (seen.has(region)) continue;
+    seen.add(region);
+    const mine = groups.filter((v) => v.region === region);
+    if (mine.length === 0) continue;
+    const group = el("optgroup", { label: region });
+    for (const v of mine) {
+      group.append(
+        el("option", {
+          value: v.name,
+          textContent: `${v.name} \u2014 ${v.gender === "female" ? "N\u1ef1" : "Nam"} \u00b7 ${styleOf(v)}`,
+          selected: v.name === chosen,
+        }),
+      );
+    }
+    select.append(group);
+  }
+  // Quiet, like the title field beside it: nothing in this bar is gated on
+  // the voice, so a render would only risk disturbing playback. save() on
+  // change rather than blur — a <select> commits in one gesture.
+  select.onchange = () => {
+    setQuiet({ voice: select.value });
+    // saveVoice, not save(): the voice is keyed globally, so it survives into
+    // the next video rather than into the next visit to this one.
+    saveVoice(select.value);
+  };
+  return select;
+}
+
+/** The last sample's object URL, revoked before the next one replaces it.
+ *  Module-level rather than per-click because a click that lands while the
+ *  previous sample is still playing has to be able to reach it. */
+let sampleUrl = "";
+
+/** Plays the real title in the selected voice, without an export.
+ *
+ *  Its own in-place busy state rather than `guard`'s: a global `busy` would
+ *  re-render the bar — rebuilding the very input the user is iterating on —
+ *  and disable Export and the transport for the four seconds the model takes
+ *  to load. Auditioning a voice is not a phase-advancing action.
+ *
+ *  ponytail: no client-side cache, so re-trying the same title and voice pays
+ *  the ~4.6s again. Add one keyed on `title + voice` the day that grates. */
+function renderTryVoice(s: AppState, titleField: HTMLInputElement): HTMLButtonElement {
+  const button = el("button", {
+    textContent: "▶ Try",
+    title: "Hear the title in this voice",
+    // Same gate as Export, minus the marks: with no title there is nothing to
+    // read aloud. Flipped in place by the title field's own handler, because
+    // a quiet keystroke reaches no render.
+    disabled: titleField.value.trim() === "" || Boolean(s.busy),
+  });
+  button.onclick = () => {
+    const title = titleField.value.trim();
+    if (title === "") return;
+    button.disabled = true;
+    button.textContent = "…";
+    void api
+      .say({ starterTitle: title, voice: currentVoice(getState()) })
+      .then((wav) => {
+        // The previous sample's URL leaks otherwise: an object URL is held by
+        // the document until it is revoked, not until the Audio is collected.
+        if (sampleUrl !== "") URL.revokeObjectURL(sampleUrl);
+        sampleUrl = URL.createObjectURL(wav);
+        return new Audio(sampleUrl).play();
+      })
+      .catch((err: unknown) => setState({ error: String(err) }))
+      .finally(() => {
+        button.disabled = titleField.value.trim() === "";
+        button.textContent = "▶ Try";
+      });
+  };
+  return button;
 }
 
 /** The preview bar: what came out, publishing it, and the ways out of here. */
@@ -1153,6 +1298,11 @@ subscribe(() => {
   ranPhase = phase;
   bell();
 });
+
+// Before the first render, so the dropdown opens on the voice you last
+// picked rather than flashing the server's fallback. Quiet because `render()`
+// is on the next line anyway.
+setQuiet({ voice: savedVoice() });
 
 subscribe(render);
 render();

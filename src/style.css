@@ -194,8 +194,10 @@ button:disabled { opacity: 0.5; cursor: default; }
 .btn-gray:focus-visible { outline-color: var(--slate-8); }
 
 /* TextField, surface variant. The border is an inset shadow, not a border,
-   so the focus ring can thicken to 2px without shifting layout by a pixel. */
-input {
+   so the focus ring can thicken to 2px without shifting layout by a pixel.
+   The voice <select> shares the recipe: it is a field on the same row as the
+   title input, and a native control beside a themed one reads as a bug. */
+input, select {
   font: inherit;
   height: var(--control-height);
   padding: 0 var(--space-2);
@@ -205,9 +207,18 @@ input {
   color: var(--slate-12);
   box-shadow: inset 0 0 0 1px var(--slate-a7);
 }
+/* No `appearance` reset: stripping it takes the disclosure arrow too, and
+   putting one back means a data-URI SVG per theme, since a background image
+   cannot read `currentColor`. Chrome honours the surface above on a native
+   select, and the arrow it keeps follows `color-scheme` — which `.dark` on
+   <html> already flips — for free. */
+select { padding-right: var(--space-1); }
 input::placeholder { color: var(--slate-9); }
-input:focus { outline: none; box-shadow: inset 0 0 0 2px var(--blue-8); }
-input:disabled, textarea:disabled { background: var(--slate-a2); color: var(--slate-11); }
+input:focus, select:focus { outline: none; box-shadow: inset 0 0 0 2px var(--blue-8); }
+input:disabled, select:disabled, textarea:disabled {
+  background: var(--slate-a2);
+  color: var(--slate-11);
+}
 
 /* Same surface as the text inputs, just taller. Global rather than scoped to
    `.bar` because the publish panel has one too, and `input` above is global
