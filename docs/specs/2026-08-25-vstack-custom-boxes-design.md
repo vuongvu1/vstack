@@ -79,8 +79,12 @@ Rules:
   its handles are not buried under the first's.
 - Persisted per video in `Saved.customs`, behind the same
   `phase === "framing" && valid` gate as `boxes`, and dropped by `restore`
-  under the same conditions (source-size change, or any custom failing
-  validation). The layout choice survives that, as it does today.
+  under the same conditions (source-size change, more than `MAX_CUSTOM` of
+  them, or any custom failing validation). The count is bounded as well as
+  the shapes for the same reason the boxes are checked against the layout's
+  cell count: a hand-edited record with three legal pieces would otherwise
+  restore, mount and preview, then 400 at `assertCustoms` on export. The
+  layout choice survives all of that, as it does today.
 
 ## Rendering: one mask, applied last
 
@@ -94,28 +98,48 @@ concrete:
 - A custom straddling a cell seam would get the seam's white stripe painted
   through it.
 
-So the mask keeps its "applied last" position and gains a priority order.
-Per pixel:
+So the mask keeps its "applied last" position and gains a **z-aware walk**
+over the customs — not a flat priority order, because with two pieces there
+is a third failure mode: whichever flat order you pick, one of the two pieces
+loses its ring and its rounded corners wherever the pieces overlap. The
+binding intent is the compositing order the filter graph already uses, so the
+mask walks the pieces from topmost (last in the array) down, and the first
+piece whose *ring rect* contains the sample decides it and stops the walk:
 
 ```
-opaque white   if in the ring∪nub region of some custom
-transparent    if inside some custom window
-opaque white   if outside every cell window
-transparent    otherwise
+for j from customs.length - 1 down to 0:
+    if inside ringOf(customs[j]) rounded at CORNER_RADIUS + GUTTER:
+        opaque white   if NOT inside customs[j] rounded at CORNER_RADIUS
+                       (that piece's ring, or a nub cutting its corner)
+        transparent    otherwise  (that piece's window — it shows)
+        decide and stop walking
+if no piece's ring rect contained it:
+    opaque white   if outside every cell window
+    transparent    otherwise
 ```
 
 where a custom's *window* is its `out` rounded at `CORNER_RADIUS`, and its
-*ring∪nub region* is `out` expanded by `GUTTER` (rounded at
-`CORNER_RADIUS + GUTTER`) minus that window. The ring gives the piece the
-same visual weight as a seam; the nubs cut its square corners.
+*ring rect* is `out` expanded by `GUTTER`, rounded at
+`CORNER_RADIUS + GUTTER`. The ring gives the piece the same visual weight as
+a seam; the nubs cut its square corners. A piece's window is always inside
+its own ring rect, so "inside a window" is always reached by that piece's own
+branch and never falls through to the gutter rule.
 
-Check the two failure modes against the order: a seam pixel inside a custom
+Check the three failure modes against the walk: a seam pixel inside a custom
 window is transparent, so the custom shows; a nub pixel is opaque white
-whatever is under it. Both hold.
+whatever is under it; and where two pieces overlap, the upper one's ring and
+nubs are opaque while the lower one's ring is not painted across it. All
+three hold.
 
-`maskRgba(cellWindows, customWindows = [])` — same `SUB × SUB` coverage
+The walk reduces exactly — byte-for-byte — to the pre-custom behaviour at
+zero pieces, and to a `window-beats-ring-beats-gutter` flat order at one.
+That identity is what keeps today's cached masks and `server/mask.test.ts`
+valid, and it is why the two-piece case is the only one that can regress.
+
+`maskRgba(cellWindows, customOutRects = [])` — same `SUB × SUB` coverage
 sampling, with `insideWindow` generalised to `insideRounded(rect, radius,
-px, py)`.
+px, py)`. `customOutRects` are in **array order**, the same z order the
+overlay chain composes them in.
 
 Filter graph:
 
@@ -133,9 +157,24 @@ The mask stays input 1 and stays declared before `-ss` — the existing rule
 about ffmpeg attaching options to the next `-i` is unchanged.
 
 The canvas preview draws in the identical order: stack pieces, then each
-custom as a plain `drawImage` rect, then the white ring∪nub fill, then the
-even-odd gutter fill. Same order as ffmpeg means the preview/export agreement
-is preserved by construction rather than by coincidence.
+custom as a plain `drawImage` rect, then the white decoration. Same order as
+ffmpeg means the preview/export agreement is preserved by construction rather
+than by coincidence.
+
+The decoration is where the walk has to be mirrored, because `clip()`
+intersects and cannot be undone except by `save`/`restore`:
+
+- the **gutter fill** (full-frame white, even-odd minus the cell windows) is
+  clipped by the complement of *every* piece's window;
+- then, per piece `j` **in array order**, its **ring fill** (`ringOf(out)`
+  rounded at `CORNER_RADIUS + GUTTER`) is clipped by the complement of the
+  windows of pieces `k >= j` — itself and everything above it.
+
+One `clip("evenodd")` of "full frame plus this piece's rounded rect" per `k`
+in that range gives exactly that, since `clip()` intersects. Clip all pieces
+on every ring fill and the upper piece loses its ring over the lower one;
+clip only the piece itself and the lower piece's ring stripes across the
+upper one.
 
 Mask cache key: `${layout.id}-g${GUTTER}-r${CORNER_RADIUS}` as today, plus
 `-c<hash>` **only when customs exist**, where `<hash>` is the first 8 hex
@@ -157,7 +196,7 @@ mountEditor({
   count: number,                   // fixed at mount, as the cell list is today
   move / resize: (rect, …, index) => Rect  // injected; the editor holds no geometry
   boxes, onChange, onCommit,
-})
+}): { place, stop }                // was a bare teardown fn; see the drag bullet
 ```
 
 Injected rather than a `ratios()` getter, so the aspect-locked source rules
@@ -172,19 +211,33 @@ and the free-aspect output rules each stay in the module that tests them.
 - **Output overlay** (new, over `canvasEl`): `count = customs.length`,
   `bounds = () => OUTPUT`, every ratio `null`. Preset cells get no nodes —
   presets stay presets.
-- New geometry primitive `resizeFree(rect, corner, dx, dy, bounds, minSide)`:
-  the anchor-corner math of `resizeFromCorner` without the ratio derivation,
-  plus even-snapping. `clampToBounds` is unchanged and still slides rather
-  than shrinks.
+- New output-space primitive `resizeOut(rect, corner, dx, dy)` — **in
+  `src/custom.ts`, not `src/geometry.ts`**: the anchor-corner math of
+  `resizeFromCorner` without the ratio derivation, plus even-snapping. It
+  bakes in `OUTPUT` and `MIN_OUT_SIDE` rather than taking them as `bounds`
+  and `minSide` parameters, precisely so that those two output-space
+  constants stay out of `geometry.ts` — the module that must never learn
+  anything about the frame's decoration or its bounds. Same reasoning that
+  put `defaultBoxes` in `layout.ts`. `clampToBounds` is unchanged and still
+  slides rather than shrinks.
 - Both editors remount when `layout.id` **or** `customs.length` changes —
   `editorFor` becomes `${layout.id}:${customs.length}`. Node count is fixed
   at mount, the same rule as today, and neither remount reassigns
   `video.src`.
 - A drag on the output overlay emits one `setQuiet` patch carrying the new
-  `out` *and* the re-snapped `crop`, so the rAF canvas and the source overlay
-  move together. `save()` on commit only.
-- Colours: customs take `box-c4`/`box-c5`, two new Radix scales (`cyan`,
-  `orange` — `red` stays reserved for errors), imported with their alpha
+  `out` *and* the re-snapped `crop`. The rAF canvas follows for free — it
+  re-reads state every frame — but the source overlay is DOM and only moves
+  when its own `place()` runs, which nothing in this drag would otherwise
+  reach. So `mountEditor` returns `{ place, stop }` rather than a bare
+  teardown, `main.ts` keeps the source overlay's handle module-scoped, and
+  the output overlay's `onChange` calls `place()` on it. `save()` on commit
+  only.
+- Colours: customs take the two per-index scales after the last cell's.
+  `labelFrom` is the cell count, so on the two-cell default layout a piece is
+  `box-c2`/`box-c3` (grass/violet) and `box-c4`/`box-c5` — two new Radix
+  scales, `cyan` and `orange`, since `red` stays reserved for errors — are
+  only ever seen on a four-cell layout. Six scales cover four cells plus two
+  pieces either way, so no collision is possible. Imported with their alpha
   companions like every other scale.
 
 ## UI and state flow
@@ -222,23 +275,34 @@ crop: isValidBox(crop, source, out.w / out.h)
 
 ## Testing
 
-- `src/geometry.test.ts` — `resizeFree`: even snapping, the `MIN_OUT_SIDE`
-  floor, clamping, all four anchor corners, and idempotence under repeated
+- `src/custom.test.ts` — **not `src/geometry.test.ts`**, since `resizeOut`
+  lives in `src/custom.ts`: even snapping, the `MIN_OUT_SIDE` floor,
+  clamping, all four anchor corners, and idempotence under repeated
   application. The crop re-snap: exact ratio after an `out` resize, no drift
   over repeated calls.
-- `src/frame.test.ts` — the mask with customs: ring opaque, window
+- `src/frame.test.ts` — the mask with one custom: ring opaque, window
   transparent, a corner nub over a cell window opaque, a seam pixel inside a
   custom window transparent. The last two are mutation-tested: they are the
-  two failure modes the priority order exists to prevent.
+  two failure modes the walk exists to prevent. Then the mask with **two
+  overlapping** customs, at exactly the rects two `+ Box` clicks produce: the
+  upper piece's nub and its ring stay opaque where they sit over the lower
+  piece's window, and the lower piece's ring stays transparent inside the
+  upper piece's window. The first two of those are mutation-tested against
+  the walk losing its z order; the third is what fails if the walk is
+  "fixed" by simply swapping the window and ring tests.
 - `server/mask.test.ts` — path unchanged with no customs, different under a
   changed custom rect, decoded PNG matching the windows.
 - `server/ffmpeg.test.ts` — real ffmpeg over a synthetic multi-colour source:
   a 3-cell layout plus one custom, asserting the custom's source colour at
   its centre, white in the ring, and the stack's colour just outside the
-  ring. Plus a regression fence: `buildFilter(layout, boxes, [])` byte-
+  ring. Then a second export with two overlapping customs cropped from
+  different colour bands — the only end-to-end proof that the mask is
+  z-aware, since the hand-traced samples cannot show what ffmpeg actually
+  composited. Plus a regression fence: `buildFilter(layout, boxes, [])` byte-
   identical to today's string.
-- `src/state.test.ts` — customs round-trip; mutation: persisting customs
-  outside `framing` fails.
+- `src/state.test.ts` — customs round-trip; a stored record holding more than
+  `MAX_CUSTOM` pieces restores as none; mutation: persisting customs outside
+  `framing` fails.
 - `assertCustoms` — odd coordinates, off-frame rects, a wrong-ratio crop,
   three customs, a non-object.
 

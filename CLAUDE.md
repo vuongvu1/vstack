@@ -92,7 +92,8 @@ src/state.ts       AppState, setState/setQuiet, save/restore
 src/api.ts         8 fetch wrappers
 src/format.ts      mmss / clock / slugify (shared client + server)
 src/player.ts      YT IFrame API wrapper + trim strip
-src/editor.ts      crop-box drag/resize overlay
+src/editor.ts      box drag/resize overlay (crops over the <video>, pieces'
+                   `out` rects over the <canvas>); returns { place, stop }
 src/preview.ts     canvas composite rAF loop
 src/main.ts        persistent shell, phase machine, all four phases
 media/             clip cache (gitignored)
@@ -236,17 +237,37 @@ odd on both sides of the wire — `restore` (client) and `assertCustoms`
 for cell boxes. Skip the snap or the check anywhere and the failure is a
 chroma-plane shift nobody notices until they zoom into an export's seam.
 
-**The mask arbitrates in priority order: a custom's window beats a gutter,
-its ring∪nub beats everything.** `maskRgba` tests, per sample, whether it's
-inside a custom's window first (transparent — the piece shows, even where it
-straddles a cell seam), then inside that custom's ring∪nub region (opaque —
-draws the ring and cuts the piece's square corners over whatever cell
-happens to sit underneath), then outside every cell window (opaque — today's
-gutters and frame margin), else transparent. Reordering these is silent
-until someone inspects an export closely: putting the gutter rule ahead of
-the window rule threads a seam's white stripe straight through a piece that
-straddles it; dropping the ring∪nub rule leaves a piece's square corner
-showing wherever it happens to land over a cell's window.
+**`restore` bounds the piece *count* as well as each piece's shape.**
+`isValidCustom` per element is not enough: localStorage is untrusted input,
+and a hand-edited record holding three individually legal pieces would mount
+three nodes, preview them, and only die at `assertCustoms` with a 400. The
+`MAX_CUSTOM` check mirrors what the boxes path right above it already does
+with the layout's cell count.
+
+**The mask walks the pieces from topmost down; it is not a flat priority
+order.** `maskRgba` takes `customs` in the array order `buildFilter` overlays
+them in — last on top — and, per sample, walks them backwards. The first
+piece whose *ring rect* (its `out` expanded by `GUTTER`, rounded at
+`CORNER_RADIUS + GUTTER`) contains the sample owns it outright and the walk
+stops: opaque if the sample is outside that piece's own window (its ring, or
+a nub cutting its square corner), transparent if inside it (the piece shows,
+even across a cell seam). Only a sample inside no piece's ring rect falls
+through to the old rule — opaque outside every cell window, transparent
+otherwise. A piece's window is always inside its own ring rect, so "inside a
+window" is always reached by that piece's own branch.
+
+Neither flat order is correct and both are silent. Testing *any* piece's
+window before *every* piece's ring — what this did before — is
+indistinguishable from the walk at zero or one piece, and at two the upper
+piece loses its ring and its rounded corners wherever it sits over the lower
+one; since `defaultCustom` places the two defaults overlapping by 480x480,
+two clicks of `+ Box` *is* the defect state. Swapping the two tests so
+ring∪nub beats everything is worse: it paints the lower piece's ring across
+the upper one. And putting the gutter rule ahead of either threads a seam's
+white stripe straight through a piece that straddles it. The walk reduces
+byte-for-byte to the old code at zero and one piece — verified, and fenced by
+`server/mask.test.ts` — so that identity is what any future rework has to
+preserve.
 
 **A custom box survives a layout switch; a cell's box does not.** Switching
 layouts clears `boxes` because a preset's cells just changed shape or count,
@@ -254,14 +275,23 @@ but `customs` is left alone — a piece's ratio is its own and its `out` is
 frame space, so nothing about a custom is invalidated by the cells changing.
 
 **The canvas protects the pieces with one `clip()` per piece, not one
-combined even-odd path.** `clip()` intersects, so intersecting "frame minus
-this piece" once per piece is the complement of the *union* of the pieces —
-exactly what `maskRgba`'s `customs.some(...)` computes. A single even-odd
-path built from every piece's rect at once is a *parity* test instead: two
-overlapping pieces cancel back to unprotected, so the white gutter fill would
-paint over their intersection in the preview while the export's mask (built
-from the union) leaves it alone. Silent preview/export divergence, and only
-visible once two pieces overlap.
+combined even-odd path — and the ring fills need a different set of clips
+from the gutter fill.** `clip()` intersects, so intersecting "frame minus
+this piece" once per piece is the complement of the *union* of those pieces'
+windows. A single even-odd path built from every piece's rect at once is a
+*parity* test instead: two overlapping pieces cancel back to unprotected, so
+the white gutter fill would paint over their intersection in the preview
+while the export's mask leaves it alone.
+
+The gutter fill takes that clip over *all* pieces. Each piece's ring fill
+takes it over that piece and every piece *above* it only — which is the
+canvas spelling of `maskRgba`'s topmost-down walk, and what lets an upper
+piece's ring and nubs land over a lower piece while keeping a lower piece's
+ring out of an upper piece's window. Clip all pieces on every ring fill too
+and the upper piece loses its ring over the lower one; clip only the piece
+itself and the lower piece's ring stripes across the upper one. Both are
+silent preview/export divergence, and both are only visible once two pieces
+overlap — which is exactly the state `+ Box` twice produces.
 
 **`maskRgba`'s alpha must stay `255 - Math.round(transparent * 255 / SUB²)`,
 never the complementary `Math.round(opaque * 255 / SUB²)`.** `255 / 16`
@@ -298,6 +328,28 @@ along, which reads as "Export is broken" rather than "type a title first".
 `doExport` re-checks the title itself rather than trusting the button.
 
 **`setQuiet`, not `setState`, in the drag path and during render.** `setState` notifies subscribers synchronously, so calling it from inside `render()` is re-entrant, and a re-render mid-drag rebuilds the bar and risks disturbing playback. The rAF preview loop reads state every frame, so a quiet update still reaches the canvas. `save()` runs on drag end only.
+
+**A handler that appends to a `setQuiet`-written array must read live state,
+never `render()`'s snapshot.** `s` in `renderFraming()` is the state as of the
+last *notifying* update, and every drag writes through `setQuiet`. `+ Box`
+building `[...s.customs, …]` therefore replaced the array with a stale copy —
+snapping the previous piece back to its as-added rect, its re-snapped crop
+with it, and persisting the revert on the next line's `save()`. It reads
+`getState()` now, the same way `onRemove` already read `currentCustoms()`.
+A handler's *`disabled`* may still come off `s`: `busy` and the `MAX_CUSTOM`
+cap only move via `setState`, which rebuilds the bar.
+
+**The two framing overlays are coupled in one direction, and only the DOM
+half needs telling.** A drag on the *output* overlay rewrites a piece's `out`
+**and** its re-snapped `crop`. The rAF canvas follows for free — it re-reads
+state every frame — but the *source* overlay is DOM, and `place()` is
+reachable only from that layer's own `pointermove`, `window.resize`,
+`loadedmetadata` and its `ResizeObserver`, none of which fire here. So
+`mountEditor` returns `{ place, stop }` rather than a bare teardown, `main.ts`
+keeps the source overlay's handle in a module-scoped `sourceEditor`, and the
+output overlay's `onChange` calls `sourceEditor?.place()`. Without it the
+composite and the export are correct throughout and only the tinted crop box
+lies — it keeps its old width until touched, then jumps.
 
 **`starterTitle` persists unconditionally, like the marks.** The framing-only gate below is for values that are meaningless before `/api/window` has reported the clip's real size; a title is not one of them.
 
@@ -336,8 +388,8 @@ mask cached before this feature shipped keeps hitting, and editing a custom's
 `out` rect changes the digest so it can never serve a stale border either.
 
 **`/api/export` takes window bounds, never a file path.** Its body is
-`videoId` + window/mark bounds + `layoutId` + `boxes` + `starterTitle` +
-`titlePng` + `voice`. The server reconstructs the cache filename itself, so there is no client-supplied path to validate for traversal. The starter screen's `titlePng` is the one exception — an image the client rendered, because this machine's ffmpeg *cannot rasterise text at all* — so it is length-capped and checked against the PNG signature before it reaches ffmpeg. Keep both of those that way.
+`videoId` + window/mark bounds + `layoutId` + `boxes` + `customs` +
+`starterTitle` + `titlePng` + `voice`. The server reconstructs the cache filename itself, so there is no client-supplied path to validate for traversal. The starter screen's `titlePng` is the one exception — an image the client rendered, because this machine's ffmpeg *cannot rasterise text at all* — so it is length-capped and checked against the PNG signature before it reaches ffmpeg. Keep both of those that way.
 
 **This ffmpeg has no `drawtext`.** Homebrew 8.1.1 here is built without
 libfreetype, libass and librsvg; `ffmpeg -h filter=drawtext` says `Unknown
@@ -463,14 +515,18 @@ single-user tool; not something to fix here.
 
 ## Testing posture
 
-`geometry.ts`, `layout.ts` and `custom.ts` are the modules with exhaustive coverage, deliberately — their bugs are silent. `src/custom.test.ts` covers `clampOut`/`moveOut`/`resizeOut`'s even-snapping, `resizeOut`'s `MIN_OUT_SIDE` floor and frame bounds from every anchor corner, `clampOut`'s and `resnapCrop`'s idempotence under a repeated re-snap (`resnapCrop`'s also keeping the ratio exact), and `isValidOut`/`isValidCustom` against everything `clampOut`/`defaultCustom` can emit and everything illegal. `layout.test.ts` asserts the nine presets tile 1080×1920 exactly, that only the three documented cell shapes occur, and that `defaultBoxes` returns per-cell-valid boxes: a mis-tiled layout survives preview and only shows up as a seam in an exported clip. `server/ffmpeg.test.ts` shells out to real ffmpeg and asserts output pixels; it is the only thing proving the preview/export agreement from the ffmpeg side — now including the border, via white pixels in the seam and at a corner cut's diagonal against the source's colour just inside a piece, and now including a real export with one floating piece straddling a cell seam, asserting the piece's own colour survives the seam, the ring around it is white, and the stack's colour resumes just past the ring. `frame.test.ts` covers the window insets (every internal seam and frame margin
+`geometry.ts`, `layout.ts` and `custom.ts` are the modules with exhaustive coverage, deliberately — their bugs are silent. `src/custom.test.ts` covers `clampOut`/`moveOut`/`resizeOut`'s even-snapping, `resizeOut`'s `MIN_OUT_SIDE` floor and frame bounds from every anchor corner, `clampOut`'s and `resnapCrop`'s idempotence under a repeated re-snap (`resnapCrop`'s also keeping the ratio exact), and `isValidOut`/`isValidCustom` against everything `clampOut`/`defaultCustom` can emit and everything illegal. `layout.test.ts` asserts the nine presets tile 1080×1920 exactly, that only the three documented cell shapes occur, and that `defaultBoxes` returns per-cell-valid boxes: a mis-tiled layout survives preview and only shows up as a seam in an exported clip. `server/ffmpeg.test.ts` shells out to real ffmpeg and asserts output pixels; it is the only thing proving the preview/export agreement from the ffmpeg side — now including the border, via white pixels in the seam and at a corner cut's diagonal against the source's colour just inside a piece, and now including a real export with one floating piece straddling a cell seam, asserting the piece's own colour survives the seam, the ring around it is white, and the stack's colour resumes just past the ring — and a second with TWO overlapping pieces cropped from different colour bands, which is the only end-to-end proof that the mask's walk is z-aware (the upper piece's nub and the upper half of its ring both land over the lower piece's window and read as that piece's own colour if it is not). `frame.test.ts` covers the window insets (every internal seam and frame margin
 exactly one gutter, adjacency decided on the *cells* because every pair of
 windows has a positive gap) and the mask's alpha, including the assertion that
 a window's square corner is opaque — the one that fails if `CORNER_RADIUS`
 goes to 0 — plus, with a custom in play, that a corner nub stays opaque over a
 cell window and that a piece straddling a seam stays free of the seam's white
-stripe; both of those are mutation-tested against exactly the failure modes
-the mask's priority order exists to prevent. `server/mask.test.ts` decodes the rendered PNG back to RGBA and
+stripe, and, with two overlapping pieces at exactly the rects `+ Box` twice
+produces, that the upper piece keeps both its nub and its ring over the lower
+one while the lower one's ring stays out of the upper one's window. The
+single-piece pair and the two-piece pair are all mutation-tested, against the
+two failure modes the mask exists to prevent and against the walk losing its z
+order respectively. `server/mask.test.ts` decodes the rendered PNG back to RGBA and
 checks it against those windows.
 `server/starter.test.ts` shells out to real ffmpeg *and* the real speech
 engine, so it needs `pnpm tts-setup` to have run and it pays the model load:
