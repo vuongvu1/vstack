@@ -1,0 +1,249 @@
+# vstack — custom floating boxes
+
+Date: 2026-08-25
+Status: designed
+Extends: `docs/specs/2026-08-21-vstack-layouts-design.md` (the layout system)
+and `docs/specs/2026-08-22-vstack-frame-borders-design.md` (the gutters and
+the frame overlay). Neither is superseded: cells, `ratioOf`, `xstack` and the
+paint-over-the-composite rule all survive intact, which is the point of the
+design below.
+
+## Problem
+
+The nine layouts tile the frame, and a tiling cannot express the shot every
+reaction short wants: a small piece floating over a big one. A facecam inset,
+a zoomed detail over a wide shot, a logo crop in a corner — all of them need
+a piece whose size and position in the *output* frame are the user's choice
+rather than a preset's.
+
+Goal: after picking a layout, a `+ Box` button adds a free piece. Its output
+rect (size, position, therefore aspect) is dragged on the composite preview;
+its crop rect is dragged on the source video exactly like every other box. It
+carries the same white border and corner radius as the preset pieces.
+
+## The one decision that matters
+
+A free rect cannot come from `cellsOf`. `Layout` is authored as rows and
+cells are derived precisely so that a hand-written cell list cannot express a
+seam or an overlap — and a floating box is an overlap by definition. So the
+custom boxes are a *second, parallel* concept rather than more cells.
+
+**Rejected — virtual layout.** Synthesise a `Layout` whose cell list is
+`cellsOf(preset) ++ customRects`. One array everywhere and `buildFilter`
+barely changes. It hands back the exact footgun the rows model removes, and
+it leans on `xstack` composing non-tiling, overlapping inputs, which is not a
+behaviour to depend on.
+
+**Rejected — uniform `pieces` array.** Collapse cells and customs into one
+`{ out, crop }[]` and drop `layoutId` from `/api/export`. Conceptually
+cleanest. But `layoutId` is a table-lookup trust boundary (`layoutById`) and
+the mask cache key, and this rewrites every existing test for no user-visible
+gain.
+
+**Chosen — `customs` alongside `boxes`.** The preset composes exactly as
+today; customs are extra decode legs overlaid on the finished stack. Zero
+customs is byte-identical to today's filter string and today's mask
+filename, so the whole feature is inert until used.
+
+## Data model
+
+```ts
+export type CustomBox = { out: Rect; crop: Rect };
+export const MAX_CUSTOM = 2;
+export const MIN_OUT_SIDE = 160;   // output px
+```
+
+`out` is output space (inside 1080×1920); `crop` is source pixels, like every
+other rect in this codebase, with zero conversion between the two — the same
+invariant that makes `drawImage` and `crop=` agree.
+
+Rules:
+
+- `out` is clamped fully inside `OUTPUT`, each of `x/y/w/h` **even**, each
+  side at least `MIN_OUT_SIDE`. Even because an `overlay` at an odd offset in
+  `yuv420p` puts the piece on a half-chroma-sample boundary; even costs
+  nothing and removes the question.
+- `crop` obeys the existing aspect lock against *its own* ratio:
+  `isValidBox(crop, source, out.w / out.h)`. `isValidBox` already takes the
+  ratio as a parameter — a custom box is exactly the case that parameter was
+  written for, one step further than "a box is only legal for its own cell".
+- Resizing `out` changes its ratio, so `crop` is **re-snapped live**: keep
+  `crop.h` and `crop`'s centre, rebuild the width with
+  `boxFromHeight(crop.h, source, newRatio)`, then `clampToBounds`. Aspect
+  stays exact at every frame of the drag, so the export can never stretch.
+  Height-driven, like every other constructor, so repeated re-snaps do not
+  drift. An extreme ratio needs no special case: `boxFromHeight` already
+  clamps between `effectiveMinH` and `maxBox(source, ratio).h`, so a very
+  wide `out` yields a shorter crop rather than an invalid one.
+- Defaults on `+ Box`: 540×540 centred; a second one offset by (60, 60) so
+  its handles are not buried under the first's.
+- Persisted per video in `Saved.customs`, behind the same
+  `phase === "framing" && valid` gate as `boxes`, and dropped by `restore`
+  under the same conditions (source-size change, or any custom failing
+  validation). The layout choice survives that, as it does today.
+
+## Rendering: one mask, applied last
+
+The custom piece sits *over* the stack, so its ring and rounded corners
+cannot come from today's overlay unchanged. Two failure modes make that
+concrete:
+
+- A corner nub of the custom's square rect that lands inside a cell window
+  would be transparent in today's mask, so the piece would show an unrounded
+  corner over that cell.
+- A custom straddling a cell seam would get the seam's white stripe painted
+  through it.
+
+So the mask keeps its "applied last" position and gains a priority order.
+Per pixel:
+
+```
+opaque white   if in the ring∪nub region of some custom
+transparent    if inside some custom window
+opaque white   if outside every cell window
+transparent    otherwise
+```
+
+where a custom's *window* is its `out` rounded at `CORNER_RADIUS`, and its
+*ring∪nub region* is `out` expanded by `GUTTER` (rounded at
+`CORNER_RADIUS + GUTTER`) minus that window. The ring gives the piece the
+same visual weight as a seam; the nubs cut its square corners.
+
+Check the two failure modes against the order: a seam pixel inside a custom
+window is transparent, so the custom shows; a nub pixel is opaque white
+whatever is under it. Both hold.
+
+`maskRgba(cellWindows, customWindows = [])` — same `SUB × SUB` coverage
+sampling, with `insideWindow` generalised to `insideRounded(rect, radius,
+px, py)`.
+
+Filter graph:
+
+```
+[0:v]split=N+M[c0]…[cN-1][k0]…[kM-1];
+[ci]crop=…,scale=cell[si];
+[s0]…[sN-1]xstack=inputs=N:layout=…[stack];
+[kj]crop=…,scale=out.w:out.h[tj];
+[stack][t0]overlay=x0:y0[o0];
+[o0][t1]overlay=x1:y1[o1];
+[o1][1:v]overlay=0:0:format=auto[v]
+```
+
+The mask stays input 1 and stays declared before `-ss` — the existing rule
+about ffmpeg attaching options to the next `-i` is unchanged.
+
+The canvas preview draws in the identical order: stack pieces, then each
+custom as a plain `drawImage` rect, then the white ring∪nub fill, then the
+even-odd gutter fill. Same order as ffmpeg means the preview/export agreement
+is preserved by construction rather than by coincidence.
+
+Mask cache key: `${layout.id}-g${GUTTER}-r${CORNER_RADIUS}` as today, plus
+`-c<hash>` **only when customs exist**, where `<hash>` is the first 8 hex
+digits of a sha1 over the `out` rects in array order (`x,y,w,h` joined). Hex
+only, so nothing client-shaped reaches the path — the rects are validated
+integers by then anyway. Today's cache
+files, filenames and `server/mask.test.ts` are therefore unchanged, and
+editing a custom rect cannot serve a stale border.
+
+## Editing: two overlays, one generalised editor
+
+`mountEditor` is widened rather than cloned:
+
+```ts
+mountEditor({
+  host,
+  media: HTMLElement,              // was HTMLVideoElement; a canvas has the same box API
+  bounds: () => Size,              // was source(): source px, or OUTPUT for the canvas
+  count: number,                   // fixed at mount, as the cell list is today
+  ratios: () => (number | null)[], // live; null = free resize
+  boxes, onChange, onCommit,
+})
+```
+
+- **Source overlay** (over `videoEl`, as today): `count = cells.length +
+  customs.length`; `ratios()` yields `ratioOf(cell)` per cell then
+  `out.w / out.h` per custom. A live getter, not a fixed array — a custom's
+  ratio changes *while* the user resizes it on the preview, and the crop
+  handles have to follow within that same drag.
+- **Output overlay** (new, over `canvasEl`): `count = customs.length`,
+  `bounds = () => OUTPUT`, every ratio `null`. Preset cells get no nodes —
+  presets stay presets.
+- New geometry primitive `resizeFree(rect, corner, dx, dy, bounds, minSide)`:
+  the anchor-corner math of `resizeFromCorner` without the ratio derivation,
+  plus even-snapping. `clampToBounds` is unchanged and still slides rather
+  than shrinks.
+- Both editors remount when `layout.id` **or** `customs.length` changes —
+  `editorFor` becomes `${layout.id}:${customs.length}`. Node count is fixed
+  at mount, the same rule as today, and neither remount reassigns
+  `video.src`.
+- A drag on the output overlay emits one `setQuiet` patch carrying the new
+  `out` *and* the re-snapped `crop`, so the rAF canvas and the source overlay
+  move together. `save()` on commit only.
+- Colours: customs take `box-c4`/`box-c5`, two new Radix scales (`cyan`,
+  `orange` — `red` stays reserved for errors), imported with their alpha
+  companions like every other scale.
+
+## UI and state flow
+
+- Framing bar, layout row: `+ Box` after the layout swatches, disabled at
+  `MAX_CUSTOM`. Removal is an `×` on the box's own node in the output
+  overlay — no second bar control, and it removes the thing being pointed at.
+- A layout switch clears `boxes` as today but **keeps `customs`**: a custom's
+  ratio is its own, its crop is validated against itself, and its `out` is
+  frame space. Nothing about it is invalidated by the cells changing. That is
+  the payoff of keeping the two concepts parallel.
+- `+ Box` and `×` go through `setState` (node count changes → remount);
+  drags stay on `setQuiet`, so no re-render lands mid-drag and the `<video>`
+  never reloads.
+- Export gating is unchanged — still `starterTitle` alone.
+- `/api/export`'s body gains `customs`. `/api/probe`, `/api/window`,
+  `/api/say`, publish and reveal are untouched, and the `preview` phase is
+  unaffected: the file on disk already has the border baked in.
+
+## Server validation
+
+`assertCustoms(customs, source)` sits next to `assertBoxes` in
+`server/ffmpeg.ts`, with the same posture — numbers are the only thing
+interpolated into the filter string, so a NaN or an out-of-bounds rect must
+die before ffmpeg sees it:
+
+```
+Array, length ≤ MAX_CUSTOM
+out:  all four fields integer and even, w and h ≥ MIN_OUT_SIDE,
+      x ≥ 0, y ≥ 0, x + w ≤ OUTPUT.w, y + h ≤ OUTPUT.h
+crop: isValidBox(crop, source, out.w / out.h)
+```
+
+`raw.customs` absent is `[]`, so a body from an older client still exports.
+
+## Testing
+
+- `src/geometry.test.ts` — `resizeFree`: even snapping, the `MIN_OUT_SIDE`
+  floor, clamping, all four anchor corners, and idempotence under repeated
+  application. The crop re-snap: exact ratio after an `out` resize, no drift
+  over repeated calls.
+- `src/frame.test.ts` — the mask with customs: ring opaque, window
+  transparent, a corner nub over a cell window opaque, a seam pixel inside a
+  custom window transparent. The last two are mutation-tested: they are the
+  two failure modes the priority order exists to prevent.
+- `server/mask.test.ts` — path unchanged with no customs, different under a
+  changed custom rect, decoded PNG matching the windows.
+- `server/ffmpeg.test.ts` — real ffmpeg over a synthetic multi-colour source:
+  a 3-cell layout plus one custom, asserting the custom's source colour at
+  its centre, white in the ring, and the stack's colour just outside the
+  ring. Plus a regression fence: `buildFilter(layout, boxes, [])` byte-
+  identical to today's string.
+- `src/state.test.ts` — customs round-trip; mutation: persisting customs
+  outside `framing` fails.
+- `assertCustoms` — odd coordinates, off-frame rects, a wrong-ratio crop,
+  three customs, a non-object.
+
+DOM-driven modules stay untested by design, as today: the two overlays are
+verified by hand in a real browser and through a real export.
+
+## Out of scope
+
+No z-order control — customs draw in array order, last on top. No per-custom
+radius or gutter. No numeric entry fields for the output rect. No snap guides
+or alignment helpers. No drop shadow. A custom box cannot be promoted into a
+preset cell, and a preset cell cannot be detached into a custom box.
