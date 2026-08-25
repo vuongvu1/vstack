@@ -613,7 +613,10 @@ function currentBoxes(): Rect[] {
 }
 
 /** The current floating pieces. Read fresh on every preview frame and every
- *  drag, like currentBoxes. */
+ *  drag, like currentBoxes. No defaultBoxes-style fallback: an empty array
+ *  is a valid steady state, since pieces are user-added rather than
+ *  layout-implied — unlike boxes, which must match cells.length or index
+ *  mismatches mid-switch. */
 function currentCustoms(): CustomBox[] {
   return getState().customs;
 }

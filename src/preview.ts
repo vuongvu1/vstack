@@ -64,10 +64,15 @@ export function startPreview(
       ctx.save();
       // Nothing white may enter a piece's window — the first rule of the
       // mask's priority order, and what lets a piece straddle a cell seam.
-      if (cs.length > 0) {
+      // One clip per piece, not one combined path: clip() intersects, and
+      // "frame minus this piece" intersected per piece is the complement of
+      // the UNION, which is what maskRgba's customs.some(...) computes. A
+      // single even-odd path would instead test parity, and two overlapping
+      // pieces would cancel each other back to unprotected.
+      for (const c of cs) {
         ctx.beginPath();
         ctx.rect(0, 0, OUTPUT.w, OUTPUT.h);
-        for (const c of cs) ctx.roundRect(c.out.x, c.out.y, c.out.w, c.out.h, CORNER_RADIUS);
+        ctx.roundRect(c.out.x, c.out.y, c.out.w, c.out.h, CORNER_RADIUS);
         ctx.clip("evenodd");
       }
       ctx.fillStyle = "#fff";
