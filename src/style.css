@@ -398,8 +398,13 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
 .box-c2 .box-label { color: var(--grass-11); }
 .box-c3 .box-label { color: var(--violet-11); }
 
-/* The two floating pieces. Their indices continue the cells', so a piece is
-   the same colour and the same number on both overlays. */
+/* The last two of the six per-index scales. A floating piece's index
+   continues the cells' — mountEditor's `labelFrom` is the cell count — so a
+   piece is the same colour and the same number on both overlays, but WHICH
+   scale it lands on follows the layout: on the two-cell default a piece is
+   box-c2/box-c3 (grass/violet) and these two are only ever seen on a
+   four-cell layout. Six scales cover four cells plus two pieces either way,
+   so no collision is possible. */
 .box-c4 { border-color: var(--cyan-9); background: color-mix(in srgb, var(--cyan-9) 12%, transparent); }
 .box-c5 { border-color: var(--orange-9); background: color-mix(in srgb, var(--orange-9) 12%, transparent); }
 
@@ -408,11 +413,18 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
 
 /* The removal control, only present on the output overlay. White on a dark
    scrim for the same reason .handle is: it sits over video, not over the
-   theme. */
+   theme.
+
+   Inset by 8px, not 2px, to clear `.handle-ne`: that handle is 14x14 at
+   top/right -7px, so it occupies everything above y=7 and right of x=W-7,
+   and `makeBox` appends the handles AFTER this button. Native hit-testing
+   follows paint order, so at 2px the handle won the ~5x5 square where the
+   two overlapped and the top-right corner of the × started a resize instead
+   of removing. 8px puts the button's whole face clear of it. */
 .box-remove {
   position: absolute;
-  top: 2px;
-  right: 2px;
+  top: 8px;
+  right: 8px;
   width: 18px;
   height: 18px;
   padding: 0;

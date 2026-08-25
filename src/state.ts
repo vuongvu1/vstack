@@ -1,4 +1,4 @@
-import { isValidCustom } from "./custom.ts";
+import { MAX_CUSTOM, isValidCustom } from "./custom.ts";
 import type { CustomBox } from "./custom.ts";
 import { isValidBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
@@ -279,8 +279,18 @@ export function restore(videoId: string, source: Size | null): Partial<AppState>
     });
   // Computed independently of `usable`: a bad piece must not cost the
   // boxes, and a bad box must not cost the pieces.
+  //
+  // The count is bounded as well as the shapes, the same way the boxes above
+  // are checked against their layout's cell count. localStorage is untrusted
+  // input: a hand-edited record with three individually legal pieces would
+  // otherwise restore into a session that mounts three nodes, previews them,
+  // and then 400s at export against `assertCustoms` — which is where this
+  // limit is actually enforced.
   const usableCustoms =
-    source !== null && sameSource && s.customs.every((c) => isValidCustom(c, source));
+    source !== null &&
+    sameSource &&
+    s.customs.length <= MAX_CUSTOM &&
+    s.customs.every((c) => isValidCustom(c, source));
   return {
     start: Number.isFinite(s.start) ? s.start : initial.start,
     end: Number.isFinite(s.end) ? s.end : initial.end,

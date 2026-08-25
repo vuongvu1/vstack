@@ -11,8 +11,18 @@ type Drag = {
   startRect: Rect;
 };
 
-/** Mounts a draggable/resizable box overlay into `opts.host` and returns a
- *  teardown function. Two of these are mounted during framing: one over the
+/** A mounted overlay: `stop` tears it down, `place` re-reads `boxes()` and
+ *  moves the nodes to match.
+ *
+ *  `place` is exposed because the two overlays are not independent. The
+ *  output overlay's drag rewrites a piece's `crop` as well as its `out`, and
+ *  the source overlay's nodes are DOM — they only move when its own `place`
+ *  runs, which nothing in the other overlay's drag would otherwise reach.
+ *  The rAF canvas needs no such call: it re-reads state every frame. */
+export type EditorHandle = { place: () => void; stop: () => void };
+
+/** Mounts a draggable/resizable box overlay into `opts.host` and returns its
+ *  handle. Two of these are mounted during framing: one over the
  *  source <video> for crop rects, one over the composite <canvas> for the
  *  floating pieces' output rects.
  *
@@ -44,7 +54,7 @@ export function mountEditor(opts: {
   onCommit(): void;
   /** When given, each node carries a × that removes it. */
   onRemove?: (index: number) => void;
-}): () => void {
+}): EditorHandle {
   const layer = document.createElement("div");
   layer.className = "boxes";
   opts.host.append(layer);
@@ -55,8 +65,12 @@ export function mountEditor(opts: {
 
   function makeBox(index: number): HTMLDivElement {
     const box = document.createElement("div");
-    // box-c0..c5 carry the per-index colour: four cells at most, plus two
-    // floating pieces.
+    // box-c0..c5 carry the per-index colour. Which scale a floating piece
+    // lands on depends on the layout: `labelFrom` is the cell count, so on
+    // the two-cell default a piece is box-c2/box-c3 and the cyan and orange
+    // scales are only ever seen on a four-cell layout. Six is enough either
+    // way — four cells at most, plus two pieces — so a collision is
+    // impossible whichever end of the scale gets used.
     box.className = `box box-c${labelFrom + index}`;
     box.dataset.index = String(index);
     const label = document.createElement("span");
@@ -186,10 +200,13 @@ export function mountEditor(opts: {
   resizeObserver.observe(opts.media);
   place();
 
-  return () => {
-    window.removeEventListener("resize", onResize);
-    opts.media.removeEventListener("loadedmetadata", onResize);
-    resizeObserver.disconnect();
-    layer.remove();
+  return {
+    place,
+    stop: () => {
+      window.removeEventListener("resize", onResize);
+      opts.media.removeEventListener("loadedmetadata", onResize);
+      resizeObserver.disconnect();
+      layer.remove();
+    },
   };
 }

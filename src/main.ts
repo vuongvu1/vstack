@@ -8,6 +8,7 @@ import * as api from "./api.ts";
 import { MAX_CUSTOM, defaultCustom, moveOut, outRatio, resizeOut, resnapCrop } from "./custom.ts";
 import type { CustomBox } from "./custom.ts";
 import { mountEditor } from "./editor.ts";
+import type { EditorHandle } from "./editor.ts";
 import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER, moveBy, resizeFromCorner } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
 import {
@@ -508,14 +509,20 @@ async function openWindow(): Promise<void> {
 let videoEl: HTMLVideoElement | null = null;
 let canvasEl: HTMLCanvasElement | null = null;
 let stopPreview: (() => void) | null = null;
-let stopEditor: (() => void) | null = null;
-// The output overlay's teardown, mounted over canvasEl for the floating
-// pieces' `out` rects — only present while s.customs.length > 0. Tracked
-// separately from stopEditor because the two overlays have different node
-// counts and different geometry (output px vs source px) and are torn down
+// The source overlay (crop rects over the <video>). Held as its whole handle
+// rather than just its teardown because the output overlay's drag has to
+// call `place()` on it: a resize there rewrites the piece's crop as well as
+// its `out`, and this overlay's nodes are DOM — nothing else in that drag
+// reaches them, so without the call the tinted crop box keeps its old size
+// until the user next touches it and then jumps.
+let sourceEditor: EditorHandle | null = null;
+// The output overlay, mounted over canvasEl for the floating pieces' `out`
+// rects — only present while s.customs.length > 0. Tracked separately from
+// sourceEditor because the two overlays have different node counts and
+// different geometry (output px vs source px) and are torn down
 // independently: the source overlay always exists once framing starts, the
 // output overlay only exists while there is at least one piece.
-let stopOutEditor: (() => void) | null = null;
+let outEditor: EditorHandle | null = null;
 
 /** The finished export, played from `/out/<name>`. Like the framing <video>
  *  it lives permanently in outSlot and is only ever hidden — see the
@@ -542,7 +549,7 @@ function ensurePreview(url: string): void {
 // hidden, zero-size video) is left showing over the trimming view.
 let boxesLayer: HTMLDivElement | null = null;
 // Mirrors boxesLayer for the output overlay's `.boxes` layer. Reset to null
-// (not just hidden) whenever the last piece is removed and stopOutEditor()
+// (not just hidden) whenever the last piece is removed and outEditor.stop()
 // tears the layer down — render() must not try to toggle `hidden` on a node
 // that mountEditor's teardown already removed from the DOM.
 let outBoxesLayer: HTMLDivElement | null = null;
@@ -603,8 +610,8 @@ function ensureFraming(): void {
   stopPreview = startPreview(canvasEl, videoEl, cells, currentBoxes, currentCustoms);
 
   const cellCount = cells.length;
-  stopEditor?.();
-  stopEditor = mountEditor({
+  sourceEditor?.stop();
+  sourceEditor = mountEditor({
     host: sourceSlot,
     media: videoEl,
     bounds: () => getState().source,
@@ -645,11 +652,11 @@ function ensureFraming(): void {
   });
   boxesLayer = sourceSlot.querySelector<HTMLDivElement>(".boxes");
 
-  stopOutEditor?.();
-  stopOutEditor = null;
+  outEditor?.stop();
+  outEditor = null;
   outBoxesLayer = null;
   if (s.customs.length > 0) {
-    stopOutEditor = mountEditor({
+    outEditor = mountEditor({
       host: outSlot,
       media: canvasEl,
       // Output space: the canvas is 1080x1920 whatever size it renders at.
@@ -662,12 +669,19 @@ function ensureFraming(): void {
       // One patch carrying both halves: the piece's crop is locked to the
       // piece's own ratio, so a resize that changes that ratio has to move
       // the crop in the same frame or the two disagree until the next drag.
+      //
+      // The rAF canvas picks the new crop up on its own — it re-reads state
+      // every frame — but the source overlay is DOM and only moves when its
+      // own place() runs, which nothing on this layer would otherwise reach.
+      // Hence the explicit re-place: without it the tinted crop box keeps its
+      // old width until the user touches it, then jumps.
       onChange: (index, out) => {
         const next = [...currentCustoms()];
         const cur = next[index];
         if (!cur) return;
         next[index] = { out, crop: resnapCrop(cur.crop, getState().source, out) };
         setQuiet({ customs: next });
+        sourceEditor?.place();
       },
       onCommit: () => save(),
       onRemove: (index) => {
@@ -895,9 +909,19 @@ function renderFraming(): Node[] {
     disabled: Boolean(s.busy) || s.customs.length >= MAX_CUSTOM,
   });
   addBox.onclick = () => {
+    // Live state, never `s`: `s` is this render's snapshot, and every drag
+    // writes through setQuiet, which by design reaches no render. Building
+    // the new array from `s.customs` would replace the key wholesale with a
+    // stale array — reverting the previous piece to its as-added rect, its
+    // re-snapped crop with it, and persisting the revert on the next line.
+    // Same reason onRemove reads currentCustoms().
+    //
     // setState: the node count changes, so ensureFraming must rebuild both
-    // overlays on the next render.
-    setState({ customs: [...s.customs, defaultCustom(s.source, s.customs.length)] });
+    // overlays on the next render. The button's own `disabled` can still be
+    // read off `s` — both `busy` and the MAX_CUSTOM cap only move via
+    // setState, which re-renders this bar.
+    const cur = getState();
+    setState({ customs: [...cur.customs, defaultCustom(cur.source, cur.customs.length)] });
     save();
   };
 

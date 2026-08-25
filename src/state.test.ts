@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { MAX_CUSTOM, isValidCustom } from "./custom.ts";
 import { DEFAULT_LAYOUT_ID } from "./layout.ts";
 import { restore, save, saveVoice, savedVoice, setState } from "./state.ts";
 
@@ -564,6 +565,37 @@ describe("save / restore — custom boxes", () => {
       }),
     );
     expect(restore(videoId, source).customs).toEqual([]);
+  });
+
+  it("drops a record holding more pieces than MAX_CUSTOM, however legal each is", () => {
+    // localStorage is untrusted input. Each of these three passes
+    // isValidCustom on its own, so without the count bound the session mounts
+    // three nodes, previews them, and only dies at assertCustoms with a 400
+    // — the same posture the boxes path takes against the layout's cell count.
+    const videoId = "customs-too-many";
+    const legal = Array.from({ length: MAX_CUSTOM + 1 }, (_, i) => ({
+      out: { x: 300 + i * 2, y: 700, w: 480, h: 480 },
+      crop: { x: i * 2, y: 100, w: 480, h: 480 },
+    }));
+    expect(legal.every((c) => isValidCustom(c, source))).toBe(true);
+    localStorage.setItem(
+      `vstack:${videoId}`,
+      JSON.stringify({
+        start: 0,
+        end: 10,
+        layoutId: DEFAULT_LAYOUT_ID,
+        boxes: [
+          { x: 0, y: 100, w: 900, h: 800 },
+          { x: 1020, y: 100, w: 900, h: 800 },
+        ],
+        customs: legal,
+        sourceW: 1920,
+        sourceH: 1080,
+      }),
+    );
+    expect(restore(videoId, source).customs).toEqual([]);
+    // The boxes are computed independently and must survive the bad pieces.
+    expect(restore(videoId, source).boxes).toHaveLength(2);
   });
 
   it("returns no pieces for a record that predates the feature", () => {
