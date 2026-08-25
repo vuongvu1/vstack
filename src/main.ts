@@ -37,6 +37,7 @@ import {
   restore,
   save,
   saveVoice,
+  savedTitle,
   savedVoice,
   setQuiet,
   setState,
@@ -499,6 +500,47 @@ async function openWindow(): Promise<void> {
     });
     save();
   });
+}
+
+/** The idle screen's other way in: a clip already in `media/` goes straight
+ *  to framing, with no network involved at all. Everything here is
+ *  `openWindow`'s tail with the fetch removed — the fields line up because
+ *  `/api/clips` answers the same shape `/api/window` does.
+ *
+ *  Two values a URL load reads off `/api/probe` are unavailable here, and
+ *  neither is worth a yt-dlp round trip for a clip that is already on disk:
+ *  the badge `title` falls back to the starter title last typed for this
+ *  video (then the id), and `duration` becomes the window's own end. Both are
+ *  cosmetic, with one exception — "Back to trim" then draws a strip that ends
+ *  at the clip rather than at the video — and that path re-fetches the window
+ *  anyway, so nothing downstream of it inherits the approximation.
+ *
+ *  The marks cover the whole cached clip, PAD included. Framing has no
+ *  marking controls, so the alternative is handing the user a window whose
+ *  edges they cannot reach.
+ *
+ *  Synchronous, and deliberately not wrapped in `guard`: there is nothing to
+ *  await, so there is no window in which a second click could land. */
+function openClip(c: api.CachedClip): void {
+  const source = { w: c.width, h: c.height };
+  const saved = restore(c.videoId, source);
+  setState({
+    videoId: c.videoId,
+    title: savedTitle(c.videoId) || c.videoId,
+    duration: c.windowEnd,
+    start: c.windowStart,
+    end: c.windowEnd,
+    clipUrl: c.clipUrl,
+    windowStart: c.windowStart,
+    windowEnd: c.windowEnd,
+    source,
+    layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
+    boxes: saved.boxes ?? [],
+    customs: saved.customs ?? [],
+    error: "",
+    phase: "framing",
+  });
+  save();
 }
 
 // The <video> and <canvas> for the framing phase, built once and appended
@@ -1303,6 +1345,68 @@ function renderPreview(): Node[] {
   ];
 }
 
+/** Everything already in the media cache, for the idle screen's dropdown.
+ *  Same shape as `voiceList` above and fetched the same way: once at boot,
+ *  then a `render()` so a list that lands after the first paint still shows.
+ *
+ *  ponytail: never refetched, so a clip downloaded during this session is
+ *  absent from the dropdown until a reload. Nothing is lost — by then that
+ *  very clip is the one on screen in framing, and `idle` is not reachable
+ *  again without one. Refetch the day it is. */
+let clipList: api.CachedClip[] = [];
+
+void api
+  .clips()
+  .then((clips) => {
+    clipList = clips;
+    render();
+  })
+  .catch(() => {
+    /* The URL field is the way in that always works; a missing dropdown of
+       cached clips is not worth an error banner over. */
+  });
+
+/** `Bí mật của Linh · 00:12:42–00:13:09 · 1920×1080`. The cache knows only an
+ *  id and a pair of bounds, so the name comes from the starter title last
+ *  typed for this video — the id is the fallback, not the label. */
+const clipLabel = (c: api.CachedClip) =>
+  `${savedTitle(c.videoId) || c.videoId} · ${clock(c.windowStart)}\u2013${clock(c.windowEnd)}` +
+  ` · ${c.width}\u00d7${c.height}`;
+
+/** The cached-clip picker. Opens on `change` with no confirming button
+ *  beside it: unlike the URL field there is nothing to type, so the choice
+ *  *is* the action. */
+function renderClipPicker(s: AppState): HTMLSelectElement {
+  const select = el("select", {
+    title: "Open a clip already fetched into media/ — no download, straight to framing",
+    ariaLabel: "Open a fetched clip",
+    disabled: s.busy !== "",
+  });
+  // The first row is the label: this control sits next to a URL field, and an
+  // unlabelled select showing a clip nobody picked reads as a loaded video.
+  select.append(
+    el("option", {
+      value: "",
+      textContent: `Open a fetched clip\u2026 (${clipList.length})`,
+      selected: true,
+    }),
+  );
+  // Index-valued rather than name-valued: the value's only consumer is the
+  // array it came from, so there is no reason to rebuild a clip's identity
+  // out of a DOM string.
+  clipList.forEach((c, i) => {
+    select.append(el("option", { value: String(i), textContent: clipLabel(c) }));
+  });
+  select.onchange = () => {
+    // Guarded on the string, not the parsed index — `Number("")` is 0, so the
+    // placeholder row would otherwise open the first clip.
+    if (select.value === "") return;
+    const clip = clipList[Number(select.value)];
+    if (clip) openClip(clip);
+  };
+  return select;
+}
+
 function renderIdle(s: AppState): Node[] {
   const busy = s.busy !== "";
   const input = el("input", {
@@ -1321,7 +1425,14 @@ function renderIdle(s: AppState): Node[] {
   input.onkeydown = (e) => {
     if (e.key === "Enter") void load(input.value);
   };
-  return [input, go];
+  // Two ways in, one row each: paste a URL, or reopen something already
+  // fetched. The second row is omitted entirely when the cache is empty —
+  // which is also what a failed /api/clips looks like.
+  const rows: Node[] = [el("div", { className: "bar-row" }, input, go)];
+  if (clipList.length > 0) {
+    rows.push(el("div", { className: "bar-row" }, renderClipPicker(s)));
+  }
+  return rows;
 }
 
 function render(): void {

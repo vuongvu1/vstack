@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { videoIdFrom } from "./ytdlp.ts";
+import { parseClipName, videoIdFrom } from "./ytdlp.ts";
 
 // A real, 11-char YouTube id (also used as a fixture elsewhere in this
 // repo). Any 11-char [A-Za-z0-9_-] string exercises the same branches.
@@ -71,5 +71,54 @@ describe("videoIdFrom", () => {
     // silently-accepted candidate — rather than asserting what it should
     // be, so a future refactor cannot loosen this without a test noticing.
     expect(() => videoIdFrom(undefined as unknown as string)).toThrow(TypeError);
+  });
+});
+
+// `parseClipName` is `listClips`'s filter, and the only part of it with
+// failure modes worth pinning down: it decides which filenames in a cached
+// video's directory are offered to the user as openable clips. Two of those
+// modes are silent — a `.part.mp4` partial listed as a finished clip would
+// hand the framing phase a truncated file, and a non-numeric window would
+// reach `/api/export`'s `clipPath` as a name it cannot reconstruct.
+describe("parseClipName", () => {
+  it("reads the window bounds out of a real cache filename", () => {
+    expect(parseClipName("762-829.mp4")).toEqual({ windowStart: 762, windowEnd: 829 });
+  });
+
+  it("accepts a window starting at 0", () => {
+    expect(parseClipName("0-140.mp4")).toEqual({ windowStart: 0, windowEnd: 140 });
+  });
+
+  it("rejects a download partial", () => {
+    // `<path>.<uuid>.part.mp4` sits in the same directory as finished clips
+    // for as long as a fetch runs, and is by definition truncated.
+    expect(
+      parseClipName("762-829.mp4.f81d4fae-7dec-11d0-a765-00a0c91e6bf6.part.mp4"),
+    ).toBeNull();
+  });
+
+  it("rejects a name whose bounds are not numeric", () => {
+    expect(parseClipName("a-b.mp4")).toBeNull();
+  });
+
+  it("rejects an empty window", () => {
+    // Nothing writes one, but a hand-dropped file could, and a clip whose
+    // end is not after its start fails `/api/export`'s own bounds check —
+    // better to never offer it than to offer a dead row.
+    expect(parseClipName("500-500.mp4")).toBeNull();
+    expect(parseClipName("600-500.mp4")).toBeNull();
+  });
+
+  it("rejects a non-mp4 and a bare directory name", () => {
+    expect(parseClipName("762-829.webm")).toBeNull();
+    expect(parseClipName("masks")).toBeNull();
+  });
+
+  it("rejects a traversal attempt", () => {
+    // Belt and braces: these names come off `readdir`, so they cannot
+    // contain a separator — but this filter is what decides the pair that
+    // `clipPath` later rebuilds a path from, so it stays strict.
+    expect(parseClipName("../../etc/passwd")).toBeNull();
+    expect(parseClipName("1-2.mp4/../../x")).toBeNull();
   });
 });

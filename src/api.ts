@@ -78,6 +78,18 @@ export async function fetchWindow(
     .json() as Promise<WindowResult>;
 }
 
+/** One clip already in `media/`. Same shape `fetchWindow` answers with plus
+ *  the id, so opening a cached clip reaches framing through the same fields a
+ *  fresh download does. */
+export type CachedClip = WindowResult & { videoId: string };
+
+/** Everything in the media cache, newest first — the idle screen's second way
+ *  in. Nothing to send: the server scans its own cache directory. */
+export async function clips(): Promise<CachedClip[]> {
+  const body = (await (await post("/api/clips", {})).json()) as { clips: CachedClip[] };
+  return body.clips;
+}
+
 /** What `/api/export` answers with now that it leaves the file on disk
  *  instead of streaming it back. `url` already carries the file's mtime as a
  *  cache-buster — the name is stable across re-exports, so re-showing the

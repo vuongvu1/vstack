@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, rename, rm } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { PAD } from "../src/geometry.ts";
 import { HttpError, toolError } from "./errors.ts";
-import { clipName, clipPath, probeFile, reportCache } from "./ffmpeg.ts";
+import { MEDIA_DIR, clipName, clipPath, probeFile, reportCache } from "./ffmpeg.ts";
 
 const run = promisify(execFile);
 const BIG = 64 << 20; // yt-dlp --dump-json on a long video is multi-MB
@@ -122,6 +122,81 @@ const ATTEMPTS: Attempt[] = [
   { format: DASH },
   { format: "best[height<=1080]/best" },
 ];
+
+/** One already-fetched clip in `media/`, in exactly the shape `fetchWindow`
+ *  answers with plus the id its directory is named after — so the idle
+ *  screen's "open a cached clip" path lands in framing through the same
+ *  client code a fresh download does. */
+export type CachedClip = WindowResult & { videoId: string };
+
+const CLIP_RE = /^(\d+)-(\d+)\.mp4$/;
+
+/** The window bounds a cache filename encodes, or null if the name is not
+ *  one `clipName` could have written.
+ *
+ *  This is `listClips`'s filter, and it is strict for two reasons that both
+ *  fail silently. A fetch in progress leaves `<name>.<uuid>.part.mp4` beside
+ *  the finished clips, and that file is by definition truncated — offering it
+ *  would hand the framing phase a broken video. And the pair returned here is
+ *  what `/api/export` later rebuilds a path from via `clipPath`, so anything
+ *  that is not two plain integers has no business becoming a row. Names come
+ *  off `readdir` and so cannot contain a separator, but the anchored pattern
+ *  covers that too rather than relying on it. */
+export function parseClipName(name: string): { windowStart: number; windowEnd: number } | null {
+  const m = CLIP_RE.exec(name);
+  if (!m) return null;
+  const windowStart = Number(m[1]);
+  const windowEnd = Number(m[2]);
+  // `/api/export` rejects a window whose end is not after its start, so a
+  // row built from one would be dead on arrival. Nothing writes such a name;
+  // a hand-dropped file could.
+  if (!(windowEnd > windowStart)) return null;
+  return { windowStart, windowEnd };
+}
+
+/** Every clip already in the cache, newest first.
+ *
+ *  Dimensions come from `probeFile`, not from the filename or the browser:
+ *  crop rects are stored in the delivered clip's own pixels, so this has to
+ *  agree with what `fetchWindow` reports for the same file.
+ *
+ *  ponytail: one ffprobe per clip on every call, and the route is called once
+ *  per page load. Fine at the dozens of clips a `media/` directory holds in
+ *  practice (~30ms each); cache on mtime if it ever grows to hundreds. */
+export async function listClips(): Promise<CachedClip[]> {
+  const dirs = await readdir(MEDIA_DIR, { withFileTypes: true }).catch(() => []);
+  const clips: (CachedClip & { mtime: number })[] = [];
+  for (const dir of dirs) {
+    // The id check drops `masks/` for free, and keeps a stray directory from
+    // reaching clipPath.
+    if (!dir.isDirectory() || !ID_RE.test(dir.name)) continue;
+    const videoId = dir.name;
+    const names = await readdir(join(MEDIA_DIR, videoId)).catch(() => []);
+    for (const name of names) {
+      const bounds = parseClipName(name);
+      if (!bounds) continue;
+      const path = clipPath(videoId, bounds.windowStart, bounds.windowEnd);
+      // A clip that cannot be probed is a clip that cannot be framed, so it
+      // is skipped rather than listed or thrown over: one unreadable file
+      // must not cost the whole list.
+      const probed = await probeFile(path).catch(() => null);
+      if (!probed) continue;
+      const { mtimeMs } = await stat(path).catch(() => ({ mtimeMs: 0 }));
+      clips.push({
+        videoId,
+        clipUrl: `/media/${videoId}/${name}`,
+        ...bounds,
+        width: probed.width,
+        height: probed.height,
+        mtime: mtimeMs,
+      });
+    }
+  }
+  // Newest first: the clip you just fetched is the one you are most likely
+  // to reopen.
+  clips.sort((a, b) => b.mtime - a.mtime);
+  return clips.map(({ mtime: _mtime, ...clip }) => clip);
+}
 
 /** Fetches (and caches) `[start − PAD, end + PAD]` clamped to the video's
  *  own bounds, then reports the clip's *actual* dimensions via ffprobe —

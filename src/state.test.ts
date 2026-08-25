@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { MAX_CUSTOM, isValidCustom } from "./custom.ts";
 import { DEFAULT_LAYOUT_ID } from "./layout.ts";
-import { restore, save, saveVoice, savedVoice, setState } from "./state.ts";
+import { restore, save, saveVoice, savedTitle, savedVoice, setState } from "./state.ts";
 
 /** vitest's config runs this file under Node, which has no `localStorage`
  *  global. `state.ts` is pure logic over whatever object sits at
@@ -605,5 +605,34 @@ describe("save / restore — custom boxes", () => {
       JSON.stringify({ start: 1, end: 2, layoutId: DEFAULT_LAYOUT_ID, sourceW: 0, sourceH: 0 }),
     );
     expect(restore(videoId, source).customs).toEqual([]);
+  });
+});
+
+// `savedTitle` is the idle screen's label lookup for a cached clip: the
+// media cache stores a videoId and window bounds, nothing a human recognises,
+// so the row falls back to the starter title typed the last time that video
+// was framed. It reads the same stored record `restore` does, but must answer
+// without a source size — the point is to label a clip *before* opening it.
+describe("savedTitle", () => {
+  it("returns the starter title stored for a video", () => {
+    setState({ videoId: "abc12345678", starterTitle: "Bí mật của Linh", phase: "idle" });
+    save();
+    expect(savedTitle("abc12345678")).toBe("Bí mật của Linh");
+  });
+
+  it("returns empty for a video with no stored record", () => {
+    expect(savedTitle("zzz98765432")).toBe("");
+  });
+
+  it("returns empty for a record that predates starter titles", () => {
+    // A pre-starter-screen save has no `starterTitle` key at all. The row
+    // falls back to the videoId rather than rendering "undefined".
+    localStorage.setItem("vstack:old12345678", JSON.stringify({ start: 1, end: 2 }));
+    expect(savedTitle("old12345678")).toBe("");
+  });
+
+  it("returns empty for a corrupt record instead of throwing", () => {
+    localStorage.setItem("vstack:bad12345678", "{not json");
+    expect(savedTitle("bad12345678")).toBe("");
   });
 });

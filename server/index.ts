@@ -33,7 +33,7 @@ import {
   setThumbnail,
   uploadVideo,
 } from "./youtube.ts";
-import { fetchWindow, probe, videoIdFrom } from "./ytdlp.ts";
+import { fetchWindow, listClips, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
 const PORT = 8787;
@@ -330,6 +330,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!(end > start)) return send(res, 400, { error: "End must be after start." });
     return send(res, 200, await fetchWindow(videoId, start, end, duration));
   }
+
+  // The idle screen's second way in: everything already in `media/`, so a
+  // clip fetched in an earlier session can be reframed without touching the
+  // network. No request body at all — there is nothing here for a caller to
+  // supply, so nothing to validate.
+  if (req.url === "/api/clips") return send(res, 200, { clips: await listClips() });
 
   if (req.url === "/api/export") {
     const raw = await json<Record<string, unknown>>(req);

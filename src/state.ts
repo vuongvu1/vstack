@@ -193,6 +193,19 @@ function readSaved(videoId: string): Saved | null {
   };
 }
 
+/** The starter title stored for a video, or `""` if there is none.
+ *
+ *  The idle screen's dropdown of cached clips needs a human-readable label,
+ *  and the cache itself only knows a videoId and a pair of window bounds. So
+ *  a row falls back to whatever title was typed the last time that video was
+ *  framed. Unlike `restore` this takes no `Size`: the point is to label a
+ *  clip *before* it is opened, which is before any source size is known —
+ *  and a title is source-independent anyway, which is why `save` persists it
+ *  unconditionally rather than behind the `framed` gate. */
+export function savedTitle(videoId: string): string {
+  return readSaved(videoId)?.starterTitle ?? "";
+}
+
 export function save(): void {
   if (!state.videoId) return;
   const prev = readSaved(state.videoId);

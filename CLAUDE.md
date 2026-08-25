@@ -41,7 +41,7 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 206 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 231 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -78,8 +78,8 @@ server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
                    buildSnippet, accessToken, uploadVideo, publishProgress,
                    setThumbnail
 scripts/youtube-auth.ts  `pnpm youtube-auth` — the one-off OAuth dance
-server/ytdlp.ts    videoIdFrom, probe, fetchWindow
-server/index.ts    9 routes (8 POST + GET /out/<name>), serveOut range
+server/ytdlp.ts    videoIdFrom, probe, fetchWindow, parseClipName, listClips
+server/index.ts    10 routes (9 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/layout.ts      nine layout presets, cellsOf, ratioOf, defaultBoxes
@@ -89,7 +89,7 @@ src/custom.ts      CustomBox, MAX_CUSTOM/MIN_OUT_SIDE, outRatio, clampOut/
 src/frame.ts       GUTTER/CORNER_RADIUS, windowOf/windowsOf, ringOf, maskRgba
 src/starter.ts     TITLE_FONT, renderTitleArt (title → transparent PNG)
 src/state.ts       AppState, setState/setQuiet, save/restore
-src/api.ts         8 fetch wrappers
+src/api.ts         9 fetch wrappers
 src/format.ts      mmss / clock / slugify (shared client + server)
 src/player.ts      YT IFrame API wrapper + trim strip
 src/editor.ts      box drag/resize overlay (crops over the <video>, pieces'
@@ -138,7 +138,14 @@ iframe's ancestor into `display:none`, and only its children are ever
 toggled. Export no longer downloads: it writes
 `<OUT_DIR>/<slug>-<mmss>-<mmss>.mp4`, saves the opening frame beside it as a
 vertical `.jpg` for Studio's Shorts thumbnail slot, and advances the phase. Videos under
-`SKIP_TRIM_UNDER` (180s) skip `trimming`.
+`SKIP_TRIM_UNDER` (180s) skip `trimming`. `idle` has a second way in beside the
+URL field: a dropdown of everything already in `media/` (`/api/clips` →
+`listClips`), which opens straight into `framing` with no network at all.
+That path has no `/api/probe` behind it, so two badge values are stand-ins —
+`title` falls back to the starter title last typed for that video (then the
+id) and `duration` is the clip's own `windowEnd`, which makes "Back to trim"
+draw a strip ending at the clip rather than at the video. Both are cosmetic,
+and Continue re-fetches a real window, so nothing downstream inherits them.
 Marking is `trimming`-only — the framing bar has no Set Start/Set End, so a
 skipped-trim video reaches marking through "Back to trim". The transport row
 drives the iframe from the bar because YouTube's own controls are only
@@ -329,6 +336,14 @@ the framing `<video>`, the crop overlay, the composite canvas, the output
 **`hidden` alone is not enough.** `style.css` carries `.source > [hidden], .out > [hidden] { display: none; }` because the author-origin `display: block` on the media children beats the UA's `[hidden]` rule. Without it the DOM property looks correct while the element stays fully visible. Keep the selector list generic — it already covers the iframe, the `<video>`, the canvas and the `.boxes` layer.
 
 **`display: none` does not pause anything.** That is *why* the persistent shell preserves the player. `render()` explicitly pauses whichever media is being hidden; without it the YouTube audio plays under the framing phase.
+
+**`listClips` must never offer a download partial.** A fetch in progress
+leaves `<name>.<uuid>.part.mp4` beside the finished clips, and that file is
+truncated by definition — listing it hands the framing phase a broken video
+that previews as a black canvas. `parseClipName`'s anchored
+`^(\d+)-(\d+)\.mp4$` is the whole guard (plus an `end > start` check, since
+`/api/export` rejects an empty window), and it is what `server/ytdlp.test.ts`
+pins down. Loosen it and the partial reappears as a row.
 
 **`cellsOf` order is load-bearing in four places that must agree:** the order boxes are stored in (`state.boxes`), the order the editor numbers them, the order the canvas preview draws them, and the order `xstack`'s `layout=` string lists positions. Reorder `cellsOf`'s traversal and all four silently disagree about which rect belongs to which cell.
 
