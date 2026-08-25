@@ -76,8 +76,8 @@ beforeAll(async () => {
     "-map", "[v]", "-pix_fmt", "yuv420p", "-y", bands,
   ]);
 
-  mask = await ensureMask(DEFAULT_LAYOUT, dir);
-  mask3 = await ensureMask(byId("2v-1"), dir);
+  mask = await ensureMask(DEFAULT_LAYOUT, [], dir);
+  mask3 = await ensureMask(byId("2v-1"), [], dir);
 });
 
 afterAll(async () => {
