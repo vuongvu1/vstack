@@ -83,8 +83,8 @@ server/index.ts    9 routes (8 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/layout.ts      nine layout presets, cellsOf, ratioOf, defaultBoxes
-src/custom.ts      CustomBox, MAX_CUSTOM/MIN_OUT_SIDE, clampOut/moveOut/
-                   resizeOut, resnapCrop, isValidOut/isValidCustom,
+src/custom.ts      CustomBox, MAX_CUSTOM/MIN_OUT_SIDE, outRatio, clampOut/
+                   moveOut/resizeOut, resnapCrop, isValidOut/isValidCustom,
                    defaultCustom
 src/frame.ts       GUTTER/CORNER_RADIUS, windowOf/windowsOf, ringOf, maskRgba
 src/starter.ts     TITLE_FONT, renderTitleArt (title → transparent PNG)
@@ -109,10 +109,11 @@ Layering is strict and acyclic: `errors ← {ffmpeg, starter, youtube} ←
 everything` on the client. `custom.ts` sits beside `layout.ts`, not above or
 below it, because a floating piece's ratio is its own rather than a cell's —
 it imports only `geometry.ts`, the same as `layout.ts` does, and never needs
-`cellsOf` or `ratioOf`. `frame.ts` imports both: `windowsOf` still walks
-`cellsOf`, and `maskRgba`'s `customs` parameter takes bare `Rect`s rather than
-importing `CustomBox` at all, so `frame.ts` does not need to know the crop
-half of a custom box exists.
+`cellsOf` or `ratioOf`. `frame.ts` does *not* import `custom.ts`, even though
+it sits above it in the layering — `windowsOf` still walks `cellsOf` from
+`layout.ts`, and `maskRgba`'s `customs` parameter takes bare `Rect`s rather
+than `CustomBox`, so `frame.ts` never needs to know the crop half of a custom
+box exists.
 `starter.ts` sits beside `ffmpeg.ts`, not above it, because it takes paths in
 the caller's temp dir and never needs `MEDIA_DIR` — it re-derives
 `~/.vstack/vieneu` itself for the same reason `youtube.ts` re-derives
@@ -266,9 +267,10 @@ visible once two pieces overlap.
 never the complementary `Math.round(opaque * 255 / SUB²)`.** `255 / 16`
 (`SUB = 4`) is not an integer, so the two forms are not the same number at
 every coverage level — at 8/16 coverage both round the halfway point up, and
-the two expressions land one apart. That shifts 16 corner-arc pixels per
-layout, a difference the five-pixel spot check in `server/mask.test.ts` does
-not sample and so does not catch.
+the two expressions land one apart. That shifts a pair of pixels at every
+corner arc — 16 on the two-cell default layout, 32 on a four-cell one — a
+difference the five-pixel spot check in `server/mask.test.ts` does not sample
+and so does not catch.
 
 ## Gotchas that each cost real time
 
@@ -461,7 +463,7 @@ single-user tool; not something to fix here.
 
 ## Testing posture
 
-`geometry.ts`, `layout.ts` and `custom.ts` are the modules with exhaustive coverage, deliberately — their bugs are silent. `src/custom.test.ts` covers `clampOut`/`moveOut`/`resizeOut`'s even-snapping, the `MIN_OUT_SIDE` floor, idempotence under repeated drags from every anchor corner, `resnapCrop`'s exact-ratio re-snap (and that it does not drift under repeated calls), and `isValidOut`/`isValidCustom` against everything `clampOut`/`defaultCustom` can emit and everything illegal. `layout.test.ts` asserts the nine presets tile 1080×1920 exactly, that only the three documented cell shapes occur, and that `defaultBoxes` returns per-cell-valid boxes: a mis-tiled layout survives preview and only shows up as a seam in an exported clip. `server/ffmpeg.test.ts` shells out to real ffmpeg and asserts output pixels; it is the only thing proving the preview/export agreement from the ffmpeg side — now including the border, via white pixels in the seam and at a corner cut's diagonal against the source's colour just inside a piece, and now including a real export with one floating piece straddling a cell seam, asserting the piece's own colour survives the seam, the ring around it is white, and the stack's colour resumes just past the ring. `frame.test.ts` covers the window insets (every internal seam and frame margin
+`geometry.ts`, `layout.ts` and `custom.ts` are the modules with exhaustive coverage, deliberately — their bugs are silent. `src/custom.test.ts` covers `clampOut`/`moveOut`/`resizeOut`'s even-snapping, `resizeOut`'s `MIN_OUT_SIDE` floor and frame bounds from every anchor corner, `clampOut`'s and `resnapCrop`'s idempotence under a repeated re-snap (`resnapCrop`'s also keeping the ratio exact), and `isValidOut`/`isValidCustom` against everything `clampOut`/`defaultCustom` can emit and everything illegal. `layout.test.ts` asserts the nine presets tile 1080×1920 exactly, that only the three documented cell shapes occur, and that `defaultBoxes` returns per-cell-valid boxes: a mis-tiled layout survives preview and only shows up as a seam in an exported clip. `server/ffmpeg.test.ts` shells out to real ffmpeg and asserts output pixels; it is the only thing proving the preview/export agreement from the ffmpeg side — now including the border, via white pixels in the seam and at a corner cut's diagonal against the source's colour just inside a piece, and now including a real export with one floating piece straddling a cell seam, asserting the piece's own colour survives the seam, the ring around it is white, and the stack's colour resumes just past the ring. `frame.test.ts` covers the window insets (every internal seam and frame margin
 exactly one gutter, adjacency decided on the *cells* because every pair of
 windows has a positive gap) and the mask's alpha, including the assertion that
 a window's square corner is opaque — the one that fails if `CORNER_RADIUS`
