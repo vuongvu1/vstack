@@ -85,24 +85,56 @@ export function ringOf(out: Rect): Rect {
 
 const SUB = 4;
 
+/** Whether one sample of the overlay is opaque white.
+ *
+ *  The overlay is composited AFTER the floating pieces, so it has to
+ *  arbitrate between them and the gutters — and, once there is more than one
+ *  piece, between the pieces themselves. It does that by walking them from
+ *  topmost down, which is the compositing order `buildFilter`'s chained
+ *  `overlay` already uses: the first piece whose ring rect contains the
+ *  sample owns it outright and the walk stops.
+ *
+ *    inside customs[j]'s ring rect, outside its window  → opaque
+ *        that piece's ring, or a nub cutting its square corner
+ *    inside customs[j]'s ring rect, inside its window   → transparent
+ *        that piece's window — it shows, even over a cell seam
+ *    inside no piece's ring rect                        → opaque iff the
+ *        sample is outside every cell window: today's gutters and margin
+ *
+ *  A piece's window is always inside its own ring rect (they are concentric
+ *  and the ring is a gutter larger on every side), so "inside a window" is
+ *  always reached by that piece's own branch and never falls through.
+ *
+ *  Testing *any* piece's window before *every* piece's ring — which is what
+ *  this did before it was z-aware — is indistinguishable from the walk for
+ *  zero or one piece, and wrong for two: the upper piece loses its ring and
+ *  its rounded corners wherever it overlaps the lower one. Swapping the two
+ *  tests instead is worse, not better: ring∪nub-beats-everything paints the
+ *  LOWER piece's ring across the UPPER one. */
+function opaqueAt(windows: Rect[], customs: Rect[], rings: Rect[], px: number, py: number): boolean {
+  for (let j = customs.length - 1; j >= 0; j--) {
+    const ring = rings[j];
+    const custom = customs[j];
+    // Parallel arrays by construction; noUncheckedIndexedAccess wants the
+    // guard, and skipping a hole is the only sane reading of one.
+    if (!ring || !custom) continue;
+    if (!insideRounded(ring, CORNER_RADIUS + GUTTER, px, py)) continue;
+    return !insideRounded(custom, CORNER_RADIUS, px, py);
+  }
+  for (const w of windows) {
+    if (insideRounded(w, CORNER_RADIUS, px, py)) return false;
+  }
+  return true;
+}
+
 /** The frame overlay as a raw RGBA buffer, `OUTPUT.w * OUTPUT.h * 4` bytes:
  *  opaque white where the composite must be covered, transparent where it
  *  must show, antialiased on every arc by `SUB * SUB` coverage sampling.
  *
- *  Three rules in priority order, because the overlay is applied AFTER the
- *  floating pieces are composited and therefore has to arbitrate between
- *  them and the gutters:
- *
- *    transparent  inside a custom's window   — the piece shows
- *    opaque       inside a custom's ring∪nub — draws the ring, cuts the
- *                                              piece's square corners
- *    opaque       outside every cell window  — today's gutters and margin
- *    transparent  otherwise
- *
- *  The first rule is what lets a piece straddle a cell seam without the
- *  seam's white stripe crossing it; the second is what stops the piece's
- *  square corner showing wherever it happens to sit over a cell window.
- *  With no customs this reduces exactly to the previous behaviour.
+ *  `customs` are the floating pieces' output rects in *array order* — the
+ *  same z order `buildFilter` overlays them in, last on top. See `opaqueAt`
+ *  for the per-sample rule; with no customs it reduces to "opaque outside
+ *  every cell window", which is what this rendered before pieces existed.
  *
  *  White in all three channels everywhere, including where alpha is 0, so a
  *  partially covered arc pixel can only ever blend towards white. */
@@ -117,13 +149,7 @@ export function maskRgba(windows: Rect[], customs: Rect[] = []): Uint8Array {
         for (let sx = 0; sx < SUB; sx++) {
           const px = x + (sx + 0.5) / SUB;
           const py = y + (sy + 0.5) / SUB;
-          if (customs.some((c) => insideRounded(c, CORNER_RADIUS, px, py))) continue;
-          if (
-            rings.some((r) => insideRounded(r, CORNER_RADIUS + GUTTER, px, py)) ||
-            !windows.some((w) => insideRounded(w, CORNER_RADIUS, px, py))
-          ) {
-            opaque++;
-          }
+          if (opaqueAt(windows, customs, rings, px, py)) opaque++;
         }
       }
       const transparent = SUB * SUB - opaque;

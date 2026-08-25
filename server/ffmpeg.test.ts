@@ -504,6 +504,83 @@ describe("exportClip", () => {
     expect(under.g).toBeGreaterThan(80);
     expect(under.b).toBeLessThan(80);
   });
+
+  it("keeps the upper of two overlapping pieces ringed and rounded", async () => {
+    // The end-to-end proof that the mask's walk is z-aware. These are the
+    // two rects `+ Box` twice actually produces — 540x540 at (270, 690) and
+    // its (60, 60)-offset sibling — cropped from different colour bands so
+    // every probe below names which piece it is looking at.
+    //
+    // Before the walk existed, the mask tested ANY piece's window before
+    // EVERY piece's ring: the upper piece's nub and the upper half of its
+    // ring both landed inside the lower piece's window and came back
+    // transparent, so the two probes marked below read the piece's own blue
+    // and the lower piece's red instead of white.
+    const layout = byId("2v-1");
+    const wide = boxFromHeight(300, SOURCE, 2.25); // 675x300
+    const half = boxFromHeight(300, SOURCE, 1.125); // 338x300
+    const boxes: Rect[] = [
+      { x: 0, y: 30, ...wide }, //  red band
+      { x: 0, y: 390, ...wide }, // green band
+      { x: 0, y: 750, ...half }, // blue band
+    ];
+    const lower: CustomBox = {
+      out: { x: 270, y: 690, w: 540, h: 540 },
+      crop: { x: 0, y: 30, w: 300, h: 300 }, // wholly inside the red band
+    };
+    const upper: CustomBox = {
+      out: { x: 330, y: 750, w: 540, h: 540 },
+      crop: { x: 0, y: 760, w: 300, h: 300 }, // wholly inside the blue band
+    };
+
+    const out = join(dir, "out-custom-pair.mp4");
+    await exportClip({
+      input: bands,
+      start: 0.5,
+      duration: 1,
+      layout,
+      boxes,
+      customs: [lower, upper],
+      source: SOURCE,
+      mask: await ensureMask(layout, [lower.out, upper.out], dir),
+      out,
+    });
+
+    const white = (p: { r: number; g: number; b: number }) => {
+      expect(p.r).toBeGreaterThan(200);
+      expect(p.g).toBeGreaterThan(200);
+      expect(p.b).toBeGreaterThan(200);
+    };
+
+    // The upper piece itself, well inside both rects: its own blue.
+    const inside = await pixelAt(out, 0.4, 600, 1020);
+    expect(inside.b).toBeGreaterThan(150);
+    expect(inside.r).toBeLessThan(80);
+
+    // Its NW corner nub, which lies over the lower piece's window. Was blue.
+    white(await pixelAt(out, 0.4, upper.out.x + 5, upper.out.y + 5));
+
+    // Its ring above its top edge, also over the lower piece. Was red.
+    white(await pixelAt(out, 0.4, 600, upper.out.y - GUTTER / 2));
+
+    // The lower piece's own window where the upper one does not reach: red,
+    // from the band its crop names.
+    const below = await pixelAt(out, 0.4, 400, 720);
+    expect(below.r).toBeGreaterThan(150);
+    expect(below.b).toBeLessThan(80);
+
+    // The lower piece's ring where it falls inside the upper piece's window:
+    // the upper piece shows through. This is what a literal swap of the
+    // mask's two tests would paint white instead.
+    const striped = await pixelAt(out, 0.4, lower.out.x + lower.out.w + GUTTER / 2, 1000);
+    expect(striped.b).toBeGreaterThan(150);
+    expect(striped.r).toBeLessThan(80);
+
+    // Clear of both rings: cell 2 of the layout, cropped from the green band.
+    const stack = await pixelAt(out, 0.4, 540, lower.out.y - GUTTER - 6);
+    expect(stack.g).toBeGreaterThan(80);
+    expect(stack.b).toBeLessThan(80);
+  });
 });
 
 /** Like pixelAt, but for a still of arbitrary width — the thumbnail is

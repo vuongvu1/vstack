@@ -239,6 +239,53 @@ describe("maskRgba — floating custom boxes", () => {
   });
 });
 
+describe("maskRgba — two overlapping pieces", () => {
+  // Exactly what two clicks of `+ Box` produce: defaultCustom's 540x540 at
+  // (270, 690) and its (60, 60)-offset sibling, overlapping by 480x480. The
+  // default two-piece state was the defect state, so it is the fixture.
+  const LOWER: Rect = { x: 270, y: 690, w: 540, h: 540 };
+  const UPPER: Rect = { x: 330, y: 750, w: 540, h: 540 };
+  const windows = windowsOf(DEFAULT_LAYOUT);
+  const mask = maskRgba(windows, [LOWER, UPPER]);
+
+  it("keeps the upper piece's corner nub opaque over the lower piece", () => {
+    // MUTATION TEST: this is 0 unless the walk is z-aware. Testing any
+    // piece's window before every piece's ring — which is what this did
+    // before — finds the LOWER piece's window here and calls it transparent,
+    // so the upper piece shows a square corner over its neighbour.
+    expect(alphaAt(mask, UPPER.x + 1, UPPER.y + 1)).toBe(255);
+    // The same nub outside the lower piece was always opaque — the control
+    // that shows the two differ only where the pieces overlap.
+    expect(alphaAt(mask, UPPER.x + UPPER.w - 1, UPPER.y + UPPER.h - 1)).toBe(255);
+  });
+
+  it("keeps the upper piece's ring opaque over the lower piece", () => {
+    // MUTATION TEST: 0 without the z-aware walk, for the same reason — the
+    // upper piece loses the whole top and left of its ring, which is the
+    // half that happens to sit over its neighbour.
+    expect(alphaAt(mask, 600, UPPER.y - GUTTER / 2)).toBe(255);
+    expect(rgbAt(mask, 600, UPPER.y - GUTTER / 2)).toEqual({ r: 255, g: 255, b: 255 });
+    // Below the upper piece, clear of the lower one: opaque either way.
+    expect(alphaAt(mask, 600, UPPER.y + UPPER.h + GUTTER / 2)).toBe(255);
+  });
+
+  it("hides the lower piece's ring inside the upper piece's window", () => {
+    // The other half of z-awareness, and why the fix is not simply swapping
+    // the two tests: ring∪nub-beats-everything would paint this white and
+    // stripe the lower piece's ring across the upper piece.
+    expect(alphaAt(mask, LOWER.x + LOWER.w + GUTTER / 2, 1000)).toBe(0);
+    // Where the two windows overlap, the upper piece just shows.
+    expect(alphaAt(mask, 600, 1000)).toBe(0);
+  });
+
+  it("leaves the gutters and the pieces' own windows alone", () => {
+    expect(alphaAt(mask, 2, 2)).toBe(255);
+    expect(alphaAt(mask, 100, 960)).toBe(255);
+    // Inside the lower piece, clear of the upper one.
+    expect(alphaAt(mask, 300, 720)).toBe(0);
+  });
+});
+
 describe("ringOf", () => {
   it("is the box expanded by exactly one gutter on every side", () => {
     const out: Rect = { x: 300, y: 700, w: 480, h: 480 };

@@ -3,6 +3,17 @@ import { OUTPUT } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
 import type { CustomBox } from "./custom.ts";
 
+/** Narrows the current clip to everything OUTSIDE one piece's rounded
+ *  window. `clip()` intersects, so applying this once per piece leaves the
+ *  complement of the union of those pieces' windows — the canvas's answer to
+ *  the containment tests `maskRgba` runs per sample. */
+function clipOutside(ctx: CanvasRenderingContext2D, out: Rect): void {
+  ctx.beginPath();
+  ctx.rect(0, 0, OUTPUT.w, OUTPUT.h);
+  ctx.roundRect(out.x, out.y, out.w, out.h, CORNER_RADIUS);
+  ctx.clip("evenodd");
+}
+
 /** The whole composite: one decode, one draw per cell, then one per floating
  *  piece, then the white decoration. Boxes and pieces are read through
  *  getters each frame so a drag needs no re-subscription.
@@ -15,10 +26,11 @@ import type { CustomBox } from "./custom.ts";
  *  floating piece works the same way, with its own `out` as the destination.
  *
  *  The decoration is painted in exactly the order ffmpeg applies it: pieces
- *  first, then one white pass that cannot touch a piece's window. That is
- *  why the clip below is set up before either fill — it is the canvas
- *  spelling of maskRgba's priority order, and painting the two fills in the
- *  other order would put a seam's white stripe across a piece.
+ *  first, then a white pass that cannot touch a piece's window. The clips
+ *  below are the canvas spelling of maskRgba's z-aware walk — the gutter
+ *  fill is kept out of every piece's window, and each piece's ring fill is
+ *  additionally kept out of the windows of the pieces ABOVE it, so an upper
+ *  piece keeps its ring and its rounded corners over a lower one.
  *
  *  ponytail: the loop runs unconditionally, which is what makes
  *  redraw-on-seek and redraw-on-drag need no wiring at all. Gate it on
@@ -61,21 +73,15 @@ export function startPreview(
         ctx.drawImage(video, c.crop.x, c.crop.y, c.crop.w, c.crop.h, c.out.x, c.out.y, c.out.w, c.out.h);
       }
 
-      ctx.save();
-      // Nothing white may enter a piece's window — the first rule of the
-      // mask's priority order, and what lets a piece straddle a cell seam.
-      // One clip per piece, not one combined path: clip() intersects, and
-      // "frame minus this piece" intersected per piece is the complement of
-      // the UNION, which is what maskRgba's customs.some(...) computes. A
-      // single even-odd path would instead test parity, and two overlapping
-      // pieces would cancel each other back to unprotected.
-      for (const c of cs) {
-        ctx.beginPath();
-        ctx.rect(0, 0, OUTPUT.w, OUTPUT.h);
-        ctx.roundRect(c.out.x, c.out.y, c.out.w, c.out.h, CORNER_RADIUS);
-        ctx.clip("evenodd");
-      }
       ctx.fillStyle = "#fff";
+      ctx.save();
+      // Nothing white may enter a piece's window — the rule that lets a
+      // piece straddle a cell seam. One clip per piece, not one combined
+      // path: clip() intersects, and "frame minus this piece" intersected
+      // per piece is the complement of the UNION of the pieces. A single
+      // even-odd path would instead test parity, and two overlapping pieces
+      // would cancel each other back to unprotected.
+      for (const c of cs) clipOutside(ctx, c.out);
       // The gutters and rounded corners, painted over the finished composite
       // exactly as ffmpeg overlays its mask: full-frame white with the
       // windows punched out of it by the even-odd rule. Drawing it every
@@ -85,15 +91,25 @@ export function startPreview(
       ctx.rect(0, 0, OUTPUT.w, OUTPUT.h);
       for (const w of windows) ctx.roundRect(w.x, w.y, w.w, w.h, CORNER_RADIUS);
       ctx.fill("evenodd");
-      // Each piece's ring, which also cuts its square corners. The clip
-      // keeps this out of the piece itself.
-      for (const c of cs) {
+      ctx.restore();
+      // Each piece's ring, which also cuts its square corners. Clipped out of
+      // its own window (the ring is the expanded rect MINUS the piece) and
+      // out of the windows of every piece above it — the canvas spelling of
+      // maskRgba walking the pieces from topmost down. Without the second
+      // half a lower piece's ring would be painted across an upper one,
+      // which is the exact failure swapping the mask's two tests produces.
+      cs.forEach((c, j) => {
+        ctx.save();
+        for (let k = j; k < cs.length; k++) {
+          const above = cs[k];
+          if (above) clipOutside(ctx, above.out);
+        }
         const r = ringOf(c.out);
         ctx.beginPath();
         ctx.roundRect(r.x, r.y, r.w, r.h, CORNER_RADIUS + GUTTER);
         ctx.fill();
-      }
-      ctx.restore();
+        ctx.restore();
+      });
     }
     raf = requestAnimationFrame(frame);
   };
