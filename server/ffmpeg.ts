@@ -4,11 +4,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { isValidBox } from "../src/geometry.ts";
+import { OUTPUT, isValidBox } from "../src/geometry.ts";
 import type { Rect, Size } from "../src/geometry.ts";
 import { cellsOf, ratioOf } from "../src/layout.ts";
 import type { Layout } from "../src/layout.ts";
 import { mmss, slugify } from "../src/format.ts";
+import { MAX_CUSTOM, MIN_OUT_SIDE, isValidCustom } from "../src/custom.ts";
+import type { CustomBox } from "../src/custom.ts";
 import { toolError } from "./errors.ts";
 
 const run = promisify(execFile);
@@ -128,6 +130,9 @@ export type ExportOpts = {
   duration: number;
   layout: Layout;
   boxes: Rect[];
+  /** Floating pieces, composited over the finished stack in array order —
+   *  last on top. Optional so every existing caller and test is unchanged. */
+  customs?: CustomBox[];
   source: Size;
   /** The frame overlay PNG for `layout`, from `ensureMask`. Passed in rather
    *  than resolved here so `mask.ts` — which needs `MEDIA_DIR` from this
@@ -152,7 +157,7 @@ export type ExportOpts = {
  *  pre-rendered mask is a single blend per frame. Crucially the overlay is
  *  *on top of* an edge-to-edge composite, so `crop=` and `scale=` never see
  *  the gutter and the stored boxes stay exact. */
-export function buildFilter(layout: Layout, boxes: Rect[]): string {
+export function buildFilter(layout: Layout, boxes: Rect[], customs: CustomBox[] = []): string {
   const cells = cellsOf(layout);
   const legs = cells.map((cell, i) => {
     const r = boxes[i];
@@ -170,13 +175,39 @@ export function buildFilter(layout: Layout, boxes: Rect[]): string {
     );
   });
   const inputs = cells.map((_, i) => `[c${i}]`).join("");
+  const customInputs = customs.map((_, j) => `[k${j}]`).join("");
   const scaled = cells.map((_, i) => `[s${i}]`).join("");
   const positions = cells.map((c) => `${c.x}_${c.y}`).join("|");
+
+  // One leg per floating piece, cropped from the same decode and scaled to
+  // its own output rect — the crop is source pixels and the scale is output
+  // pixels, exactly as for a cell, with no conversion between them.
+  const customLegs = customs.map(
+    (c, j) =>
+      `[k${j}]crop=${c.crop.w}:${c.crop.h}:${c.crop.x}:${c.crop.y},` +
+      `scale=${c.out.w}:${c.out.h}:flags=lanczos[t${j}]`,
+  );
+
+  // Chained overlays rather than a second xstack: xstack composes a tiling,
+  // and a floating piece is an overlap by definition. Array order is z
+  // order, last on top.
+  let base = "[stack]";
+  const overlays = customs.map((c, j) => {
+    const step = `${base}[t${j}]overlay=${c.out.x}:${c.out.y}[o${j}]`;
+    base = `[o${j}]`;
+    return step;
+  });
+
   return [
-    `[0:v]split=${cells.length}${inputs}`,
+    `[0:v]split=${cells.length + customs.length}${inputs}${customInputs}`,
     ...legs,
     `${scaled}xstack=inputs=${cells.length}:layout=${positions}[stack]`,
-    "[stack][1:v]overlay=0:0:format=auto[v]",
+    ...customLegs,
+    ...overlays,
+    // The frame overlay is still last: it arbitrates between the pieces and
+    // the gutters (see maskRgba's priority order), so it must see the
+    // finished composite including the floating pieces.
+    `${base}[1:v]overlay=0:0:format=auto[v]`,
   ].join(";");
 }
 
@@ -206,8 +237,32 @@ export function assertBoxes(layout: Layout, boxes: Rect[], source: Size): void {
   });
 }
 
+/** The floating pieces' version of assertBoxes, and for the same reason:
+ *  numbers are the one thing interpolated into the filter string. Legality
+ *  is `isValidCustom` — the same predicate `restore` runs on the client — so
+ *  a box cannot preview cleanly and die at export. */
+export function assertCustoms(customs: CustomBox[], source: Size): void {
+  if (!Array.isArray(customs)) {
+    throw new Error(`customs must be an array, got ${typeof customs}.`);
+  }
+  if (customs.length > MAX_CUSTOM) {
+    throw new Error(`At most ${MAX_CUSTOM} custom boxes, got ${customs.length}.`);
+  }
+  customs.forEach((custom, i) => {
+    if (!isValidCustom(custom, source)) {
+      throw new Error(
+        `Invalid custom box ${i + 1} ${JSON.stringify(custom)} for source ` +
+          `${source.w}x${source.h}: out must be even integers, at least ` +
+          `${MIN_OUT_SIDE} per side, inside ${OUTPUT.w}x${OUTPUT.h}; crop must ` +
+          `be integers matching that box's own ratio and inside the source.`,
+      );
+    }
+  });
+}
+
 export async function exportClip(opts: ExportOpts): Promise<string> {
   assertBoxes(opts.layout, opts.boxes, opts.source);
+  assertCustoms(opts.customs ?? [], opts.source);
   if (!Number.isFinite(opts.start) || opts.start < 0) {
     throw new Error(`Invalid start ${opts.start}: must be a non-negative number of seconds.`);
   }
@@ -231,7 +286,7 @@ export async function exportClip(opts: ExportOpts): Promise<string> {
         "-ss", String(opts.start),
         // -t (duration) not -to, which is ambiguous after a seek.
         "-t", String(opts.duration),
-        "-filter_complex", buildFilter(opts.layout, opts.boxes),
+        "-filter_complex", buildFilter(opts.layout, opts.boxes, opts.customs ?? []),
         "-map", "[v]",
         // The ? makes audio optional so a silent source still exports.
         "-map", "0:a?",

@@ -9,8 +9,10 @@ import type { Rect, Size } from "../src/geometry.ts";
 import { CORNER_RADIUS, GUTTER, windowsOf } from "../src/frame.ts";
 import { DEFAULT_LAYOUT, cellsOf, layoutById } from "../src/layout.ts";
 import type { Layout } from "../src/layout.ts";
+import type { CustomBox } from "../src/custom.ts";
 import {
   assertBoxes,
+  assertCustoms,
   buildFilter,
   exportClip,
   firstFrame,
@@ -203,6 +205,27 @@ describe("buildFilter", () => {
     // Exactly one [v]: the overlay owns the graph's output now.
     expect(f.match(/\[v\]/g)).toHaveLength(1);
   });
+
+  it("is byte-identical to the no-customs string when there are none", () => {
+    // The regression fence: an export with no floating pieces must produce
+    // exactly the graph that shipped before this feature existed.
+    expect(buildFilter(DEFAULT_LAYOUT, [TOP, BOTTOM], [])).toBe(
+      buildFilter(DEFAULT_LAYOUT, [TOP, BOTTOM]),
+    );
+    expect(buildFilter(DEFAULT_LAYOUT, [TOP, BOTTOM])).toContain("[0:v]split=2[c0][c1]");
+  });
+
+  it("adds a leg and an overlay per floating piece, mask still last", () => {
+    const custom: CustomBox = {
+      out: { x: 300, y: 700, w: 480, h: 480 },
+      crop: { x: 0, y: 760, w: 300, h: 300 },
+    };
+    const filter = buildFilter(DEFAULT_LAYOUT, [TOP, BOTTOM], [custom]);
+    expect(filter).toContain("[0:v]split=3[c0][c1][k0]");
+    expect(filter).toContain("[k0]crop=300:300:0:760,scale=480:480:flags=lanczos[t0]");
+    expect(filter).toContain("[stack][t0]overlay=300:700[o0]");
+    expect(filter.endsWith("[o0][1:v]overlay=0:0:format=auto[v]")).toBe(true);
+  });
 });
 
 describe("assertBoxes", () => {
@@ -241,6 +264,43 @@ describe("assertBoxes", () => {
     // 540x960, so a flawless 9:8 crop there would export stretched.
     const layout = byId("2h-1");
     expect(() => assertBoxes(layout, [TOP, BOTTOM, TOP], SOURCE)).toThrow(/box 1/i);
+  });
+});
+
+describe("assertCustoms", () => {
+  const custom: CustomBox = {
+    out: { x: 300, y: 700, w: 480, h: 480 },
+    crop: { x: 0, y: 100, w: 480, h: 480 },
+  };
+
+  it("accepts a legal box", () => {
+    expect(() => assertCustoms([custom], SOURCE)).not.toThrow();
+    expect(() => assertCustoms([], SOURCE)).not.toThrow();
+  });
+
+  it("rejects an odd output rect, which would misalign chroma on overlay", () => {
+    expect(() => assertCustoms([{ ...custom, out: { ...custom.out, x: 301 } }], SOURCE)).toThrow();
+  });
+
+  it("rejects an output rect hanging off the frame", () => {
+    expect(() => assertCustoms([{ ...custom, out: { ...custom.out, x: 800 } }], SOURCE)).toThrow();
+  });
+
+  it("rejects a crop off its own box's ratio", () => {
+    // `out` stays legal on purpose: otherwise isValidCustom short-circuits
+    // on the out-rect check and never reaches the ratio comparison.
+    expect(() =>
+      assertCustoms([{ ...custom, crop: { ...custom.crop, w: custom.crop.w + 2 } }], SOURCE),
+    ).toThrow();
+  });
+
+  it("rejects more than MAX_CUSTOM", () => {
+    expect(() => assertCustoms([custom, custom, custom], SOURCE)).toThrow();
+  });
+
+  it("rejects a non-array and a non-object entry instead of throwing a TypeError", () => {
+    expect(() => assertCustoms(null as unknown as CustomBox[], SOURCE)).toThrow(/array/);
+    expect(() => assertCustoms([null as unknown as CustomBox], SOURCE)).toThrow(/Invalid custom/);
   });
 });
 
@@ -389,6 +449,60 @@ describe("exportClip", () => {
     expect(third.b).toBeGreaterThan(150);
     expect(third.r).toBeLessThan(80);
     expect(third.g).toBeLessThan(80);
+  });
+
+  it("overlays a floating piece with its ring, over a cell seam", async () => {
+    // bands: 1920x1080, red/green/blue horizontal thirds (360px each).
+    // Layout 2v-1: cells 1080x480 at y=0, 1080x480 at y=480, 1080x960 at
+    // y=960. The custom spans y 700..1180, so it crosses the 960 seam.
+    const layout = byId("2v-1");
+    const wide = boxFromHeight(300, SOURCE, 2.25); // 675x300
+    const half = boxFromHeight(300, SOURCE, 1.125); // 338x300
+    const boxes: Rect[] = [
+      { x: 0, y: 30, ...wide }, //  red band
+      { x: 0, y: 390, ...wide }, // green band
+      { x: 0, y: 750, ...half }, // blue band
+    ];
+    const custom: CustomBox = {
+      out: { x: 300, y: 700, w: 480, h: 480 },
+      crop: { x: 0, y: 760, w: 300, h: 300 }, // wholly inside the blue band
+    };
+
+    const out = join(dir, "out-custom.mp4");
+    await exportClip({
+      input: bands,
+      start: 0.5,
+      duration: 1,
+      layout,
+      boxes,
+      customs: [custom],
+      source: SOURCE,
+      mask: await ensureMask(layout, [custom.out], dir),
+      out,
+    });
+
+    expect(await probeFile(out)).toEqual({ width: 1080, height: 1920 });
+
+    // The piece itself: blue, from the source band its crop names.
+    const inside = await pixelAt(out, 0.4, 540, 940);
+    expect(inside.b).toBeGreaterThan(150);
+    expect(inside.r).toBeLessThan(80);
+
+    // The seam it straddles is inside its window, so it stays blue rather
+    // than being cut by the gutter's white stripe.
+    const seam = await pixelAt(out, 0.4, 540, 960);
+    expect(seam.b).toBeGreaterThan(150);
+
+    // The ring: white, half a gutter above the piece's top edge.
+    const ring = await pixelAt(out, 0.4, 540, 700 - GUTTER / 2);
+    expect(ring.r).toBeGreaterThan(200);
+    expect(ring.g).toBeGreaterThan(200);
+    expect(ring.b).toBeGreaterThan(200);
+
+    // Just outside the ring: the cell underneath, still green.
+    const under = await pixelAt(out, 0.4, 540, 700 - GUTTER - 6);
+    expect(under.g).toBeGreaterThan(80);
+    expect(under.b).toBeLessThan(80);
   });
 });
 
