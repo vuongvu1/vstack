@@ -96,6 +96,87 @@ describe("resizeOut", () => {
   });
 });
 
+/** The inset the output overlay drags against: a piece's white ring is one
+ *  gutter wide, so bounding placement by a gutter is what lands that ring
+ *  exactly on the frame's own white margin instead of off the frame. Kept a
+ *  literal here rather than imported from `frame.ts`, which sits above this
+ *  module in the layering — the margin is a plain number to `custom.ts`. */
+const MARGIN = 10;
+
+describe("clampOut — with a margin", () => {
+  it("keeps the box a margin clear of every frame edge", () => {
+    const nw = clampOut({ x: -500, y: -500, w: 400, h: 400 }, MARGIN);
+    expect(nw.x).toBe(MARGIN);
+    expect(nw.y).toBe(MARGIN);
+    const se = clampOut({ x: 5000, y: 5000, w: 400, h: 400 }, MARGIN);
+    expect(se.x + se.w).toBe(OUTPUT.w - MARGIN);
+    expect(se.y + se.h).toBe(OUTPUT.h - MARGIN);
+  });
+
+  it("caps a frame-sized box at the inset bounds", () => {
+    const big = clampOut({ x: 0, y: 0, w: 5000, h: 5000 }, MARGIN);
+    expect(big).toEqual({
+      x: MARGIN,
+      y: MARGIN,
+      w: OUTPUT.w - 2 * MARGIN,
+      h: OUTPUT.h - 2 * MARGIN,
+    });
+  });
+
+  it("is idempotent with a margin, as it is without one", () => {
+    const once = clampOut({ x: 3, y: 7, w: 305, h: 407 }, MARGIN);
+    expect(clampOut(once, MARGIN)).toEqual(once);
+  });
+
+  it("defaults to no margin, so the un-inset behaviour is unchanged", () => {
+    const rect: Rect = { x: -100, y: -100, w: 400, h: 400 };
+    expect(clampOut(rect, 0)).toEqual(clampOut(rect));
+    expect(clampOut(rect).x).toBe(0);
+  });
+});
+
+describe("moveOut — with a margin", () => {
+  it("stops a slide a margin short of the edge, without resizing", () => {
+    const moved = moveOut(OUT, -1000, 5000, MARGIN);
+    expect(moved.w).toBe(OUT.w);
+    expect(moved.h).toBe(OUT.h);
+    expect(moved.x).toBe(MARGIN);
+    expect(moved.y + moved.h).toBe(OUTPUT.h - MARGIN);
+  });
+});
+
+describe("resizeOut — with a margin", () => {
+  it("never grows past the inset bounds, from every corner", () => {
+    for (const corner of CORNERS) {
+      const blown = resizeOut(OUT, corner, 5000, 5000, MARGIN);
+      assertLegalOut(blown);
+      expect(blown.x).toBeGreaterThanOrEqual(MARGIN);
+      expect(blown.y).toBeGreaterThanOrEqual(MARGIN);
+      expect(blown.x + blown.w).toBeLessThanOrEqual(OUTPUT.w - MARGIN);
+      expect(blown.y + blown.h).toBeLessThanOrEqual(OUTPUT.h - MARGIN);
+    }
+  });
+
+  it("keeps the anchored corner put when the margin is not in play", () => {
+    const se = resizeOut(OUT, "se", 100, 40, MARGIN);
+    expect(se.x).toBe(OUT.x);
+    expect(se.y).toBe(OUT.y);
+  });
+
+  it("pulls a rect stored flush to the edge inside on its first drag", () => {
+    // Records written before this bound existed can sit at x = 0, where the
+    // anchor itself is inside the margin. Those must normalise rather than
+    // emit a rect under MIN_OUT_SIDE or hanging over the inset edge.
+    const legacy: Rect = { x: 0, y: 0, w: 200, h: 200 };
+    for (const corner of CORNERS) {
+      const next = resizeOut(legacy, corner, 40, 40, MARGIN);
+      assertLegalOut(next);
+      expect(next.x).toBeGreaterThanOrEqual(MARGIN);
+      expect(next.y).toBeGreaterThanOrEqual(MARGIN);
+    }
+  });
+});
+
 describe("resnapCrop", () => {
   it("rebuilds the width for the new ratio and keeps the aspect exact", () => {
     const crop: Rect = { x: 400, y: 200, w: 600, h: 600 };

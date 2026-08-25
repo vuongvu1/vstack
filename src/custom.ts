@@ -36,31 +36,51 @@ export function outRatio(out: Rect): number {
 }
 
 /** The nearest legal output rect: even on all four fields, at least
- *  MIN_OUT_SIDE per side, wholly inside the frame. Idempotent, because it
- *  runs on every frame of a drag. */
-export function clampOut(rect: Rect): Rect {
-  const w = even(clamp(rect.w, MIN_OUT_SIDE, OUTPUT.w));
-  const h = even(clamp(rect.h, MIN_OUT_SIDE, OUTPUT.h));
+ *  MIN_OUT_SIDE per side, wholly inside the frame inset by `margin` on all
+ *  four edges. Idempotent, because it runs on every frame of a drag.
+ *
+ *  `margin` is how the piece's own white ring is kept on the frame rather
+ *  than off it. A ring is one gutter wide, so bounding placement by a
+ *  gutter lands it exactly on the frame's white margin — same band width,
+ *  no doubling, nothing clipped — and a piece dragged into a corner reads
+ *  like a cell's own window. It must be EVEN for the same reason every
+ *  field here is: `even()` rounds down, so an odd lower bound would floor
+ *  back underneath itself.
+ *
+ *  Defaulted to 0 rather than baked in, because it is `frame.ts`'s `GUTTER`
+ *  — output-space decoration, which sits above this module in the layering
+ *  and must not be imported into it. The caller that knows about rings
+ *  passes it; the validators deliberately do not (see `isValidOut`). */
+export function clampOut(rect: Rect, margin = 0): Rect {
+  const w = even(clamp(rect.w, MIN_OUT_SIDE, OUTPUT.w - 2 * margin));
+  const h = even(clamp(rect.h, MIN_OUT_SIDE, OUTPUT.h - 2 * margin));
   return {
     w,
     h,
-    x: even(clamp(rect.x, 0, OUTPUT.w - w)),
-    y: even(clamp(rect.y, 0, OUTPUT.h - h)),
+    x: even(clamp(rect.x, margin, OUTPUT.w - margin - w)),
+    y: even(clamp(rect.y, margin, OUTPUT.h - margin - h)),
   };
 }
 
 /** Slides an output rect, never resizing it — the same discipline
  *  `clampToBounds` keeps on the source side. */
-export function moveOut(rect: Rect, dx: number, dy: number): Rect {
-  return clampOut({ ...rect, x: rect.x + dx, y: rect.y + dy });
+export function moveOut(rect: Rect, dx: number, dy: number, margin = 0): Rect {
+  return clampOut({ ...rect, x: rect.x + dx, y: rect.y + dy }, margin);
 }
 
 /** Free resize about the opposite corner: `resizeFromCorner`'s shape minus
  *  the aspect lock, because a custom box's aspect is the thing being chosen
- *  here. Each side is capped at the anchor's own distance to the frame edge,
- *  so the result is inside the frame without a follow-up clamp that could
- *  slide the anchor out from under the pointer. */
-export function resizeOut(rect: Rect, corner: Corner, dx: number, dy: number): Rect {
+ *  here. Each side is capped at the anchor's own distance to the inset frame
+ *  edge, so a growing drag stops with the piece's ring on the frame's white
+ *  margin rather than off the frame.
+ *
+ *  The cap is floored at MIN_OUT_SIDE and the result passed through
+ *  `clampOut`, for one case only: a rect stored before this bound existed
+ *  can sit flush at 0, putting the anchor itself inside the margin, where
+ *  the raw cap would be negative and `clamp`'s `hi < lo` would emit a rect
+ *  under the floor. For an already-inset rect the cap is never binding and
+ *  `clampOut` is a no-op, so the anchor stays under the pointer. */
+export function resizeOut(rect: Rect, corner: Corner, dx: number, dy: number, margin = 0): Rect {
   const west = corner === "nw" || corner === "sw";
   const north = corner === "nw" || corner === "ne";
 
@@ -69,14 +89,13 @@ export function resizeOut(rect: Rect, corner: Corner, dx: number, dy: number): R
   const draggedX = (west ? rect.x : rect.x + rect.w) + dx;
   const draggedY = (north ? rect.y : rect.y + rect.h) + dy;
 
-  const w = even(
-    clamp(west ? anchorX - draggedX : draggedX - anchorX, MIN_OUT_SIDE, west ? anchorX : OUTPUT.w - anchorX),
-  );
-  const h = even(
-    clamp(north ? anchorY - draggedY : draggedY - anchorY, MIN_OUT_SIDE, north ? anchorY : OUTPUT.h - anchorY),
-  );
+  const maxW = Math.max(MIN_OUT_SIDE, west ? anchorX - margin : OUTPUT.w - margin - anchorX);
+  const maxH = Math.max(MIN_OUT_SIDE, north ? anchorY - margin : OUTPUT.h - margin - anchorY);
 
-  return { x: west ? anchorX - w : anchorX, y: north ? anchorY - h : anchorY, w, h };
+  const w = even(clamp(west ? anchorX - draggedX : draggedX - anchorX, MIN_OUT_SIDE, maxW));
+  const h = even(clamp(north ? anchorY - draggedY : draggedY - anchorY, MIN_OUT_SIDE, maxH));
+
+  return clampOut({ x: west ? anchorX - w : anchorX, y: north ? anchorY - h : anchorY, w, h }, margin);
 }
 
 /** The crop that follows an `out` whose ratio just changed: same height,
@@ -96,7 +115,15 @@ export function resnapCrop(crop: Rect, source: Size, out: Rect): Rect {
 
 /** Takes `unknown` because it validates values arriving from localStorage
  *  and from a request body, whatever the parameter type claims at compile
- *  time — the same posture as `isValidBox`. */
+ *  time — the same posture as `isValidBox`.
+ *
+ *  Deliberately bounds the WHOLE frame, not the gutter-inset frame the drag
+ *  path clamps to: the inset is a placement preference, not a legality rule.
+ *  Keeping it out of here means every record written before the inset
+ *  existed still restores, an older client's body still exports, and a piece
+ *  flush to the edge renders exactly as it always did — one that a drag then
+ *  pulls inside. Validators stay a superset of what the constructors emit,
+ *  never the reverse. */
 export function isValidOut(out: unknown): out is Rect {
   if (typeof out !== "object" || out === null) return false;
   const r = out as Rect;

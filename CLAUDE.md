@@ -237,6 +237,24 @@ odd on both sides of the wire — `restore` (client) and `assertCustoms`
 for cell boxes. Skip the snap or the check anywhere and the failure is a
 chroma-plane shift nobody notices until they zoom into an export's seam.
 
+**The drag path bounds a piece by the gutter-inset frame; the validators
+bound it by the whole frame, and that asymmetry is deliberate.** A piece's
+ring is one gutter wide, so `moveOut`/`resizeOut` take a `margin` (the
+framing bar passes `GUTTER`) and stop the drag with that ring parked exactly
+on the frame's own white margin — one band rather than two, none of it off
+the frame, and a piece dragged into a corner reads like a cell's window, same
+10px inset at the same 24px radius. `isValidOut` deliberately does *not*
+know about the margin: the inset is a placement preference, not a legality
+rule, so every record written before it existed still restores, an older
+client's body still exports, and a piece already flush to an edge renders as
+it always did until a drag pulls it inside. Validators stay a superset of
+what the constructors emit, never the reverse. The margin must be even for
+the same reason every `out` field is — `even()` rounds down, so an odd lower
+bound would floor back underneath itself. Note this is the one place the
+gutter reaches `custom.ts`, which sits *below* `frame.ts`: it arrives as a
+plain number through a parameter rather than an import, and it moves a
+position only — never a size, a ratio or a crop.
+
 **`restore` bounds the piece *count* as well as each piece's shape.**
 `isValidCustom` per element is not enough: localStorage is untrusted input,
 and a hand-edited record holding three individually legal pieces would mount

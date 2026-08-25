@@ -9,6 +9,7 @@ import { MAX_CUSTOM, defaultCustom, moveOut, outRatio, resizeOut, resnapCrop } f
 import type { CustomBox } from "./custom.ts";
 import { mountEditor } from "./editor.ts";
 import type { EditorHandle } from "./editor.ts";
+import { GUTTER } from "./frame.ts";
 import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER, moveBy, resizeFromCorner } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
 import {
@@ -664,8 +665,13 @@ function ensureFraming(): void {
       count: s.customs.length,
       labelFrom: cellCount,
       boxes: () => currentCustoms().map((c) => c.out),
-      move: (rect, dx, dy) => moveOut(rect, dx, dy),
-      resize: (rect, corner, dx, dy) => resizeOut(rect, corner, dx, dy),
+      // GUTTER as the placement margin: a piece's ring is one gutter wide,
+      // so bounding the drag by a gutter parks that ring exactly on the
+      // frame's own white margin — one band, not two, and none of it off
+      // the frame. A piece dragged into a corner then reads like a cell's
+      // window, which is the same 10px inset at the same 24px radius.
+      move: (rect, dx, dy) => moveOut(rect, dx, dy, GUTTER),
+      resize: (rect, corner, dx, dy) => resizeOut(rect, corner, dx, dy, GUTTER),
       // One patch carrying both halves: the piece's crop is locked to the
       // piece's own ratio, so a resize that changes that ratio has to move
       // the crop in the same frame or the two disagree until the next drag.

@@ -75,6 +75,17 @@ Rules:
   drift. An extreme ratio needs no special case: `boxFromHeight` already
   clamps between `effectiveMinH` and `maxBox(source, ratio).h`, so a very
   wide `out` yields a shorter crop rather than an invalid one.
+- Placement is bounded by the frame **inset by `GUTTER`**, not the raw
+  frame. A piece's ring is one gutter wide, so this parks that ring exactly
+  on the frame's own white margin: one band instead of two, none of it off
+  the frame, and a piece dragged into a corner reads like a cell's window at
+  the same inset and the same radius. `moveOut`/`resizeOut` take the margin
+  as a parameter — the gutter is `frame.ts`'s and `custom.ts` sits below it,
+  so it arrives as a plain number and moves a position only, never a size, a
+  ratio or a crop. `isValidOut` keeps bounding the whole frame: the inset is
+  a placement preference rather than a legality rule, so older records and
+  older request bodies stay valid and a piece already flush to an edge is
+  pulled inside by its next drag rather than rejected.
 - Defaults on `+ Box`: 540×540 centred; a second one offset by (60, 60) so
   its handles are not buried under the first's.
 - Persisted per video in `Saved.customs`, behind the same
