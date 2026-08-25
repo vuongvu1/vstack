@@ -5,6 +5,7 @@
 // mp3 import a string URL.
 import titleSound from "../server/assets/start-title-sound.mp3";
 import * as api from "./api.ts";
+import { MAX_CUSTOM, defaultCustom, moveOut, outRatio, resizeOut, resnapCrop } from "./custom.ts";
 import type { CustomBox } from "./custom.ts";
 import { mountEditor } from "./editor.ts";
 import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER, moveBy, resizeFromCorner } from "./geometry.ts";
@@ -140,6 +141,7 @@ async function load(url: string): Promise<void> {
         source,
         layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
         boxes: saved.boxes ?? [],
+        customs: saved.customs ?? [],
         phase: "framing",
       });
       save();
@@ -490,6 +492,7 @@ async function openWindow(): Promise<void> {
       source,
       layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
       boxes: saved.boxes ?? [],
+      customs: saved.customs ?? [],
       phase: "framing",
     });
     save();
@@ -506,6 +509,13 @@ let videoEl: HTMLVideoElement | null = null;
 let canvasEl: HTMLCanvasElement | null = null;
 let stopPreview: (() => void) | null = null;
 let stopEditor: (() => void) | null = null;
+// The output overlay's teardown, mounted over canvasEl for the floating
+// pieces' `out` rects — only present while s.customs.length > 0. Tracked
+// separately from stopEditor because the two overlays have different node
+// counts and different geometry (output px vs source px) and are torn down
+// independently: the source overlay always exists once framing starts, the
+// output overlay only exists while there is at least one piece.
+let stopOutEditor: (() => void) | null = null;
 
 /** The finished export, played from `/out/<name>`. Like the framing <video>
  *  it lives permanently in outSlot and is only ever hidden — see the
@@ -531,6 +541,11 @@ function ensurePreview(url: string): void {
 // way it hides videoEl/canvasEl, or the overlay (positioned against a now-
 // hidden, zero-size video) is left showing over the trimming view.
 let boxesLayer: HTMLDivElement | null = null;
+// Mirrors boxesLayer for the output overlay's `.boxes` layer. Reset to null
+// (not just hidden) whenever the last piece is removed and stopOutEditor()
+// tears the layer down — render() must not try to toggle `hidden` on a node
+// that mountEditor's teardown already removed from the DOM.
+let outBoxesLayer: HTMLDivElement | null = null;
 let framingFor = "";
 // The layout the mounted editor and preview loop were built for. Their
 // node count and cell list are layout-derived, so a layout change has to
@@ -554,10 +569,14 @@ function ensureFraming(): void {
   const layout = resolveLayout(s.layoutId);
   const cells = cellsOf(layout);
   const sameClip = videoEl !== null && canvasEl !== null && framingFor === s.clipUrl;
-  const sameLayout = editorFor === layout.id;
+  // The remount key carries the piece count alongside the layout id: both
+  // overlays' node counts derive from it (source: cells.length +
+  // customs.length, output: customs.length), so adding or removing a piece
+  // must rebuild both the same way switching layouts does.
+  const sameLayout = editorFor === `${layout.id}:${s.customs.length}`;
   if (sameClip && sameLayout) return;
   framingFor = s.clipUrl;
-  editorFor = layout.id;
+  editorFor = `${layout.id}:${s.customs.length}`;
   stopPreview?.();
 
   if (!videoEl) {
@@ -583,32 +602,83 @@ function ensureFraming(): void {
 
   stopPreview = startPreview(canvasEl, videoEl, cells, currentBoxes, currentCustoms);
 
+  const cellCount = cells.length;
   stopEditor?.();
   stopEditor = mountEditor({
     host: sourceSlot,
     media: videoEl,
     bounds: () => getState().source,
-    count: cells.length,
-    boxes: currentBoxes,
+    count: cellCount + s.customs.length,
+    boxes: () => [...currentBoxes(), ...currentCustoms().map((c) => c.crop)],
     move: (rect, dx, dy) => moveBy(rect, dx, dy, getState().source),
     resize: (rect, corner, dx, dy, index) => {
+      const source = getState().source;
+      // A piece's crop is locked to the piece's own ratio; a cell's to its
+      // cell's. Same isValidBox on both sides, different ratio.
+      const custom = currentCustoms()[index - cellCount];
+      if (custom) {
+        return resizeFromCorner(rect, corner, dx, dy, source, outRatio(custom.out));
+      }
       const cell = cells[index];
       // pointerdown only sets a drag for an index that has both a node and a
       // box, and nodes are built from `cells`, so this is always present.
       if (!cell) return rect;
-      return resizeFromCorner(rect, corner, dx, dy, getState().source, ratioOf(cell));
+      return resizeFromCorner(rect, corner, dx, dy, source, ratioOf(cell));
     },
     // Dragging must not trigger a full re-render — that would rebuild the
     // video element mid-drag. The editor moves its own nodes and the rAF
     // loop reads the new rect; state is written without notifying.
     onChange: (index, rect) => {
-      const next = [...currentBoxes()];
-      next[index] = rect;
-      setQuiet({ boxes: next });
+      if (index < cellCount) {
+        const next = [...currentBoxes()];
+        next[index] = rect;
+        setQuiet({ boxes: next });
+        return;
+      }
+      const next = [...currentCustoms()];
+      const cur = next[index - cellCount];
+      if (!cur) return;
+      next[index - cellCount] = { ...cur, crop: rect };
+      setQuiet({ customs: next });
     },
     onCommit: () => save(),
   });
   boxesLayer = sourceSlot.querySelector<HTMLDivElement>(".boxes");
+
+  stopOutEditor?.();
+  stopOutEditor = null;
+  outBoxesLayer = null;
+  if (s.customs.length > 0) {
+    stopOutEditor = mountEditor({
+      host: outSlot,
+      media: canvasEl,
+      // Output space: the canvas is 1080x1920 whatever size it renders at.
+      bounds: () => OUTPUT,
+      count: s.customs.length,
+      labelFrom: cellCount,
+      boxes: () => currentCustoms().map((c) => c.out),
+      move: (rect, dx, dy) => moveOut(rect, dx, dy),
+      resize: (rect, corner, dx, dy) => resizeOut(rect, corner, dx, dy),
+      // One patch carrying both halves: the piece's crop is locked to the
+      // piece's own ratio, so a resize that changes that ratio has to move
+      // the crop in the same frame or the two disagree until the next drag.
+      onChange: (index, out) => {
+        const next = [...currentCustoms()];
+        const cur = next[index];
+        if (!cur) return;
+        next[index] = { out, crop: resnapCrop(cur.crop, getState().source, out) };
+        setQuiet({ customs: next });
+      },
+      onCommit: () => save(),
+      onRemove: (index) => {
+        // setState, not setQuiet: the node count changes, so both overlays
+        // must be rebuilt — the same reason a layout switch notifies.
+        setState({ customs: currentCustoms().filter((_, i) => i !== index) });
+        save();
+      },
+    });
+    outBoxesLayer = outSlot.querySelector<HTMLDivElement>(".boxes");
+  }
 }
 
 /** The current boxes, or this layout's defaults if the list isn't built yet.
@@ -657,9 +727,7 @@ async function doExport(): Promise<void> {
       titlePng: await renderTitleArt(starterTitle),
       layoutId: layout.id,
       boxes,
-      // ponytail: placeholder until Task 9 adds the custom-box state field
-      // and the +Box UI; the client sends no floating pieces yet.
-      customs: [],
+      customs: s.customs,
       voice: currentVoice(s),
     });
     setState({
@@ -761,6 +829,10 @@ function renderLayoutPicker(currentId: string, busy: boolean): Node {
       // layouts, so a box from the old one is illegal in the new one.
       // ensureFraming rolls this layout's defaults on the next render.
       //
+      // Pieces are NOT cleared: a floating box's ratio is its own and its
+      // out rect is frame space, so nothing about it is invalidated by the
+      // cells changing.
+      //
       // ponytail: a boxesByLayout map would preserve a framing per layout
       // and make flipping between them to compare non-destructive. Add it
       // if that gets annoying.
@@ -817,6 +889,18 @@ function renderFraming(): Node[] {
   const back = el("button", { className: "btn-gray", textContent: "Back to trim" });
   back.onclick = () => setState({ phase: "trimming" });
 
+  const addBox = el("button", {
+    textContent: "+ Box",
+    title: "Add a box that floats over the layout",
+    disabled: Boolean(s.busy) || s.customs.length >= MAX_CUSTOM,
+  });
+  addBox.onclick = () => {
+    // setState: the node count changes, so ensureFraming must rebuild both
+    // overlays on the next render.
+    setState({ customs: [...s.customs, defaultCustom(s.source, s.customs.length)] });
+    save();
+  };
+
   // The starter screen's title, and the gate on Export: the screen reads it
   // aloud, so a blank one is a silent screen rather than a missing caption.
   const title = el("input", {
@@ -872,6 +956,7 @@ function renderFraming(): Node[] {
       "div",
       { className: "bar-row" },
       renderLayoutPicker(s.layoutId, Boolean(s.busy)),
+      addBox,
       el(
         "div",
         { className: "bar-end" },
@@ -1249,6 +1334,11 @@ function render(): void {
   // showing over the trimming view, and returning to framing gets it back
   // without losing drag state or its ResizeObserver.
   if (boxesLayer) boxesLayer.hidden = s.phase !== "framing";
+  // Mirrors boxesLayer above for the output overlay's own `.boxes` layer —
+  // hidden, never removed, while it exists. When the last piece is removed
+  // ensureFraming tears the layer down itself and resets this to null, so
+  // there is nothing here to toggle until a piece exists again.
+  if (outBoxesLayer) outBoxesLayer.hidden = s.phase !== "framing";
 
   publishForm.hidden = s.phase !== "preview";
 

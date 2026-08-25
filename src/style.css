@@ -14,6 +14,10 @@
 @import "@radix-ui/colors/grass-alpha.css";
 @import "@radix-ui/colors/violet.css";
 @import "@radix-ui/colors/violet-alpha.css";
+@import "@radix-ui/colors/cyan.css";
+@import "@radix-ui/colors/cyan-alpha.css";
+@import "@radix-ui/colors/orange.css";
+@import "@radix-ui/colors/orange-alpha.css";
 
 /* The dark scales, same set. Radix's dark files scope their tokens to
    `.dark, .dark-theme` rather than `:root`, so importing them costs nothing
@@ -31,6 +35,10 @@
 @import "@radix-ui/colors/grass-dark-alpha.css";
 @import "@radix-ui/colors/violet-dark.css";
 @import "@radix-ui/colors/violet-dark-alpha.css";
+@import "@radix-ui/colors/cyan-dark.css";
+@import "@radix-ui/colors/cyan-dark-alpha.css";
+@import "@radix-ui/colors/orange-dark.css";
+@import "@radix-ui/colors/orange-dark-alpha.css";
 
 /* Radix Themes' own token layer, hand-rolled — the React package can't be
    used here, but its scales are what make the components read as Radix. */
@@ -124,7 +132,12 @@ body {
    and a stretched video would put every crop box over the wrong pixels. */
 .source > iframe { width: 100%; height: 100%; }
 
-.out { aspect-ratio: 9 / 16; height: 100%; }
+/* position: relative makes .out a containing block for the output overlay's
+   absolutely-positioned `.boxes` layer (see mountEditor's `host` doc) — the
+   combined rule above sets it for `.source` but not `.out`. Introducing it
+   here cannot move `.out`'s existing children: they are already
+   width/height: 100% block elements under overflow: hidden. */
+.out { aspect-ratio: 9 / 16; height: 100%; position: relative; }
 .out > canvas,
 .out > video { width: 100%; height: 100%; display: block; }
 
@@ -384,6 +397,34 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
 .box-c1 .box-label { color: var(--amber-11); }
 .box-c2 .box-label { color: var(--grass-11); }
 .box-c3 .box-label { color: var(--violet-11); }
+
+/* The two floating pieces. Their indices continue the cells', so a piece is
+   the same colour and the same number on both overlays. */
+.box-c4 { border-color: var(--cyan-9); background: color-mix(in srgb, var(--cyan-9) 12%, transparent); }
+.box-c5 { border-color: var(--orange-9); background: color-mix(in srgb, var(--orange-9) 12%, transparent); }
+
+.box-c4 .box-label { color: var(--cyan-11); }
+.box-c5 .box-label { color: var(--orange-11); }
+
+/* The removal control, only present on the output overlay. White on a dark
+   scrim for the same reason .handle is: it sits over video, not over the
+   theme. */
+.box-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  line-height: 1;
+  font-size: 13px;
+  color: #fff;
+  background: var(--slate-a11);
+  border: none;
+  border-radius: var(--radius-1);
+  cursor: pointer;
+  touch-action: none;
+}
 
 /* The layout picker. Nine text labels would swamp the bar, and for a tool
    whose whole job is visual composition the diagram IS the label. */
