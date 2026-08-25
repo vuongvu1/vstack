@@ -1,6 +1,6 @@
 import { execFile, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, statSync, unlinkSync } from "node:fs";
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -199,6 +199,32 @@ async function saveStill(video: string): Promise<void> {
   }
 }
 
+/** Export partials being written right now.
+ *
+ *  `pnpm server` runs under `node --watch`, so every edit to a server file
+ *  SIGTERMs this process — and a killed process never reaches the `finally`
+ *  that removes its partial. The ffmpeg it spawned is a separate process and
+ *  outlives it, so without the handler below an edit during a render leaves a
+ *  multi-MB `<name>.<uuid>.part.mp4` in OUT_DIR, which nothing sweeps. */
+const inFlight = new Set<string>();
+
+// `unlinkSync`, not `rm`: a signal handler has no time for a promise. Note
+// this gives the process a SIGTERM handler it did not have before —
+// killOldServer's comment says the old server "is gone almost at once", and
+// that stays true, since this does a handful of sync unlinks and exits.
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    for (const partial of inFlight) {
+      try {
+        unlinkSync(partial);
+      } catch {
+        /* already renamed, or never created */
+      }
+    }
+    process.exit(0);
+  });
+}
+
 /** `bytes=a-b`, `bytes=a-` and `bytes=-n` — the three forms a browser sends. */
 const RANGE = /^bytes=(\d*)-(\d*)$/;
 
@@ -378,6 +404,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = join(dir, "body.mp4");
     const art = join(dir, "title.png");
 
+    inFlight.add(partial);
     try {
       await writeFile(art, titlePng);
       await exportClip({
@@ -421,6 +448,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       // must swallow its own errors rather than propagate them. The partial
       // is removed here rather than in a catch: on the success path the
       // rename already took it away, so one cleanup covers both.
+      inFlight.delete(partial);
       await rm(partial, { force: true }).catch((err: unknown) => {
         console.error("vstack: partial cleanup failed:", err);
       });

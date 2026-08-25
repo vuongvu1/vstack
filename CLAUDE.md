@@ -28,7 +28,9 @@ inline "as built" corrections; treat it as a record, not as instructions.
 ## Commands
 
 ```
-pnpm server   # backend on 127.0.0.1:8787   (node runs .ts directly, no build)
+pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directly,
+              # no build). Restarts on any server file it imports — which is why
+              # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
 pnpm test     # vitest, 150 tests
 pnpm build    # tsc && vite build
@@ -314,6 +316,17 @@ crops (`force_original_aspect_ratio=increase` + `crop`), never `decrease` +
 on `OUTPUT.h / 2` and the crop takes 607px around that same centre; a title of
 four or more lines (180px each at `MAX_SIZE`) loses its outer lines from the
 thumbnail, though never from the video.
+
+**A killed server must take its partial with it.** `node --watch` SIGTERMs
+the process on every server edit, and a killed process never reaches the
+`finally` that removes `out/<name>.<uuid>.part.mp4` — while the ffmpeg it
+spawned is a separate process that keeps writing. `index.ts` therefore tracks
+in-flight partials in a `Set` and unlinks them from a SIGINT/SIGTERM handler,
+`unlinkSync` because a signal handler has no time for a promise. Verified by
+polling for a real partial mid-export, sending SIGTERM while it existed, and
+confirming nothing was left behind. This also gives the process a SIGTERM
+handler it did not have before; `killOldServer`'s "gone almost at once" still
+holds, since the handler is a few sync unlinks and an exit.
 
 **The export writes `out/<name>.<uuid>.part.mp4` and renames.** A half-written
 file must never be servable under a name the client can request, and the

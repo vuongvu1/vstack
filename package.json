@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "start": "trap 'kill 0' INT TERM EXIT; node server/index.ts & vite",
-    "server": "node server/index.ts",
+    "start": "trap 'kill 0' INT TERM EXIT; node --watch server/index.ts & vite",
+    "server": "node --watch server/index.ts",
     "voices": "node scripts/audition.ts",
     "youtube-auth": "node scripts/youtube-auth.ts",
     "build": "tsc && vite build",
