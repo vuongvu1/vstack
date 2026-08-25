@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { OUTPUT } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
-import { CORNER_RADIUS, GUTTER, maskRgba, windowOf, windowsOf } from "./frame.ts";
+import { CORNER_RADIUS, GUTTER, maskRgba, ringOf, windowOf, windowsOf } from "./frame.ts";
 import { DEFAULT_LAYOUT, LAYOUTS, cellsOf, layoutById } from "./layout.ts";
 
 /** `layoutById` returns `Layout | null` by design. Tests know their ids
@@ -188,5 +188,65 @@ describe("maskRgba", () => {
       }
     }
     expect(partial).toBeGreaterThan(0);
+  });
+});
+
+describe("maskRgba — floating custom boxes", () => {
+  // A box straddling the 1-1 layout's seam at y = 960, well inside the
+  // frame on x. Everything below is asserted against these numbers.
+  const CUSTOM: Rect = { x: 300, y: 700, w: 480, h: 480 };
+  const windows = windowsOf(DEFAULT_LAYOUT);
+
+  it("cuts a transparent window where the piece is drawn", () => {
+    const mask = maskRgba(windows, [CUSTOM]);
+    expect(alphaAt(mask, CUSTOM.x + CUSTOM.w / 2, CUSTOM.y + CUSTOM.h / 2)).toBe(0);
+  });
+
+  it("paints an opaque white ring one gutter wide around it", () => {
+    const mask = maskRgba(windows, [CUSTOM]);
+    const midX = CUSTOM.x + CUSTOM.w / 2;
+    // Half a gutter above the top edge: inside the ring band.
+    expect(alphaAt(mask, midX, CUSTOM.y - GUTTER / 2)).toBe(255);
+    expect(rgbAt(mask, midX, CUSTOM.y - GUTTER / 2)).toEqual({ r: 255, g: 255, b: 255 });
+    // Two px beyond the ring: back to the cell's own content.
+    expect(alphaAt(mask, midX, CUSTOM.y - GUTTER - 2)).toBe(0);
+  });
+
+  it("keeps the corner nub opaque even where it sits over a cell window", () => {
+    // The failure this prevents: the piece is drawn as a plain rect, so its
+    // square corner would show through wherever the mask is transparent.
+    // MUTATION TEST: drop the ring∪nub rule and this drops to 0.
+    const mask = maskRgba(windows, [CUSTOM]);
+    expect(alphaAt(mask, CUSTOM.x + 1, CUSTOM.y + 1)).toBe(255);
+  });
+
+  it("lets a piece straddle a cell seam without a white stripe through it", () => {
+    // The 1-1 layout's two windows are one gutter apart around y = 960, so
+    // that row is opaque white with no customs — and must not be, inside a
+    // custom's window.
+    // MUTATION TEST: let the gutter rule win over customs and this is 255.
+    const bare = maskRgba(windows);
+    expect(alphaAt(bare, CUSTOM.x + CUSTOM.w / 2, 960)).toBe(255);
+    const mask = maskRgba(windows, [CUSTOM]);
+    expect(alphaAt(mask, CUSTOM.x + CUSTOM.w / 2, 960)).toBe(0);
+  });
+
+  it("leaves the frame margin and the rest of the gutters alone", () => {
+    const mask = maskRgba(windows, [CUSTOM]);
+    expect(alphaAt(mask, 2, 2)).toBe(255);
+    expect(alphaAt(mask, 100, 960)).toBe(255);
+    expect(alphaAt(mask, 540, 480)).toBe(0);
+  });
+});
+
+describe("ringOf", () => {
+  it("is the box expanded by exactly one gutter on every side", () => {
+    const out: Rect = { x: 300, y: 700, w: 480, h: 480 };
+    expect(ringOf(out)).toEqual({
+      x: out.x - GUTTER,
+      y: out.y - GUTTER,
+      w: out.w + 2 * GUTTER,
+      h: out.h + 2 * GUTTER,
+    });
   });
 });

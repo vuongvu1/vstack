@@ -56,40 +56,78 @@ export function windowsOf(layout: Layout): Rect[] {
 /** Standard rounded-rect containment: clamp the point into the rect the four
  *  arc centres span, then compare the distance to that clamped point against
  *  the radius. On a straight edge the clamp collapses one axis, so the test
- *  degenerates to the flat edge for free. */
-function insideWindow(w: Rect, px: number, py: number): boolean {
-  if (px < w.x || px > w.x + w.w || py < w.y || py > w.y + w.h) return false;
-  const cx = Math.min(Math.max(px, w.x + CORNER_RADIUS), w.x + w.w - CORNER_RADIUS);
-  const cy = Math.min(Math.max(py, w.y + CORNER_RADIUS), w.y + w.h - CORNER_RADIUS);
+ *  degenerates to the flat edge for free.
+ *
+ *  Takes the radius rather than reading CORNER_RADIUS directly because the
+ *  ring around a floating piece is rounded at CORNER_RADIUS + GUTTER, so its
+ *  outer edge stays concentric with the piece's own corners. */
+function insideRounded(r: Rect, radius: number, px: number, py: number): boolean {
+  if (px < r.x || px > r.x + r.w || py < r.y || py > r.y + r.h) return false;
+  const cx = Math.min(Math.max(px, r.x + radius), r.x + r.w - radius);
+  const cy = Math.min(Math.max(py, r.y + radius), r.y + r.h - radius);
   const dx = px - cx;
   const dy = py - cy;
-  return dx * dx + dy * dy <= CORNER_RADIUS * CORNER_RADIUS;
+  return dx * dx + dy * dy <= radius * radius;
+}
+
+/** The white ring around a floating piece: its window expanded by one gutter
+ *  on every side, so the piece reads with the same visual weight as a seam
+ *  between two cells. Exported because the canvas preview paints the same
+ *  region and must derive it the same way rather than recompute it. */
+export function ringOf(out: Rect): Rect {
+  return {
+    x: out.x - GUTTER,
+    y: out.y - GUTTER,
+    w: out.w + 2 * GUTTER,
+    h: out.h + 2 * GUTTER,
+  };
 }
 
 const SUB = 4;
 
 /** The frame overlay as a raw RGBA buffer, `OUTPUT.w * OUTPUT.h * 4` bytes:
- *  opaque white outside the windows, transparent inside, antialiased on the
- *  arcs by `SUB * SUB` coverage sampling. Composited over the finished
- *  composite it paints the gutters and rounds the corners in one pass.
+ *  opaque white where the composite must be covered, transparent where it
+ *  must show, antialiased on every arc by `SUB * SUB` coverage sampling.
+ *
+ *  Three rules in priority order, because the overlay is applied AFTER the
+ *  floating pieces are composited and therefore has to arbitrate between
+ *  them and the gutters:
+ *
+ *    transparent  inside a custom's window   — the piece shows
+ *    opaque       inside a custom's ring∪nub — draws the ring, cuts the
+ *                                              piece's square corners
+ *    opaque       outside every cell window  — today's gutters and margin
+ *    transparent  otherwise
+ *
+ *  The first rule is what lets a piece straddle a cell seam without the
+ *  seam's white stripe crossing it; the second is what stops the piece's
+ *  square corner showing wherever it happens to sit over a cell window.
+ *  With no customs this reduces exactly to the previous behaviour.
  *
  *  White in all three channels everywhere, including where alpha is 0, so a
  *  partially covered arc pixel can only ever blend towards white. */
-export function maskRgba(windows: Rect[]): Uint8Array {
+export function maskRgba(windows: Rect[], customs: Rect[] = []): Uint8Array {
   const buf = new Uint8Array(OUTPUT.w * OUTPUT.h * 4);
   buf.fill(255);
+  const rings = customs.map(ringOf);
   for (let y = 0; y < OUTPUT.h; y++) {
     for (let x = 0; x < OUTPUT.w; x++) {
-      let covered = 0;
+      let opaque = 0;
       for (let sy = 0; sy < SUB; sy++) {
         for (let sx = 0; sx < SUB; sx++) {
           const px = x + (sx + 0.5) / SUB;
           const py = y + (sy + 0.5) / SUB;
-          if (windows.some((w) => insideWindow(w, px, py))) covered++;
+          if (customs.some((c) => insideRounded(c, CORNER_RADIUS, px, py))) continue;
+          if (
+            rings.some((r) => insideRounded(r, CORNER_RADIUS + GUTTER, px, py)) ||
+            !windows.some((w) => insideRounded(w, CORNER_RADIUS, px, py))
+          ) {
+            opaque++;
+          }
         }
       }
-      if (covered === 0) continue;
-      buf[(y * OUTPUT.w + x) * 4 + 3] = 255 - Math.round((covered * 255) / (SUB * SUB));
+      if (opaque === SUB * SUB) continue;
+      buf[(y * OUTPUT.w + x) * 4 + 3] = Math.round((opaque * 255) / (SUB * SUB));
     }
   }
   return buf;
