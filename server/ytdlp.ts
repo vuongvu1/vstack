@@ -5,8 +5,19 @@ import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { PAD } from "../src/geometry.ts";
+import { totalDuration } from "../src/segments.ts";
+import type { Segment } from "../src/segments.ts";
 import { HttpError, toolError } from "./errors.ts";
-import { MEDIA_DIR, clipName, clipPath, probeFile, reportCache } from "./ffmpeg.ts";
+import {
+  MEDIA_DIR,
+  clipName,
+  clipPath,
+  concatClips,
+  probeFile,
+  reportCache,
+  segmentDigest,
+} from "./ffmpeg.ts";
+import type { ConcatPart } from "./ffmpeg.ts";
 
 const run = promisify(execFile);
 const BIG = 64 << 20; // yt-dlp --dump-json on a long video is multi-MB
@@ -224,8 +235,11 @@ export async function listClips(): Promise<CachedClip[]> {
 /** Fetches (and caches) `[start − PAD, end + PAD]` clamped to the video's
  *  own bounds, then reports the clip's *actual* dimensions via ffprobe —
  *  yt-dlp picks a format, so the fetched resolution can differ from what
- *  --dump-json advertised, and crop rects are stored in source pixels. */
-export async function fetchWindow(
+ *  --dump-json advertised, and crop rects are stored in source pixels.
+ *
+ *  Module-private: `fetchWindow` below is the only public entry point, and
+ *  calls this once per segment. */
+async function fetchOne(
   videoId: string,
   start: number,
   end: number,
@@ -360,7 +374,94 @@ export async function fetchWindow(
     clipUrl: `/media/${videoId}/${clipName(windowStart, windowEnd)}`,
     windowStart,
     windowEnd,
+    // A single range's clip IS a contiguous slice of the source, so clip
+    // time and source time differ by the constant `windowStart` that
+    // /api/export already subtracts. These are the marks, and the export
+    // request is byte-identical to what it was before segments existed.
+    clipStart: start,
+    clipEnd: end,
+    digest: "",
     width,
     height,
+  };
+}
+
+/** Fetches (and caches) the clip the framing phase will crop.
+ *
+ *  One segment is today's path exactly — same PAD, same download ladder,
+ *  same `<windowStart>-<windowEnd>.mp4` name, so every clip already in
+ *  `media/` still hits and the common case cannot regress into the new
+ *  code at all.
+ *
+ *  Several segments are fetched as several ordinary clips and then stitched.
+ *  Fetching each part through `fetchOne` rather than pulling the whole span
+ *  between the first and last mark is what keeps two ten-second parts an
+ *  hour apart from downloading an hour of video — and it means each part is
+ *  independently cached and shared with a plain single-range fetch of the
+ *  same bounds, so re-cutting re-downloads nothing.
+ *
+ *  Callers must have validated `segments` with `isValidSegments` first;
+ *  `/api/window` does, before any subprocess spawns. */
+export async function fetchWindow(
+  videoId: string,
+  segments: Segment[],
+  duration: number,
+): Promise<WindowResult> {
+  const only = segments[0];
+  if (only === undefined) {
+    throw new HttpError(400, "At least one segment is required.");
+  }
+  if (segments.length === 1) return fetchOne(videoId, only.start, only.end, duration);
+
+  const parts: ConcatPart[] = [];
+  for (const seg of segments) {
+    const part = await fetchOne(videoId, seg.start, seg.end, duration);
+    // Offsets within the part file: every part carries PAD around its own
+    // bounds, and the stitch must not.
+    parts.push({
+      path: clipPath(videoId, part.windowStart, part.windowEnd),
+      start: seg.start - part.windowStart,
+      end: seg.end - part.windowStart,
+    });
+  }
+
+  const digest = segmentDigest(segments);
+  // Math.ceil, not round: `clipEnd` below is clamped to this number, and a
+  // name that rounded *down* would shave a fraction of a second off the cut
+  // it names. The filename is an identifier either way — the probed
+  // duration is the measurement.
+  const total = Math.ceil(totalDuration(segments));
+  const path = clipPath(videoId, 0, total, digest);
+
+  if (!existsSync(path)) {
+    await mkdir(dirname(path), { recursive: true });
+    // Written under a partial and renamed on success, the same as the
+    // download above and for the same two reasons: existsSync(path) must
+    // never be true for a half-written clip, and a UUID (not process.pid,
+    // which is constant for the life of this one server) keeps two
+    // concurrent stitches of the same cut off each other's open fd.
+    const partial = `${path}.${randomUUID()}.part.mp4`;
+    try {
+      await concatClips(parts, partial);
+      await rename(partial, path);
+    } finally {
+      await rm(partial, { force: true });
+    }
+    reportCache();
+  }
+
+  const probed = await probeFile(path);
+  return {
+    clipUrl: `/media/${videoId}/${clipName(0, total, digest)}`,
+    windowStart: 0,
+    windowEnd: total,
+    clipStart: 0,
+    // Clamped to the name's own number: /api/export rejects an `end` past
+    // `windowEnd`, and the concat's real duration can land a few
+    // milliseconds either side of the sum.
+    clipEnd: Math.min(probed.seconds, total),
+    digest,
+    width: probed.width,
+    height: probed.height,
   };
 }
