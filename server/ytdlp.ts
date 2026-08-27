@@ -79,6 +79,16 @@ export type WindowResult = {
   clipUrl: string;
   windowStart: number;
   windowEnd: number;
+  /** The range of the *clip file* that is the finished cut. For a single
+   *  segment these are the user's marks, so the export request is
+   *  unchanged; for a stitch the clip has its own timeline and these are
+   *  `0` and its probed duration. `doExport` sends these, never the marks. */
+  clipStart: number;
+  clipEnd: number;
+  /** A stitch's segment digest, `""` for an ordinary single-range clip.
+   *  `/api/export` needs it to rebuild the cache path, and cannot recompute
+   *  it — the `listClips` reopen path has no segments to hash. */
+  digest: string;
   width: number;
   height: number;
 };
@@ -129,20 +139,26 @@ const ATTEMPTS: Attempt[] = [
  *  client code a fresh download does. */
 export type CachedClip = WindowResult & { videoId: string };
 
-const CLIP_RE = /^(\d+)-(\d+)\.mp4$/;
+/** Anchored, and deliberately narrow. The optional third group is a stitch's
+ *  segment digest — exactly 8 lowercase hex characters, which is what
+ *  `segmentDigest` emits and nothing else. */
+const CLIP_RE = /^(\d+)-(\d+)(?:-([0-9a-f]{8}))?\.mp4$/;
 
-/** The window bounds a cache filename encodes, or null if the name is not
- *  one `clipName` could have written.
+/** The window bounds and optional stitch digest a cache filename encodes, or
+ *  null if the name is not one `clipName` could have written.
  *
  *  This is `listClips`'s filter, and it is strict for two reasons that both
  *  fail silently. A fetch in progress leaves `<name>.<uuid>.part.mp4` beside
- *  the finished clips, and that file is by definition truncated — offering it
- *  would hand the framing phase a broken video. And the pair returned here is
- *  what `/api/export` later rebuilds a path from via `clipPath`, so anything
- *  that is not two plain integers has no business becoming a row. Names come
- *  off `readdir` and so cannot contain a separator, but the anchored pattern
- *  covers that too rather than relying on it. */
-export function parseClipName(name: string): { windowStart: number; windowEnd: number } | null {
+ *  the finished clips, and that file is truncated by definition — offering
+ *  it would hand the framing phase a broken video. And the values returned
+ *  here are what `/api/export` later rebuilds a path from via `clipPath`, so
+ *  anything that is not two plain integers plus an optional hex digest has
+ *  no business becoming a row. Names come off `readdir` and so cannot
+ *  contain a separator, but the anchored pattern covers that too rather than
+ *  relying on it — and a partial's extra `.` still cannot match. */
+export function parseClipName(
+  name: string,
+): { windowStart: number; windowEnd: number; digest: string } | null {
   const m = CLIP_RE.exec(name);
   if (!m) return null;
   const windowStart = Number(m[1]);
@@ -151,7 +167,7 @@ export function parseClipName(name: string): { windowStart: number; windowEnd: n
   // row built from one would be dead on arrival. Nothing writes such a name;
   // a hand-dropped file could.
   if (!(windowEnd > windowStart)) return null;
-  return { windowStart, windowEnd };
+  return { windowStart, windowEnd, digest: m[3] ?? "" };
 }
 
 /** Every clip already in the cache, newest first.
@@ -175,10 +191,12 @@ export async function listClips(): Promise<CachedClip[]> {
     for (const name of names) {
       const bounds = parseClipName(name);
       if (!bounds) continue;
-      const path = clipPath(videoId, bounds.windowStart, bounds.windowEnd);
-      // A clip that cannot be probed is a clip that cannot be framed, so it
-      // is skipped rather than listed or thrown over: one unreadable file
-      // must not cost the whole list.
+      // The name readdir handed us, NOT a rebuild from the parsed bounds:
+      // clipPath(videoId, windowStart, windowEnd) silently drops a stitch's
+      // digest, so every stitch would fail to probe and never be listed.
+      // parseClipName has already validated this name character by
+      // character, which is what makes using it directly safe.
+      const path = join(MEDIA_DIR, videoId, name);
       const probed = await probeFile(path).catch(() => null);
       if (!probed) continue;
       const { mtimeMs } = await stat(path).catch(() => ({ mtimeMs: 0 }));
@@ -186,6 +204,11 @@ export async function listClips(): Promise<CachedClip[]> {
         videoId,
         clipUrl: `/media/${videoId}/${name}`,
         ...bounds,
+        // The marks cover the whole cached clip: framing has no marking
+        // controls, so the alternative is a window whose edges the user
+        // cannot reach. For a stitch that is its entire timeline anyway.
+        clipStart: bounds.windowStart,
+        clipEnd: bounds.windowEnd,
         width: probed.width,
         height: probed.height,
         mtime: mtimeMs,

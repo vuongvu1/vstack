@@ -82,11 +82,31 @@ describe("videoIdFrom", () => {
 // reach `/api/export`'s `clipPath` as a name it cannot reconstruct.
 describe("parseClipName", () => {
   it("reads the window bounds out of a real cache filename", () => {
-    expect(parseClipName("762-829.mp4")).toEqual({ windowStart: 762, windowEnd: 829 });
+    expect(parseClipName("762-829.mp4")).toEqual({
+      windowStart: 762,
+      windowEnd: 829,
+      digest: "",
+    });
   });
 
   it("accepts a window starting at 0", () => {
-    expect(parseClipName("0-140.mp4")).toEqual({ windowStart: 0, windowEnd: 140 });
+    expect(parseClipName("0-140.mp4")).toEqual({ windowStart: 0, windowEnd: 140, digest: "" });
+  });
+
+  it("parses a stitch name and returns its digest", () => {
+    expect(parseClipName("0-35-a1b2c3d4.mp4")).toEqual({
+      windowStart: 0,
+      windowEnd: 35,
+      digest: "a1b2c3d4",
+    });
+  });
+
+  it("returns an empty digest for the plain two-number form", () => {
+    expect(parseClipName("10-40.mp4")).toEqual({
+      windowStart: 10,
+      windowEnd: 40,
+      digest: "",
+    });
   });
 
   it("rejects a download partial", () => {
@@ -95,6 +115,21 @@ describe("parseClipName", () => {
     expect(
       parseClipName("762-829.mp4.f81d4fae-7dec-11d0-a765-00a0c91e6bf6.part.mp4"),
     ).toBeNull();
+  });
+
+  it("still rejects a download partial", () => {
+    // THE guard. A fetch in progress leaves `<name>.<uuid>.part.mp4` beside
+    // the finished clips, and that file is truncated by definition — listing
+    // it hands the framing phase a video that previews as a black canvas.
+    expect(parseClipName("10-40.5f2b0c11-0000-4000-8000-000000000000.part.mp4")).toBeNull();
+    expect(parseClipName("0-35-a1b2c3d4.5f2b0c11.part.mp4")).toBeNull();
+  });
+
+  it("rejects a digest of the wrong length or alphabet", () => {
+    expect(parseClipName("0-35-a1b2c3d.mp4")).toBeNull();
+    expect(parseClipName("0-35-a1b2c3d4e.mp4")).toBeNull();
+    expect(parseClipName("0-35-A1B2C3D4.mp4")).toBeNull();
+    expect(parseClipName("0-35-a1b2c3g4.mp4")).toBeNull();
   });
 
   it("rejects a name whose bounds are not numeric", () => {
