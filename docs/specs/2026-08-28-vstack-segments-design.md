@@ -15,7 +15,7 @@ accident.
 Three things, in the trimming phase:
 
 1. The strip should show where the playhead is.
-2. The marked range's ends should read as rounded.
+2. The marked range's ends should be square — no radius.
 3. More than one kept part, the way a cut tool works.
 
 (1) and (2) are cosmetic and land in `src/player.ts` + `src/style.css`.
@@ -343,10 +343,21 @@ The playhead is a 2px `.strip-head` positioned from a `head(): number`
 callback so `player.ts` keeps knowing nothing about `main.ts`'s player
 handle.
 
-`.strip-range` gets `border-radius: 999px` and `.strip` goes 12px → 14px.
-At 12px with `--radius-3` (6px) the range is *already* geometrically a pill;
-999px makes that unconditional at any height, and the extra 2px is what makes
-the rounding read.
+`.strip-range` gets `border-radius: 0`, dropping the `--radius-3` it carries
+today. A cut boundary is a position, and a rounded end reads as a fade — at
+12px tall, `--radius-3`'s 6px makes the range a full pill, so its ends are
+the *least* precise part of the control the user is trying to be precise
+with. Square ends are also what makes several ranges legible side by side:
+two pills 40px apart read as two lozenges, two square blocks read as two
+cuts.
+
+`.strip` keeps its radius but gains `overflow: hidden`. Without it, a
+segment starting at 0 or ending at the video's duration paints its square
+corner outside the track's rounded one — a 6px notch of blue sticking past
+the grey, at exactly the two positions a user is most likely to mark.
+
+The strip's 12px height is unchanged. The playhead reads fine against it,
+and nothing else here needs the room.
 
 ## Testing
 
