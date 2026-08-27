@@ -951,6 +951,59 @@ function renderFraming(): Node[] {
   const back = el("button", { className: "btn-gray", textContent: "Back to trim" });
   back.onclick = () => setState({ phase: "trimming" });
 
+  // Playback transport for the fetched clip. The <video> carries `controls`,
+  // but the crop overlay is painted over its whole rect and `.boxes > .box`
+  // takes pointer events — so a box across the bottom of the frame swallows
+  // every hover and click the native control bar needs, and it may as well
+  // not be there. Same answer as the trimming phase's transport: the two
+  // controls worth having live in the bar, where nothing covers them.
+  const ready = videoEl !== null;
+  const play = el("button", {
+    className: "btn-gray",
+    textContent: "Play",
+    title: "Play or pause the clip",
+    disabled: !ready,
+  });
+  const scrub = el("input", {
+    type: "range",
+    className: "scrub",
+    min: "0",
+    max: "0",
+    step: "any",
+    ariaLabel: "Clip playhead",
+    disabled: !ready,
+  });
+  if (videoEl) {
+    const v = videoEl;
+    // Event *properties*, not addEventListener: this bar is rebuilt on every
+    // render while the <video> outlives all of them, so listeners would
+    // stack up one per render. Overwriting the property points the live
+    // element at the buttons currently on screen — and `loadedmetadata` is
+    // safe to own here because mountEditor listens for it the other way
+    // (addEventListener), so the two do not evict each other.
+    v.onplay = v.onpause = () => {
+      play.textContent = v.paused ? "Play" : "Pause";
+    };
+    v.ontimeupdate = () => {
+      scrub.value = String(v.currentTime);
+    };
+    v.onloadedmetadata = () => {
+      scrub.max = String(v.duration);
+    };
+    // The element may already be playing, and already have its metadata, by
+    // the time a re-render builds these: neither event fires again.
+    play.textContent = v.paused ? "Play" : "Pause";
+    if (Number.isFinite(v.duration)) scrub.max = String(v.duration);
+    scrub.value = String(v.currentTime);
+    play.onclick = () => {
+      if (v.paused) void v.play();
+      else v.pause();
+    };
+    scrub.oninput = () => {
+      v.currentTime = Number(scrub.value);
+    };
+  }
+
   const addBox = el("button", {
     textContent: "+ Box",
     title: "Add a box that floats over the layout",
@@ -1019,10 +1072,11 @@ function renderFraming(): Node[] {
   // save() notifies nothing, so the caret is safe either way.
   title.onblur = () => save();
 
-  // Two rows, split by what each one is for: pick the shape and read the facts
-  // about the clip, then name it and ship it. One row put the required title
-  // field between the layout swatches and two read-only badges, which is the
-  // least prominent spot on the bar for the control that gates Export.
+  // Three rows, split by what each one is for: pick the shape and read the
+  // facts about the clip, drive the clip, then name it and ship it. One row
+  // put the required title field between the layout swatches and two
+  // read-only badges, which is the least prominent spot on the bar for the
+  // control that gates Export.
   return [
     el(
       "div",
@@ -1045,6 +1099,7 @@ function renderFraming(): Node[] {
           : el("span"),
       ),
     ),
+    el("div", { className: "bar-row" }, play, scrub),
     el(
       "div",
       { className: "bar-row" },
