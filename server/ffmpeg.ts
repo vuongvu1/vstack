@@ -360,6 +360,100 @@ export async function exportClip(opts: ExportOpts): Promise<string> {
   return opts.out;
 }
 
+/** One leg of a stitch: a cached clip, and the range *within that file* to
+ *  keep. Offsets, not source-timeline seconds — the caller has already
+ *  subtracted the part's own `windowStart`, which exists because every part
+ *  is fetched with `PAD` around it. */
+export type ConcatPart = { path: string; start: number; end: number };
+
+// The stitch is an intermediate: `/api/export` re-encodes it. A slightly
+// higher quality than the export's own crf 20 keeps this generation from
+// being the one that shows.
+const CONCAT_CRF = "18";
+const CONCAT_RATE = 44100;
+
+/** Concatenates the kept ranges of several clips into one continuous file.
+ *
+ *  Every leg is normalised before `concat` sees it, because `concat` REFUSES
+ *  a mismatch rather than picking a side — a SAR difference fails with
+ *  `Nothing was written into output file`, which names nothing. The same
+ *  lesson `prependStarter` already carries for its three legs:
+ *
+ *  - `scale` + `setsar=1` + `fps` + `format=yuv420p` on video, all off part
+ *    one's own probe. Parts of one video normally match, but the download
+ *    ladder can land different rungs on different calls.
+ *  - `aresample` + `aformat` on audio, since `concat` requires one sample
+ *    rate and one channel layout across every leg too.
+ *
+ *  A part with no audio is given a leg cut out of a single `anullsrc` input,
+ *  appended LAST so the real parts' input indices never move — the same
+ *  positional rule `prependStarter`'s silence stand-in follows. */
+export async function concatClips(parts: ConcatPart[], out: string): Promise<string> {
+  const first = parts[0];
+  if (first === undefined) throw new Error("concatClips needs at least one part.");
+
+  const probed = await Promise.all(parts.map((p) => probeFile(p.path)));
+  const shape = probed[0];
+  if (shape === undefined) throw new Error("concatClips could not probe its first part.");
+
+  const anySilent = probed.some((p) => !p.hasAudio);
+  // Appended last, and only when needed, so a stitch of sounded parts has
+  // exactly the inputs it did before this branch existed.
+  const silenceIndex = parts.length;
+
+  const inputs: string[] = [];
+  for (const part of parts) inputs.push("-i", part.path);
+  if (anySilent) {
+    inputs.push("-f", "lavfi", "-i", `anullsrc=r=${CONCAT_RATE}:cl=stereo`);
+  }
+
+  const legs: string[] = [];
+  const labels: string[] = [];
+  parts.forEach((part, i) => {
+    const p = probed[i];
+    const hasAudio = p?.hasAudio === true;
+    legs.push(
+      `[${i}:v]trim=${part.start}:${part.end},setpts=PTS-STARTPTS,` +
+        `scale=${shape.width}:${shape.height},setsar=1,fps=${shape.fps},` +
+        `format=yuv420p[v${i}]`,
+    );
+    // A silent part's leg is cut out of the shared anullsrc input instead,
+    // trimmed to this part's own length so the two streams stay in step.
+    const audioSrc = hasAudio ? `${i}:a` : `${silenceIndex}:a`;
+    const from = hasAudio ? part.start : 0;
+    const to = hasAudio ? part.end : part.end - part.start;
+    legs.push(
+      `[${audioSrc}]atrim=${from}:${to},asetpts=PTS-STARTPTS,` +
+        `aresample=${CONCAT_RATE},` +
+        `aformat=sample_fmts=fltp:channel_layouts=stereo[a${i}]`,
+    );
+    labels.push(`[v${i}][a${i}]`);
+  });
+  legs.push(`${labels.join("")}concat=n=${parts.length}:v=1:a=1[v][a]`);
+
+  try {
+    await run(
+      "ffmpeg",
+      [
+        "-v", "error",
+        ...inputs,
+        "-filter_complex", legs.join(";"),
+        "-map", "[v]",
+        "-map", "[a]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", CONCAT_CRF,
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-y", out,
+      ],
+      { maxBuffer: 16 << 20 },
+    );
+  } catch (err) {
+    throw toolError("ffmpeg", err);
+  }
+  return out;
+}
+
 /** The first frame of a finished export, as a 1280x720 JPEG — which for a
  *  vstack output is the starter screen: the blurred opening frame with the
  *  title over it. There is nothing to render here, only a frame to lift and

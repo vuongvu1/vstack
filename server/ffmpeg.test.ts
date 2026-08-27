@@ -15,6 +15,7 @@ import {
   assertCustoms,
   buildFilter,
   clipName,
+  concatClips,
   exportClip,
   firstFrame,
   isOutName,
@@ -88,8 +89,10 @@ afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-/** Reads one RGB pixel out of a frame of the encoded file. */
-async function pixelAt(path: string, t: number, x: number, y: number) {
+/** Reads one RGB pixel out of a frame of the encoded file. `width` defaults
+ *  to 1080 for this file's usual fixtures; the concat tests below pass their
+ *  own 320px fixture width so the row stride is right for a smaller frame. */
+async function pixelAt(path: string, t: number, x: number, y: number, width = 1080) {
   const { stdout } = await run(
     "ffmpeg",
     ["-v", "error", "-ss", String(t), "-i", path, "-frames:v", "1",
@@ -97,7 +100,7 @@ async function pixelAt(path: string, t: number, x: number, y: number) {
     { encoding: "buffer", maxBuffer: 64 << 20 },
   );
   const buf = stdout as unknown as Buffer;
-  const i = (y * 1080 + x) * 3;
+  const i = (y * width + x) * 3;
   return { r: buf[i] ?? 0, g: buf[i + 1] ?? 0, b: buf[i + 2] ?? 0 };
 }
 
@@ -706,5 +709,95 @@ describe("probeFile", () => {
     ]);
     expect((await probeFile(src)).hasAudio).toBe(false);
     expect((await probeFile(sounded)).hasAudio).toBe(true);
+  });
+});
+
+describe("concatClips", () => {
+  it("stitches two ranges in order, and the output's duration is their sum", async () => {
+    // A 12-second source: seconds 0-3 red, 3-6 green, 6-9 blue, 9-12 white.
+    // Taking [0,2] and [6,8] must produce 4 seconds that read red then blue,
+    // with the green band never appearing. Ordering is what this proves: a
+    // reversed concat gives blue-then-red and the second sample fails.
+    const banded = join(dir, "banded.mp4");
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i",
+      "color=c=red:s=320x240:d=3:r=30[a];" +
+        "color=c=green:s=320x240:d=3:r=30[b];" +
+        "color=c=blue:s=320x240:d=3:r=30[c];" +
+        "color=c=white:s=320x240:d=3:r=30[d];" +
+        "[a][b][c][d]concat=n=4:v=1:a=0",
+      "-f", "lavfi", "-i", "sine=frequency=440:duration=12",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+      "-y", banded,
+    ]);
+
+    const out = join(dir, "stitch.mp4");
+    await concatClips(
+      [
+        { path: banded, start: 0, end: 2 },
+        { path: banded, start: 6, end: 8 },
+      ],
+      out,
+    );
+
+    const probed = await probeFile(out);
+    expect(probed.seconds).toBeGreaterThan(3.5);
+    expect(probed.seconds).toBeLessThan(4.5);
+    expect(probed.hasAudio).toBe(true);
+
+    // Thresholds, not exact equality, for the same reason every other
+    // colour assertion in this file uses them: libx264 is lossy, so a
+    // solid-red source frame comes back at e.g. r=254 rather than r=255.
+    const early = await pixelAt(out, 1, 160, 120, 320);
+    expect(early.r).toBeGreaterThan(150);
+    expect(early.g).toBeLessThan(80);
+    expect(early.b).toBeLessThan(80);
+
+    const late = await pixelAt(out, 3, 160, 120, 320);
+    expect(late.b).toBeGreaterThan(150);
+    expect(late.r).toBeLessThan(80);
+    expect(late.g).toBeLessThan(80);
+  });
+
+  it("stitches a silent part by standing silence in for it", async () => {
+    // `src` is the file-level silent fixture. A missing audio leg would make
+    // the concat filter's leg count disagree with n= and fail outright, so
+    // this passing at all is the assertion.
+    const out = join(dir, "silent-stitch.mp4");
+    await concatClips(
+      [
+        { path: src, start: 0, end: 1 },
+        { path: src, start: 1, end: 2 },
+      ],
+      out,
+    );
+    const probed = await probeFile(out);
+    expect(probed.seconds).toBeGreaterThan(1.5);
+    expect(probed.hasAudio).toBe(true);
+  });
+
+  it("stitches parts whose sample aspect ratios differ", async () => {
+    // `concat` REFUSES a SAR mismatch — it does not pick a side, it fails
+    // with "Nothing was written into output file". libx264 normalises a SAR
+    // close to square back to 1:1, so the fixture uses 40:41 to reproduce
+    // it, the same way server/starter.test.ts does.
+    const anamorphic = join(dir, "anamorphic.mp4");
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i", "color=c=orange:s=320x240:d=3:r=30",
+      "-vf", "setsar=40/41",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p",
+      "-y", anamorphic,
+    ]);
+    const out = join(dir, "sar-stitch.mp4");
+    await concatClips(
+      [
+        { path: src, start: 0, end: 1 },
+        { path: anamorphic, start: 0, end: 1 },
+      ],
+      out,
+    );
+    expect((await probeFile(out)).seconds).toBeGreaterThan(1.5);
   });
 });
