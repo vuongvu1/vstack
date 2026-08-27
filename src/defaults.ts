@@ -18,12 +18,20 @@ export const YT_TITLE_MAX = 100;
 /** Appended to the YouTube title. `#shorts` here is separate from the
  *  `#Shorts` `buildSnippet` guarantees in the *description* — the title tag
  *  is what shows under the video, the description tag is the classification
- *  hint. */
-export const TITLE_HASHTAGS = "#vtuber #viral #shorts";
+ *  hint.
+ *
+ *  Order is load-bearing: YouTube surfaces only the *first three* hashtags
+ *  above the title and ignores the rest for display, so the three generic
+ *  ones are the ones on show and the three channel tags ride along for
+ *  search. Swap them round if the channel tags should be the visible ones.
+ *
+ *  Every character here is taken off `defaultTitle`'s budget for the title
+ *  itself — 42 of the 100 now, leaving 57. */
+export const TITLE_HASHTAGS = "#vtuber #viral #shorts #siini #habine #sim";
 
 /** Pre-fills the description field. Already carries a shorts tag, which is
  *  why `buildSnippet`'s append is a no-op against it — see the test. */
-export const DESCRIPTION_TEMPLATE = `#vtuber #vtubervn #vtubervietnam #viral #shorts
+export const DESCRIPTION_TEMPLATE = `#vtuber #vtubervn #vtubervietnam #viral #shorts #siini #habine #sim
 
 ------
 

@@ -23,7 +23,12 @@ describe("defaultTitle", () => {
   });
 
   it("never exceeds YouTube's cap, at any input length", () => {
-    for (const n of [0, 1, 50, 76, 77, 78, 99, 100, 101, 200]) {
+    // The interesting lengths are the ones either side of the budget the tags
+    // leave, so they are derived rather than written down — editing
+    // TITLE_HASHTAGS moves the boundary, and hardcoded numbers would quietly
+    // stop testing it.
+    const budget = YT_TITLE_MAX - TITLE_HASHTAGS.length - 1;
+    for (const n of [0, 1, budget - 1, budget, budget + 1, 99, 100, 101, 200]) {
       expect(defaultTitle("a".repeat(n)).length).toBeLessThanOrEqual(YT_TITLE_MAX);
     }
   });
@@ -48,6 +53,16 @@ describe("DESCRIPTION_TEMPLATE", () => {
   // that drops the tag and silently gets a second one bolted on.
   it("already carries the shorts tag, so buildSnippet will not add another", () => {
     expect(/#shorts\b/i.test(DESCRIPTION_TEMPLATE)).toBe(true);
+  });
+
+  // The three channel hashtags ride in both fields — the title for search,
+  // the description because that is the field people actually read. Pinned
+  // here so an edit to one place does not silently drop them from the other.
+  it("carries the channel hashtags", () => {
+    for (const tag of ["#siini", "#habine", "#sim"]) {
+      expect(DESCRIPTION_TEMPLATE).toContain(tag);
+      expect(TITLE_HASHTAGS).toContain(tag);
+    }
   });
 
   it("carries the three channel links", () => {

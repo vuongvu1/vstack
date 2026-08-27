@@ -30,6 +30,19 @@ export const CUE_PATH = asset("before-video-start-sound.mp3");
  *  client/server line rather than duplicated. */
 export const TITLE_SOUND_PATH = asset("start-title-sound.mp3");
 
+/** The outro, concatenated after the clip. A finished 1080x1920 video with
+ *  its own audio, not a still — so it needs no filter beyond the frame-rate
+ *  and SAR normalisation `concat` demands of every leg.
+ *
+ *  ponytail: its dimensions are taken on trust. `checkStarter` only checks
+ *  the file exists; swap in something that is not 1080x1920 and `concat`
+ *  refuses the whole export loudly ("Nothing was written into output file"),
+ *  which beats a silent stretch. Scale it here if that ever needs to be
+ *  forgiving instead. It must also carry an audio stream — the outro leg is
+ *  unconditional, so a silent one would break the audio concat for every
+ *  export rather than for a subset. */
+export const END_PATH = asset("end_video.mp4");
+
 /** The venv `pnpm tts-setup` builds, holding VieNeu-TTS and its wheels.
  *
  *  Under `$HOME`, never the repo: Vite serves the project root statically, so
@@ -162,9 +175,9 @@ export function starterDuration(voiceSeconds: number): number {
  *  This is also what fills the preset cache `knownVoices` serves, which is
  *  why it runs before any route does. */
 export async function checkStarter(): Promise<void> {
-  for (const path of [MUSIC_PATH, CUE_PATH]) {
+  for (const path of [MUSIC_PATH, CUE_PATH, TITLE_SOUND_PATH, END_PATH]) {
     if (!existsSync(path)) {
-      console.error(`vstack: starter audio missing at ${path}.`);
+      console.error(`vstack: bundled asset missing at ${path}.`);
       process.exit(1);
     }
   }
@@ -373,7 +386,8 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
     }
 
     // Inputs: 0 blurred background, 1 title art, 2 clip, 3 music, 4 voice,
-    // 5 cue, and — only when the clip is silent — 6 as its stand-in silence.
+    // 5 cue, 6 title hit, 7 outro, and — only when the clip is silent — 8 as
+    // its stand-in silence.
     // The music's `-ss`/`-t` are input options, so ffmpeg seeks and then stops
     // decoding at the screen's length instead of chewing through all 2m36s.
     const args = [
@@ -385,6 +399,7 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
       "-i", opts.voice,
       "-i", CUE_PATH,
       "-i", TITLE_SOUND_PATH,
+      "-i", END_PATH,
     ];
     if (!hasAudio) {
       args.push("-f", "lavfi", "-i", `anullsrc=r=${RATE}:cl=stereo`);
@@ -396,10 +411,10 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
     // trimmed by the clip's own audio-free length instead.
     const mainAudio = hasAudio
       ? `[2:a]${fmt}[am]`
-      // Index 7, not 6: the title sound took 6 above. This leg only exists
-      // when the clip is silent, so a stale index here would be wrong only
-      // for silent clips — the quietest possible way to break.
-      : `[7:a]atrim=duration=${clip.toFixed(3)},${fmt}[am]`;
+      // Index 8, not 6: the title sound took 6 and the outro 7. This leg
+      // only exists when the clip is silent, so a stale index here would be
+      // wrong only for silent clips — the quietest possible way to break.
+      : `[8:a]atrim=duration=${clip.toFixed(3)},${fmt}[am]`;
     const graph = [
       // The intro is forced to the clip's frame rate and to yuv420p because
       // concat requires matching parameters, and an image input defaults to
@@ -415,7 +430,11 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
       // 1214:1215 — and concat rejects a SAR mismatch outright rather than
       // picking one. Square is also what a 1080x1920 short is supposed to be.
       "[2:v]setsar=1[clip]",
-      "[intro][clip]concat=n=2:v=1:a=0[v]",
+      // The outro gets the same treatment as the intro for the same reason:
+      // concat matches parameters, and this asset is 34 fps where the clip is
+      // usually 30.
+      `[7:v]fps=${fps},format=yuv420p,setsar=1[end]`,
+      "[intro][clip][end]concat=n=3:v=1:a=0[v]",
       // The bed. Faded out rather than cut, because the input -t above ends
       // it mid-bar and a hard stop clicks.
       `[3:a]afade=t=out:st=${(seconds - MUSIC_FADE).toFixed(3)}:d=${MUSIC_FADE},` +
@@ -433,7 +452,8 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
       `[music][voice][cue][titlehit]amix=inputs=4:duration=longest:normalize=0,` +
         `apad,atrim=duration=${d},${fmt}[ai]`,
       mainAudio,
-      "[ai][am]concat=n=2:v=0:a=1[a]",
+      `[7:a]${fmt}[ae]`,
+      "[ai][am][ae]concat=n=3:v=0:a=1[a]",
     ].join(";");
 
     args.push(

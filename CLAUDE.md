@@ -49,7 +49,7 @@ pnpm youtube-auth  # one-off OAuth setup for publishing (see server/youtube.ts)
 ```
 
 Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH, the speech venv from
-`pnpm tts-setup`, and both audio files in `server/assets/`. The server checks
+`pnpm tts-setup`, and all four bundled assets in `server/assets/`. The server checks
 all of it at boot and exits with an install hint if any is missing. Nothing
 here needs macOS `say` any more — the starter screen's voice is VieNeu-TTS,
 and the only remaining macOS dependency is `afplay` in `pnpm voices` and
@@ -64,16 +64,18 @@ server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, outName/outPath,
                    firstFrame,
                    reportCache
 server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
-server/starter.ts  MUSIC_PATH/CUE_PATH, VOICE, starterDuration, checkStarter,
-                   installedVoices, knownVoices, synthesize, speak,
-                   prependStarter (the title card, pass 2 of the export)
+server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
+                   starterDuration, checkStarter, installedVoices,
+                   knownVoices, synthesize, speak, prependStarter (the title
+                   card *and* the outro, pass 2 of the export)
 server/tts.py      VieNeu-TTS front end: `--list` (preset table, no model) and
                    variadic `<text-file> <voice> <out.wav> ...` synthesis
 scripts/tts-setup.ts `pnpm tts-setup` — builds ~/.vstack/vieneu
 scripts/audition.ts  `pnpm voices` — speaks a title in each preset voice
 server/assets/     starter-music.mp3 (the bed), before-video-start-sound.mp3
                    (the cue before the cut), start-title-sound.mp3 (the hit
-                   at t=0, and the app's own phase-advance chime)
+                   at t=0, and the app's own phase-advance chime),
+                   end_video.mp4 (the outro, concatenated after the clip)
 server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
                    buildSnippet, accessToken, uploadVideo, publishProgress,
                    setThumbnail
@@ -446,7 +448,12 @@ while every stream-shape assertion still passed. `probeMain` uses `-of json`.
 
 **The starter screen is pass 2, not part of `buildFilter`.** `exportClip`
 writes `body.mp4`; `prependStarter` extracts its first frame, blurs it,
-overlays the title art and concatenates. Folding it into the export's graph
+overlays the title art and concatenates — three legs now, since the bundled
+`end_video.mp4` outro is appended in the same pass. The outro is a finished
+1080x1920 video with its own audio, so it needs only the `fps` + `setsar=1`
+normalisation every concat leg gets; its dimensions are taken on trust, and a
+mismatched replacement fails the export loudly rather than stretching. Its
+audio leg is unconditional, so the asset must always carry sound. Folding it into the export's graph
 means a `split`/`trim`/`loop` chain *and* turning `-ss`/`-t` into filters,
 because an output `-t` would truncate the concatenation rather than the clip.
 

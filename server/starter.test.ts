@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { OUTPUT } from "../src/geometry.ts";
 import {
+  END_PATH,
   VOICE,
   installedVoices,
   prependStarter,
@@ -33,6 +34,10 @@ let anamorphic = "";
 let art = "";
 let voice = "";
 let voiceSeconds = 0;
+/** The bundled outro's own length, probed rather than hardcoded — every
+ *  duration assertion below is now screen + clip + outro, and swapping the
+ *  asset should move the expectation with it. */
+let endSeconds = 0;
 
 async function clip(out: string, withAudio: boolean, sar = "1/1"): Promise<void> {
   const args = [
@@ -87,6 +92,7 @@ beforeAll(async () => {
 
   voice = join(dir, "voice.aiff");
   voiceSeconds = await speak("Ăn cơm chưa bạn ơi", dir, voice);
+  endSeconds = Number((await probeOut(END_PATH)).format.duration);
 });
 
 afterAll(async () => {
@@ -209,10 +215,11 @@ describe("prependStarter", () => {
 
     const intro = starterDuration(voiceSeconds);
     const info = await probeOut(out);
-    // Both segments are re-encoded into one file, so the total is the screen
-    // plus the clip. The tolerance is an encoder's last GOP, not slack for a
-    // wrong duration.
-    expect(Number(info.format.duration)).toBeCloseTo(intro + CLIP_S, 1);
+    // All three segments are re-encoded into one file, so the total is the
+    // screen plus the clip plus the outro. The tolerance is an encoder's last
+    // GOP, not slack for a wrong duration — and this is what fails if the
+    // outro leg is ever dropped from either concat.
+    expect(Number(info.format.duration)).toBeCloseTo(intro + CLIP_S + endSeconds, 1);
     const video = info.streams.find((s) => s.codec_type === "video");
     expect(video?.width).toBe(OUTPUT.w);
     expect(video?.height).toBe(OUTPUT.h);
@@ -272,7 +279,13 @@ describe("prependStarter", () => {
     // `hasAudio` read the wrong ffprobe line, so every clip was treated as
     // silent and mixed against a silence stand-in. The fixture's own sine
     // peaks around 0.13 and aac shaves a little off.
-    expect(await peakAt(out, intro + 0.2)).toBeGreaterThan(0.05);
+    expect(await peakAt(out, intro + 0.2, 0.5)).toBeGreaterThan(0.05);
+
+    // The outro brings its own sound. Duration alone would still pass if the
+    // outro's audio leg were missing and the video leg padded — concat would
+    // just run the two streams to different lengths — so the tail is checked
+    // for signal too. The asset peaks around 0.59.
+    expect(await peakAt(out, intro + CLIP_S + 0.5, 0.5)).toBeGreaterThan(0.05);
   });
 
   // The bed is the one layer with nothing to isolate it in the main fixture:
@@ -321,9 +334,14 @@ describe("prependStarter", () => {
     // exportClip maps audio with `0:a?`, so a silent source really does
     // produce a video-only file — and concat needs matching stream counts.
     expect(info.streams.filter((s) => s.codec_type === "audio")).toHaveLength(1);
-    expect(Number(info.format.duration)).toBeCloseTo(starterDuration(voiceSeconds) + CLIP_S, 1);
+    expect(Number(info.format.duration)).toBeCloseTo(
+      starterDuration(voiceSeconds) + CLIP_S + endSeconds,
+      1,
+    );
     // …and the stand-in really is silence, so a silent source stays silent
-    // rather than inheriting the sting's tail.
-    expect(await peakAt(out, starterDuration(voiceSeconds) + 0.2)).toBeLessThan(0.01);
+    // rather than inheriting the sting's tail. The window is 0.5s, not the
+    // default 1s: the fixture clip is only 1s long, and a 1s window from
+    // +0.2 would spill into the outro, which has sound of its own.
+    expect(await peakAt(out, starterDuration(voiceSeconds) + 0.2, 0.5)).toBeLessThan(0.01);
   });
 });
