@@ -1465,7 +1465,14 @@ In `load`'s short-video branch:
 In `load`'s trimming branch:
 
 ```ts
-      segments: saved.segments ?? [{ start: 0, end: info.duration }],
+      // Normalised against the real duration: `restore` validates shape and
+      // count but has no duration to clamp to (it runs before probe on the
+      // cached-clip path), so a record saved against a different video's
+      // length would otherwise reach /api/window and 400.
+      segments: normalize(
+        saved.segments ?? [{ start: 0, end: info.duration }],
+        info.duration,
+      ),
 ```
 
 In `openWindow`:
@@ -1735,7 +1742,16 @@ Inside `renderTrimming`, replace the two mark handlers:
     if (!player) return;
     const cur = getState();
     const t = clampMark(player.currentTime(), cur.duration);
-    const next = cur.segments.map((seg, i) => (i === active ? { ...seg, [which]: t } : seg));
+    const seg = cur.segments[active];
+    if (seg === undefined) return;
+    const edited = { ...seg, [which]: t };
+    // Ignored rather than normalised away: `normalize` DROPS a segment whose
+    // end is not after its start, so Set End with the playhead before the
+    // part's start would silently delete the part the user was editing —
+    // the worst possible answer to an ordinary misclick. Refusing the edit
+    // leaves the strip exactly as it was, which reads as "that did nothing".
+    if (!(edited.end > edited.start)) return;
+    const next = cur.segments.map((s2, i) => (i === active ? edited : s2));
     setState({ segments: normalize(next, cur.duration) });
     save();
   };
