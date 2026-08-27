@@ -14,11 +14,13 @@ import {
   assertBoxes,
   assertCustoms,
   buildFilter,
+  clipName,
   exportClip,
   firstFrame,
   isOutName,
   outName,
   probeFile,
+  segmentDigest,
 } from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
 
@@ -318,7 +320,7 @@ describe("exportClip", () => {
       out,
     });
 
-    expect(await probeFile(out)).toEqual({ width: 1080, height: 1920 });
+    expect(await probeFile(out)).toMatchObject({ width: 1080, height: 1920 });
 
     // Centre of the top half must be red; centre of the bottom half blue.
     const top = await pixelAt(out, 0.4, 540, 480);
@@ -432,7 +434,7 @@ describe("exportClip", () => {
       out,
     });
 
-    expect(await probeFile(out)).toEqual({ width: 1080, height: 1920 });
+    expect(await probeFile(out)).toMatchObject({ width: 1080, height: 1920 });
 
     // Cell centres: 1080x480 at y 0, 1080x480 at y 480, 1080x960 at y 960.
     const first = await pixelAt(out, 0.4, 540, 240);
@@ -481,7 +483,7 @@ describe("exportClip", () => {
       out,
     });
 
-    expect(await probeFile(out)).toEqual({ width: 1080, height: 1920 });
+    expect(await probeFile(out)).toMatchObject({ width: 1080, height: 1920 });
 
     // The piece itself: blue, from the source band its crop names.
     const inside = await pixelAt(out, 0.4, 540, 940);
@@ -605,7 +607,7 @@ describe("firstFrame", () => {
     const thumb = join(dir, "wide-thumb.jpg");
     await firstFrame(vert, thumb, "wide");
 
-    expect(await probeFile(thumb)).toEqual({ width: 1280, height: 720 });
+    expect(await probeFile(thumb)).toMatchObject({ width: 1280, height: 720 });
 
     for (const [x, y] of [[4, 4], [1275, 4], [4, 715], [1275, 715], [640, 360]]) {
       const px = await pixelIn(thumb, 1280, x ?? 0, y ?? 0);
@@ -622,7 +624,7 @@ describe("firstFrame", () => {
     const thumb = join(dir, "tall-thumb.jpg");
     await firstFrame(vert, thumb, "tall");
 
-    expect(await probeFile(thumb)).toEqual({ width: 1080, height: 1920 });
+    expect(await probeFile(thumb)).toMatchObject({ width: 1080, height: 1920 });
 
     const top = await pixelIn(thumb, 1080, 540, 100);
     const middle = await pixelIn(thumb, 1080, 540, 960);
@@ -643,5 +645,66 @@ describe("firstFrame", () => {
 
     // thumbnails.set caps uploads at 2 MB.
     expect((await stat(thumb)).size).toBeLessThan(2 << 20);
+  });
+});
+
+describe("clipName", () => {
+  it("keeps the two-number form when there is no digest", () => {
+    expect(clipName(10, 40)).toBe("10-40.mp4");
+    expect(clipName(10, 40, "")).toBe("10-40.mp4");
+  });
+
+  it("appends a digest as a third component", () => {
+    expect(clipName(0, 35, "a1b2c3d4")).toBe("0-35-a1b2c3d4.mp4");
+  });
+});
+
+describe("segmentDigest", () => {
+  it("is 8 lowercase hex characters", () => {
+    expect(segmentDigest([{ start: 1, end: 2 }])).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it("is stable for the same segments", () => {
+    const segs = [{ start: 10, end: 20 }, { start: 40, end: 50 }];
+    expect(segmentDigest(segs)).toBe(segmentDigest([...segs]));
+  });
+
+  it("differs for different segments that share a total duration", () => {
+    // The whole reason the digest exists: 10s + 5s and 5s + 10s both name a
+    // 15-second stitch, and without this they would share a cache file.
+    const a = [{ start: 0, end: 10 }, { start: 20, end: 25 }];
+    const b = [{ start: 0, end: 5 }, { start: 20, end: 30 }];
+    expect(segmentDigest(a)).not.toBe(segmentDigest(b));
+  });
+});
+
+describe("probeFile", () => {
+  it("reports the video stream's dimensions", async () => {
+    const p = await probeFile(src);
+    expect(p.width).toBe(1920);
+    expect(p.height).toBe(1080);
+  });
+
+  it("reports a duration and a frame rate", async () => {
+    const p = await probeFile(src);
+    expect(p.seconds).toBeGreaterThan(0);
+    expect(p.fps).toMatch(/^\d+\/\d+$/);
+  });
+
+  it("reports hasAudio false for a silent file and true for a sounded one", async () => {
+    // The regression this pins: reading a per-file answer out of
+    // `-of default=nk=1` prints one line per STREAM, so taking the first
+    // line answered "video" for every clip and made hasAudio false even for
+    // clips that had sound.
+    const sounded = join(dir, "sounded.mp4");
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i", "color=c=green:s=320x240:d=2:r=30",
+      "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+      "-y", sounded,
+    ]);
+    expect((await probeFile(src)).hasAudio).toBe(false);
+    expect((await probeFile(sounded)).hasAudio).toBe(true);
   });
 });

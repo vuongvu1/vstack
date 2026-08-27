@@ -86,7 +86,7 @@ describe("ensureMask", () => {
   it("renders a 1080x1920 mask whose alpha matches the windows", async () => {
     const path = await ensureMask(DEFAULT_LAYOUT, [], dir);
     expect(path).toBe(maskPath(DEFAULT_LAYOUT, [], dir));
-    expect(await probeFile(path)).toEqual({ width: 1080, height: 1920 });
+    expect(await probeFile(path)).toMatchObject({ width: 1080, height: 1920 });
 
     const rgba = await rgbaOf(path);
     const [top] = windowsOf(DEFAULT_LAYOUT);

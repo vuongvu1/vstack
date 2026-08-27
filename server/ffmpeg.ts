@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ import type { Layout } from "../src/layout.ts";
 import { mmss, slugify } from "../src/format.ts";
 import { MAX_CUSTOM, MIN_OUT_SIDE, isValidCustom } from "../src/custom.ts";
 import type { CustomBox } from "../src/custom.ts";
+import type { Segment } from "../src/segments.ts";
 import { toolError } from "./errors.ts";
 
 const run = promisify(execFile);
@@ -18,16 +20,41 @@ const run = promisify(execFile);
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 export const MEDIA_DIR = join(ROOT, "media");
 
-/** Window bounds are integers so filenames are stable and the cache
- *  actually hits on a repeated request. Task 6 reconstructs this exact name
- *  from videoId + window bounds, so clipPath and the served clipUrl must
- *  derive from the same template rather than each string-building it. */
-export function clipName(windowStart: number, windowEnd: number): string {
-  return `${windowStart}-${windowEnd}.mp4`;
+/** Window bounds are integers so filenames are stable and the cache actually
+ *  hits on a repeated request. `/api/export` reconstructs this exact name
+ *  from videoId + window bounds (+ digest), so clipPath and the served
+ *  clipUrl must derive from the same template rather than each
+ *  string-building it.
+ *
+ *  `digest` names a *stitch* — several kept parts concatenated into one file
+ *  by `fetchWindow`. Omitted (the overwhelmingly common case) the name is
+ *  byte-identical to what this always emitted, so every clip already in
+ *  `media/` keeps hitting. */
+export function clipName(windowStart: number, windowEnd: number, digest = ""): string {
+  return `${windowStart}-${windowEnd}${digest === "" ? "" : `-${digest}`}.mp4`;
 }
 
-export function clipPath(videoId: string, windowStart: number, windowEnd: number): string {
-  return join(MEDIA_DIR, videoId, clipName(windowStart, windowEnd));
+export function clipPath(
+  videoId: string,
+  windowStart: number,
+  windowEnd: number,
+  digest = "",
+): string {
+  return join(MEDIA_DIR, videoId, clipName(windowStart, windowEnd, digest));
+}
+
+/** A short, stable digest of a stitch's segment bounds. Hex only, so nothing
+ *  client-shaped can reach the path — the same construction, and the same
+ *  reasoning, as `customKey` in `server/mask.ts`.
+ *
+ *  Two different segment sets can sum to the same number of seconds, so the
+ *  `0-<total>` part of a stitch's name is not unique on its own. Without
+ *  this, the second such cut would be served the first one's file forever. */
+export function segmentDigest(segs: Segment[]): string {
+  return createHash("sha1")
+    .update(segs.map((s) => `${s.start},${s.end}`).join(";"))
+    .digest("hex")
+    .slice(0, 8);
 }
 
 /** Finished shorts. Outside the repo on purpose — these are products, not
@@ -95,20 +122,36 @@ export function reportCache(): void {
   }
 }
 
-/** The fetched clip's real dimensions. yt-dlp picks a format, so these can
- *  differ from what --dump-json advertised — and since crop rects are stored
- *  in source pixels, framing against the wrong dimensions silently
- *  mis-crops. This is the number geometry must use. */
-export async function probeFile(path: string): Promise<{ width: number; height: number }> {
+/** The clip's real shape and sound.
+ *
+ *  Dimensions first, because yt-dlp picks a format and the fetched
+ *  resolution can differ from what --dump-json advertised — and crop rects
+ *  are stored in source pixels, so framing against the wrong dimensions
+ *  silently mis-crops.
+ *
+ *  `-of json`, never `-of default=nk=1`: that prints one line per *stream*,
+ *  so reading a per-file answer out of it means guessing which line is
+ *  which. Taking the first line once answered "video" for every clip, which
+ *  made `hasAudio` false everywhere and replaced every export's sound with
+ *  the silence stand-in while every stream-shape assertion still passed.
+ *
+ *  `starter.ts` keeps its own private `probeMain` rather than calling this:
+ *  it sits *beside* `ffmpeg.ts` in the layering, not above it, and importing
+ *  from here would be the first edge that breaks that. */
+export async function probeFile(path: string): Promise<{
+  width: number;
+  height: number;
+  fps: string;
+  seconds: number;
+  hasAudio: boolean;
+}> {
   let stdout: string;
   try {
     ({ stdout } = await run("ffprobe", [
       "-v",
       "error",
-      "-select_streams",
-      "v:0",
       "-show_entries",
-      "stream=width,height",
+      "stream=width,height,codec_type,r_frame_rate:format=duration",
       "-of",
       "json",
       path,
@@ -116,12 +159,25 @@ export async function probeFile(path: string): Promise<{ width: number; height: 
   } catch (err) {
     throw toolError("ffprobe", err);
   }
-  const stream = (JSON.parse(stdout) as { streams?: { width: number; height: number }[] })
-    .streams?.[0];
-  if (!stream?.width || !stream?.height) {
+  const parsed = JSON.parse(stdout) as {
+    streams?: { width?: number; height?: number; codec_type?: string; r_frame_rate?: string }[];
+    format?: { duration?: string };
+  };
+  const streams = parsed.streams ?? [];
+  // Selected by codec_type, NOT by index: `-select_streams v:0` is gone
+  // because the audio streams are needed too, so streams[0] is no longer
+  // guaranteed to be the video one.
+  const video = streams.find((s) => s.codec_type === "video");
+  if (!video?.width || !video?.height) {
     throw new Error(`ffprobe found no video stream in ${path}`);
   }
-  return { width: stream.width, height: stream.height };
+  return {
+    width: video.width,
+    height: video.height,
+    fps: video.r_frame_rate ?? "30/1",
+    seconds: Number(parsed.format?.duration ?? 0),
+    hasAudio: streams.some((s) => s.codec_type === "audio"),
+  };
 }
 
 export type ExportOpts = {
