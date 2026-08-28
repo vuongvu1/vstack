@@ -394,8 +394,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
     // The voice reaches a subprocess as argv, so it is checked against the
     // engine's own preset table rather than pattern-matched — the same
-    // posture as the layout lookup above and `isOutName` below. This and the
-    // out name are the only client-supplied strings this API acts on.
+    // posture as the layout lookup above and `isOutName` below. Voice, the
+    // out name and the `digest` block above are the only client-supplied
+    // strings this API acts on.
     if (!knownVoices().some((v) => v.name === voiceName)) {
       return send(res, 400, { error: `Unknown voice ${voiceName}.` });
     }
@@ -507,7 +508,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.url === "/api/reveal") {
     const body = await json<Record<string, unknown>>(req);
     // The name is validated, not reconstructed — see isOutName. This is the
-    // only path component this API takes from a client.
+    // only path component this API takes from a client on the `/out/` side
+    // — `/api/export`'s `digest` is the analogous case on the `/media/`
+    // side, thirty-ish lines above in that route.
     if (!isOutName(body.name)) return send(res, 400, { error: "Bad output name." });
     const path = outPath(body.name);
     if (!existsSync(path)) return send(res, 404, { error: `${body.name} is not in out/.` });

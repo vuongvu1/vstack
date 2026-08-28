@@ -678,25 +678,51 @@ async function openWindow(): Promise<void> {
  *  Two values a URL load reads off `/api/probe` are unavailable here, and
  *  neither is worth a yt-dlp round trip for a clip that is already on disk:
  *  the badge `title` falls back to the starter title last typed for this
- *  video (then the id), and `duration` becomes the window's own end. Both are
- *  cosmetic, with one exception — "Back to trim" then draws a strip that ends
- *  at the clip rather than at the video — and that path re-fetches the window
- *  anyway, so nothing downstream of it inherits the approximation.
+ *  video (then the id), and `duration` becomes wide enough to show whatever
+ *  `segments` ends up holding (see below). Both are cosmetic, with one
+ *  exception — "Back to trim" then draws a strip that ends at `duration`
+ *  rather than at the video — and that path re-fetches the window anyway, so
+ *  nothing downstream of it inherits the approximation.
  *
- *  The marks cover the whole cached clip, PAD included. Framing has no
- *  marking controls, so the alternative is handing the user a window whose
- *  edges they cannot reach.
+ *  For a PLAIN clip (`c.digest === ""`) the marks cover the whole cached
+ *  clip, PAD included: framing has no marking controls, so the alternative is
+ *  handing the user a window whose edges they cannot reach, and a plain
+ *  clip's window bounds really are source seconds.
+ *
+ *  A STITCH's window bounds are clip-timeline instead — `0` and the probed
+ *  total, per docs/specs/2026-08-28-vstack-segments-design.md — with no
+ *  relation to source time. Treating them as a segment the way a plain clip's
+ *  bounds truthfully are would silently replace this video's real marks with
+ *  clip-timeline garbage the instant it is reopened from the dropdown, and
+ *  `save()` below would persist that garbage over marks a whole editing
+ *  session made. `restore()`'s own `segments` — already checked against
+ *  `isValidSegments` — is the one source-timeline answer available here, so a
+ *  stitch prefers it. If nothing is stored either, there is no truthful
+ *  answer at all: `segments` still needs *a* value (the invariant is "always
+ *  at least one"), so it falls back to the same single-range shape a plain
+ *  clip gets — but `persistSegments` keeps that fabrication out of
+ *  localStorage rather than clobbering whatever a future save might have
+ *  written for this video.
  *
  *  Synchronous, and deliberately not wrapped in `guard`: there is nothing to
  *  await, so there is no window in which a second click could land. */
 function openClip(c: api.CachedClip): void {
   const source = { w: c.width, h: c.height };
   const saved = restore(c.videoId, source);
+  const isStitch = c.digest !== "";
+  const storedSegments = isStitch ? saved.segments : undefined;
+  const segments = storedSegments ?? [{ start: c.windowStart, end: c.windowEnd }];
+  const duration = Math.max(c.windowEnd, ...segments.map((seg) => seg.end));
+  // True for every plain clip (unchanged behaviour) and for a stitch whose
+  // stored segments are real — writing those back is a no-op. False only for
+  // a stitch with nothing truthful to store, where `segments` above is a
+  // fabrication that must never reach localStorage.
+  const persistSegments = !isStitch || storedSegments !== undefined;
   setState({
     videoId: c.videoId,
     title: savedTitle(c.videoId) || c.videoId,
-    duration: c.windowEnd,
-    segments: [{ start: c.windowStart, end: c.windowEnd }],
+    duration,
+    segments,
     clipUrl: c.clipUrl,
     windowStart: c.windowStart,
     windowEnd: c.windowEnd,
@@ -710,7 +736,7 @@ function openClip(c: api.CachedClip): void {
     error: "",
     phase: "framing",
   });
-  save();
+  if (persistSegments) save();
 }
 
 // The <video> and <canvas> for the framing phase, built once and appended
@@ -1212,11 +1238,16 @@ function renderFraming(): Node[] {
     value: s.starterTitle,
     disabled: Boolean(s.busy),
   });
-  // No window check: windowStart is max(0, floor(start − PAD)) and windowEnd
-  // is min(ceil(end + PAD), duration), so the fetched window contains
-  // [start, end] by construction — and with marking confined to trimming,
-  // nothing reachable from here can move them out of it. The server
-  // re-validates the pair regardless.
+  // No window check: doExport sends clipStart/clipEnd as start/end, not the
+  // marks. For one segment those coincide with windowStart = max(0, floor(
+  // start − PAD)) and windowEnd = min(ceil(end + PAD), duration), so the
+  // fetched window contains [start, end] by construction. For a stitch
+  // clipStart/clipEnd are 0 and the stitch's own probed duration — not
+  // derived from PAD at all — but they are exactly the bounds `/api/window`
+  // reported windowStart/windowEnd as for *that* fetch, so they still sit
+  // inside them by construction, just a different one. Either way, and with
+  // marking confined to trimming, nothing reachable from here can move them
+  // out of it. The server re-validates the pair regardless.
   const exportable = (text: string) => keptLength(s) > 0 && text.trim() !== "" && !s.busy;
 
   const long = keptLength(s) > SHORTS_MAX_S;

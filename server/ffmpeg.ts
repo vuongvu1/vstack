@@ -85,12 +85,15 @@ export function outPath(name: string): string {
  *  produce together. */
 const OUT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*-\d{4,}-\d{4,}\.mp4$/;
 
-/** The one client-supplied path component this API accepts. `/api/export`
- *  deliberately takes window bounds and reconstructs the cache filename
- *  itself, so there is nothing to validate there; preview breaks that,
- *  because publish and reveal both name a file that already exists. So the
- *  name is validated rather than reconstructed. No slash, no dot-dot, no
+/** The one client-supplied path component on the `/out/` side of this API.
+ *  `/api/export` deliberately takes window bounds and reconstructs the cache
+ *  filename itself, so there is nothing to validate there; preview breaks
+ *  that, because publish and reveal both name a file that already exists. So
+ *  the name is validated rather than reconstructed. No slash, no dot-dot, no
  *  backslash, no absolute path and no non-ASCII survives the pattern.
+ *  `/api/export`'s `digest` is the analogous case on the `/media/` side —
+ *  narrower, eight lowercase hex characters rather than a full name, but
+ *  validated for the identical reason (see `server/index.ts`).
  *
  *  Takes `unknown`: it is called on a raw request-body field, and a
  *  `string` annotation there would be a compile-time claim about a value

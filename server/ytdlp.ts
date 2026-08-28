@@ -219,7 +219,20 @@ export async function listClips(): Promise<CachedClip[]> {
         // controls, so the alternative is a window whose edges the user
         // cannot reach. For a stitch that is its entire timeline anyway.
         clipStart: bounds.windowStart,
-        clipEnd: bounds.windowEnd,
+        // Clamped to the probed file, NOT the filename's own windowEnd —
+        // the same reason `fetchWindow`'s stitch leg clamps `clipEnd` to
+        // `probed.seconds` rather than trusting the ceil'd total the name
+        // carries. `probed` is already in hand from the probeFile call
+        // above, so this costs nothing extra. Skipping it broke `outName`'s
+        // "re-exporting overwrites rather than accumulating": a segment sum
+        // just under a whole second (e.g. 34.2s, filename `0-35`) would
+        // export `-0035.mp4` on a fresh cut but `-0034.mp4` on export after
+        // reopening this same row, since only the reopen path clamped to the
+        // probe. This formula covers a plain clip too — its probed duration
+        // is ~`windowEnd - windowStart`, so `windowStart + probed.seconds`
+        // lands at ~`windowEnd` and only bites if the fetched file actually
+        // came up short.
+        clipEnd: Math.min(bounds.windowEnd, bounds.windowStart + probed.seconds),
         width: probed.width,
         height: probed.height,
         mtime: mtimeMs,
