@@ -217,28 +217,61 @@ export async function mountPlayer(
   });
 }
 
-/** A trim you cannot see is a trim you cannot verify, so the marked range is
- *  drawn, not just stored. Clicking the strip seeks. */
+/** A trim you cannot see is a trim you cannot verify, so the kept ranges are
+ *  drawn, not just stored. Clicking the strip seeks.
+ *
+ *  Returns a handle rather than a bare element because it now owns a rAF
+ *  loop for the playhead — the same `{ …, stop }` shape `mountEditor`
+ *  returns, and for the same reason. A caller that drops the handle without
+ *  calling `stop()` leaves a loop reading a detached node forever. */
 export function renderStrip(opts: {
   duration: number;
-  start: number;
-  end: number;
+  segments: { start: number; end: number }[];
+  /** Which segment the marking controls are aimed at, drawn brighter. */
+  active: number;
+  /** The playhead's position in source seconds, read every frame. A
+   *  callback rather than a value: this module knows nothing about the
+   *  caller's player handle, and a value would be stale by the next frame. */
+  head(): number;
   onSeek(s: number): void;
-}): HTMLElement {
+}): { el: HTMLElement; stop(): void } {
   const strip = document.createElement("div");
   strip.className = "strip";
 
   const pct = (s: number) => `${(100 * s) / Math.max(1, opts.duration)}%`;
-  const range = document.createElement("div");
-  range.className = "strip-range";
-  range.style.left = pct(opts.start);
-  range.style.width = pct(Math.max(0, opts.end - opts.start));
-  strip.append(range);
+  opts.segments.forEach((seg, i) => {
+    const range = document.createElement("div");
+    range.className = i === opts.active ? "strip-range is-active" : "strip-range";
+    range.style.left = pct(seg.start);
+    range.style.width = pct(Math.max(0, seg.end - seg.start));
+    strip.append(range);
+  });
+
+  const head = document.createElement("div");
+  head.className = "strip-head";
+  strip.append(head);
+
+  let frame = 0;
+  let last = -1;
+  const tick = () => {
+    const t = opts.head();
+    // Only touched when it actually moves: a style write per frame on a
+    // paused player is pure layout churn.
+    if (t !== last) {
+      last = t;
+      head.style.left = pct(t);
+    }
+    frame = requestAnimationFrame(tick);
+  };
+  frame = requestAnimationFrame(tick);
 
   strip.onclick = (e) => {
     const box = strip.getBoundingClientRect();
     const frac = (e.clientX - box.left) / Math.max(1, box.width);
     opts.onSeek(frac * opts.duration);
   };
-  return strip;
+  return {
+    el: strip,
+    stop: () => cancelAnimationFrame(frame),
+  };
 }

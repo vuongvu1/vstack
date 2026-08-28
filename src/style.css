@@ -351,7 +351,7 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
 .status:empty { display: none; }
 .status-row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
 
-/* Slider track + range */
+/* Slider track + kept ranges + playhead */
 .strip {
   position: relative;
   flex: 1 1 240px;
@@ -360,13 +360,37 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   border-radius: var(--radius-3);
   background: var(--slate-a4);
   cursor: pointer;
+  /* The ranges inside are square-cornered, so a part marked at 0 or at the
+     video's end would otherwise paint its corner outside this track's
+     rounded one — a 6px notch of blue sticking past the grey, at exactly
+     the two positions a user is most likely to mark. */
+  overflow: hidden;
 }
 
+/* No radius, deliberately. A cut boundary is a position, and a rounded end
+   reads as a fade — at 12px tall a 6px radius makes the range a full pill,
+   so its ends become the least precise part of the control the user is
+   being precise with. Square ends are also what makes several ranges
+   legible side by side. */
 .strip-range {
   position: absolute;
   inset-block: 0;
-  border-radius: var(--radius-3);
-  background: var(--blue-9);
+  border-radius: 0;
+  background: var(--blue-8);
+}
+
+/* The part the marking controls are aimed at. */
+.strip-range.is-active { background: var(--blue-9); }
+
+/* Where the player actually is. Above the ranges, and `pointer-events: none`
+   so it never eats the strip's own click-to-seek. */
+.strip-head {
+  position: absolute;
+  inset-block: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--slate-12);
+  pointer-events: none;
 }
 
 /* The framing phase's own scrubber. Native <input type="range"> rather than

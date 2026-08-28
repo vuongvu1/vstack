@@ -30,7 +30,7 @@ import {
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
-import { normalize, totalDuration } from "./segments.ts";
+import { MAX_SEGMENTS, isValidSegments, normalize, totalDuration } from "./segments.ts";
 import { renderTitleArt } from "./starter.ts";
 import type { AppState } from "./state.ts";
 import {
@@ -290,6 +290,16 @@ function clampMark(seconds: number, duration: number): number {
 // same hazard renderIdle's quiet `oninput` avoids for the URL field.
 let stampText = "";
 
+// Which segment Set Start / Set End write to. Module-scoped for the reason
+// `stampText` is: nothing about it is persisted, and `barSlot` is rebuilt on
+// every render — so it has to survive that rebuild without ever causing one.
+let activeSegment = 0;
+
+// renderTrimming replaces the strip on every render, and the strip owns a
+// rAF loop now. Stopping the old one before building the new one is what
+// keeps a loop from reading a detached node for the life of the session.
+let strip: { el: HTMLElement; stop(): void } | null = null;
+
 /** The paste-a-YouTube-timestamp affordance, shared by both marking phases.
  *  Applying only ever *seeks*: start and end still come from Set Start /
  *  Set End, so a misread paste costs a seek and never a mark. `onApply`
@@ -344,26 +354,41 @@ function renderTrimming(): Node[] {
   const ready = player !== null;
   const failed = playerFailed === s.videoId;
 
-  // ponytail: single-segment stopgap for Task 9, which replaces Set
-  // Start/Set End with real multi-part controls (+ Part, − Part, segment
-  // chips). Until then `s.segments` is always length 1, so a mark rewrites
-  // that one segment's start or end and leaves the other bound as-is —
-  // exactly the old start/end pair's behaviour.
-  const setStart = el("button", { textContent: "Set Start", disabled: !ready });
-  setStart.onclick = () => {
+  // Clamped to the active segment's own index, not to the array: a render
+  // can arrive after `− Part` shrank it.
+  const active = Math.min(activeSegment, s.segments.length - 1);
+
+  /** Rewrites one bound of the active segment and re-normalises the whole
+   *  set — dragging a mark past a neighbour is an ordinary editing gesture,
+   *  and `normalize` merges rather than rejecting it.
+   *
+   *  Reads live state via getState(), never `s`: every path that writes
+   *  segments goes through setState today, but this is the same hazard
+   *  `+ Box` hit, and the cost of getting it wrong is a silently reverted
+   *  edit persisted by the save() on the next line. */
+  const setMark = (which: "start" | "end") => {
     if (!player) return;
-    const start = clampMark(player.currentTime(), s.duration);
-    setState({ segments: [{ start, end: lastMark(s) }] });
+    const cur = getState();
+    const t = clampMark(player.currentTime(), cur.duration);
+    const seg = cur.segments[active];
+    if (seg === undefined) return;
+    const edited = { ...seg, [which]: t };
+    // Ignored rather than normalised away: `normalize` DROPS a segment whose
+    // end is not after its start, so Set End with the playhead before the
+    // part's start would silently delete the part the user was editing —
+    // the worst possible answer to an ordinary misclick. Refusing the edit
+    // leaves the strip exactly as it was, which reads as "that did nothing".
+    if (!(edited.end > edited.start)) return;
+    const next = cur.segments.map((s2, i) => (i === active ? edited : s2));
+    setState({ segments: normalize(next, cur.duration) });
     save();
   };
 
+  const setStart = el("button", { textContent: "Set Start", disabled: !ready });
+  setStart.onclick = () => setMark("start");
+
   const setEnd = el("button", { textContent: "Set End", disabled: !ready });
-  setEnd.onclick = () => {
-    if (!player) return;
-    const end = clampMark(player.currentTime(), s.duration);
-    setState({ segments: [{ start: firstMark(s), end }] });
-    save();
-  };
+  setEnd.onclick = () => setMark("end");
 
   // Playback transport. The iframe has YouTube's own controls, but they are
   // only reachable by clicking *into* the video — which then swallows the
@@ -409,8 +434,9 @@ function renderTrimming(): Node[] {
   // unset end is 0, and a *set* end of 0 would be an empty trim. Start
   // needs no such gate — an unset start is 0, which is also where the trim
   // genuinely begins, so the button is never wrong, only redundant.
-  const toStart = jump("⇤ Start", firstMark(s), true);
-  const toEnd = jump("End ⇥", lastMark(s), lastMark(s) > 0);
+  const activeSeg = s.segments[active] ?? { start: 0, end: 0 };
+  const toStart = jump("⇤ Start", activeSeg.start, true);
+  const toEnd = jump("End ⇥", activeSeg.end, activeSeg.end > 0);
 
   // Fine seeking. YouTube's own arrow keys move 5s, which is coarser than a
   // cut needs — and the iframe only hears them when it has focus, which it
@@ -443,7 +469,10 @@ function renderTrimming(): Node[] {
 
   const marks = el("span", {
     className: "badge",
-    textContent: `${clock(firstMark(s))} → ${clock(lastMark(s))}`,
+    textContent:
+      s.segments.length === 1
+        ? `${clock(activeSeg.start)} → ${clock(activeSeg.end)}`
+        : `${s.segments.length} parts · ${clock(keptLength(s))} kept`,
   });
 
   const long = keptLength(s) > SHORTS_MAX_S;
@@ -457,9 +486,67 @@ function renderTrimming(): Node[] {
   const go = el("button", {
     className: "btn-solid",
     textContent: "Continue",
-    disabled: !ready || !(keptLength(s) > 0),
+    disabled: !ready || !isValidSegments(s.segments, s.duration),
   });
   go.onclick = () => void openWindow();
+
+  // A five-second default rather than an empty range: every intermediate
+  // state stays valid, so Continue never has to explain itself.
+  const addPart = el("button", {
+    textContent: "+ Part",
+    title: "Keep another range, starting at the playhead",
+    disabled: !ready || s.segments.length >= MAX_SEGMENTS,
+  });
+  addPart.onclick = () => {
+    if (!player) return;
+    const cur = getState();
+    const t = clampMark(player.currentTime(), cur.duration);
+    const next = normalize(
+      [...cur.segments, { start: t, end: Math.min(t + 5, cur.duration) }],
+      cur.duration,
+    );
+    // Found by identity of the bounds rather than by position: normalize
+    // sorts, so the new part is rarely last.
+    activeSegment = Math.max(0, next.findIndex((seg) => seg.start === t));
+    setState({ segments: next });
+    save();
+  };
+
+  const dropPart = el("button", {
+    className: "btn-gray",
+    textContent: "− Part",
+    title: "Drop the selected range",
+    disabled: !ready || s.segments.length <= 1,
+  });
+  dropPart.onclick = () => {
+    const cur = getState();
+    if (cur.segments.length <= 1) return;
+    const next = cur.segments.filter((_seg, i) => i !== active);
+    activeSegment = Math.max(0, Math.min(active, next.length - 1));
+    setState({ segments: next });
+    save();
+  };
+
+  // One chip per part, switching which one the marking controls aim at.
+  const chips = el("div", { className: "nudges", ariaLabel: "Select part" });
+  chips.setAttribute("role", "group");
+  s.segments.forEach((seg, i) => {
+    const chip = el("button", {
+      className: i === active ? "" : "btn-gray",
+      textContent: String(i + 1),
+      title: `${clock(seg.start)} → ${clock(seg.end)}`,
+      disabled: !ready,
+    });
+    chip.onclick = () => {
+      activeSegment = i;
+      // A seek, not just a selection: switching parts is almost always a
+      // prelude to looking at that part. Deliberately no pause — the same
+      // reasoning as the jump-to-mark buttons.
+      player?.seekTo(seg.start);
+      setState({});
+    };
+    chips.append(chip);
+  });
 
   const controls: Node[] = [setStart, setEnd];
   if (failed) {
@@ -486,29 +573,30 @@ function renderTrimming(): Node[] {
     return "";
   }, !ready);
 
-  // Three rows, grouped by what each row is *for*, because one row of a dozen
+  // Four rows, grouped by what each row is *for*, because one row of a dozen
   // controls wrapped wherever it ran out of width — which put Continue, the
   // only phase-advancing action, on a line of its own below everything else.
   //
   // The strip gets the first row to itself (plus the marks it describes): it
   // is `flex: 1 1 240px`, so sharing a row squeezed the one control whose
   // whole job is being clicked precisely. Then everything that moves the
-  // playhead — play, jump to a mark, nudge — and last everything that sets
-  // one, with Continue pushed to the far end where the advancing action sits
+  // playhead — play, jump to a mark, nudge. Then the parts themselves — which
+  // chip is active, and adding or dropping one. Last everything that sets a
+  // mark, with Continue pushed to the far end where the advancing action sits
   // in every other phase.
+  strip?.stop();
+  strip = renderStrip({
+    duration: s.duration,
+    segments: s.segments,
+    active,
+    head: () => player?.currentTime() ?? 0,
+    onSeek: (t) => player?.seekTo(t),
+  });
+
   return [
-    el(
-      "div",
-      { className: "bar-row" },
-      renderStrip({
-        duration: s.duration,
-        start: firstMark(s),
-        end: lastMark(s),
-        onSeek: (t) => player?.seekTo(t),
-      }),
-      marks,
-    ),
+    el("div", { className: "bar-row" }, strip.el, marks),
     el("div", { className: "bar-row" }, toggle, toStart, toEnd, nudges),
+    el("div", { className: "bar-row" }, chips, addPart, dropPart),
     el(
       "div",
       { className: "bar-row" },
