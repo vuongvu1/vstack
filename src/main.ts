@@ -770,6 +770,12 @@ let outEditor: EditorHandle | null = null;
  *  bar reaches, and `drawWave` samples down from it per pixel. */
 const WAVE_BUCKETS = 900;
 
+/** The framing trim's floor. `/api/export` rejects a window whose end is not
+ *  after its start, so a handle dragged onto its neighbour would produce a
+ *  400 rather than a short clip. One second is also the shortest trim worth
+ *  making. */
+const MIN_CLIP_S = 1;
+
 /** The framing clip's peak envelope, and the clip URL it came from. Cached
  *  module-scoped for the same reason `framingFor` is: this bar is rebuilt on
  *  every render, and decoding per render would re-fetch and re-decode the
@@ -1252,45 +1258,117 @@ function renderFraming(): Node[] {
     title: "Play or pause the clip",
     disabled: !ready,
   });
-  const scrub = el("input", {
-    type: "range",
-    className: "scrub",
-    min: "0",
-    max: "0",
-    step: "any",
-    ariaLabel: "Clip playhead",
-    disabled: !ready,
-  });
+  // The clip's own strip: waveform, the kept range's handles, the playhead,
+  // and click-to-seek. `s.clipStart`/`s.clipEnd` are in the same coordinate
+  // system as `s.windowStart`/`s.windowEnd` — source seconds for a single
+  // range, the stitch's own timeline for a stitch — while the <video>'s
+  // currentTime is 0-based clip-file time. `span` converts between them.
+  const span = Math.max(1e-6, s.windowEnd - s.windowStart);
+  const pctOf = (sourceT: number) => `${(100 * (sourceT - s.windowStart)) / span}%`;
+
+  const wave = el("div", { className: "wave" });
+  const canvas = el("canvas");
+  const cutL = el("div", { className: "wave-cut" });
+  const cutR = el("div", { className: "wave-cut" });
+  const handleL = el("div", { className: "wave-handle", title: "Drag to move the cut's start" });
+  const handleR = el("div", { className: "wave-handle", title: "Drag to move the cut's end" });
+  const head = el("div", { className: "strip-head" });
+  wave.append(canvas, cutL, cutR, handleL, handleR, head);
+
+  /** Repositions everything the drag moves. Called directly rather than
+   *  through a render because the drag writes with `setQuiet`, which by
+   *  design reaches no render — the same reason the output overlay has to
+   *  call the source overlay's `place()` by hand. */
+  const place = () => {
+    const cur = getState();
+    cutL.style.left = "0";
+    cutL.style.width = pctOf(cur.clipStart);
+    cutR.style.left = pctOf(cur.clipEnd);
+    cutR.style.right = "0";
+    handleL.style.left = pctOf(cur.clipStart);
+    handleR.style.left = pctOf(cur.clipEnd);
+  };
+  place();
+
   if (videoEl) {
     const v = videoEl;
     // Event *properties*, not addEventListener: this bar is rebuilt on every
     // render while the <video> outlives all of them, so listeners would
-    // stack up one per render. Overwriting the property points the live
-    // element at the buttons currently on screen — and `loadedmetadata` is
-    // safe to own here because mountEditor listens for it the other way
-    // (addEventListener), so the two do not evict each other.
+    // stack one per render.
     v.onplay = v.onpause = () => {
       play.textContent = v.paused ? "Play" : "Pause";
     };
+    // ontimeupdate rather than a rAF loop: it fires ~4Hz, which is enough
+    // for a playhead on a strip this wide, and it needs no teardown when the
+    // phase changes — the trimming strip's rAF loop needs two stop sites
+    // precisely because it has no such owner.
     v.ontimeupdate = () => {
-      scrub.value = String(v.currentTime);
+      head.style.left = `${(100 * v.currentTime) / span}%`;
     };
-    v.onloadedmetadata = () => {
-      scrub.max = String(v.duration);
-    };
-    // The element may already be playing, and already have its metadata, by
-    // the time a re-render builds these: neither event fires again.
+    // The element may already be playing by the time a re-render builds
+    // these: neither event fires again.
     play.textContent = v.paused ? "Play" : "Pause";
-    if (Number.isFinite(v.duration)) scrub.max = String(v.duration);
-    scrub.value = String(v.currentTime);
+    head.style.left = `${(100 * v.currentTime) / span}%`;
     play.onclick = () => {
       if (v.paused) void v.play();
       else v.pause();
     };
-    scrub.oninput = () => {
-      v.currentTime = Number(scrub.value);
+    // Click-to-seek on the strip body, matching the trimming strip. Handles
+    // stop their own clicks below, so a drag never also seeks.
+    wave.onclick = (e) => {
+      const box = wave.getBoundingClientRect();
+      const frac = (e.clientX - box.left) / Math.max(1, box.width);
+      v.currentTime = Math.min(span, Math.max(0, frac * span));
     };
   }
+
+  /** One handle's drag. Clamped to the fetched window on the outside and to
+   *  its neighbour (less `MIN_CLIP_S`) on the inside — this is what replaces
+   *  the "marking is confined to trimming" argument the old comment below
+   *  used to make. */
+  const dragHandle = (which: "start" | "end") => (down: PointerEvent) => {
+    down.preventDefault();
+    down.stopPropagation();
+    const box = wave.getBoundingClientRect();
+    const target = down.target as HTMLElement;
+    target.setPointerCapture(down.pointerId);
+    const at = (e: PointerEvent) =>
+      s.windowStart + (span * (e.clientX - box.left)) / Math.max(1, box.width);
+    const move = (e: PointerEvent) => {
+      const cur = getState();
+      const t = Math.min(s.windowEnd, Math.max(s.windowStart, at(e)));
+      if (which === "start") {
+        setQuiet({ clipStart: Math.min(t, cur.clipEnd - MIN_CLIP_S) });
+      } else {
+        setQuiet({ clipEnd: Math.max(t, cur.clipStart + MIN_CLIP_S) });
+      }
+      place();
+    };
+    const up = () => {
+      target.releasePointerCapture(down.pointerId);
+      target.onpointermove = null;
+      target.onpointerup = null;
+      // One notifying update at the end, so the kept-duration badge, the
+      // over-length warning and Export's gate all catch up in a single
+      // render rather than one per pointermove.
+      const cur = getState();
+      setState({ clipStart: cur.clipStart, clipEnd: cur.clipEnd });
+    };
+    target.onpointermove = move;
+    target.onpointerup = up;
+  };
+  handleL.onpointerdown = dragHandle("start");
+  handleR.onpointerdown = dragHandle("end");
+  // Without this a click that ends on a handle bubbles to the strip and
+  // seeks the video to wherever the drag finished.
+  handleL.onclick = handleR.onclick = (e) => e.stopPropagation();
+
+  // One observer, replaced per render: the canvas is a new node each time,
+  // and an observer per built canvas would accumulate for the life of the
+  // phase.
+  waveResize?.disconnect();
+  waveResize = new ResizeObserver(() => drawWave(canvas));
+  waveResize.observe(wave);
 
   const addBox = el("button", {
     textContent: "+ Box",
@@ -1327,16 +1405,15 @@ function renderFraming(): Node[] {
     value: s.starterTitle,
     disabled: Boolean(s.busy),
   });
-  // No window check: doExport sends clipStart/clipEnd as start/end, not the
-  // marks. For one segment those coincide with windowStart = max(0, floor(
-  // start − PAD)) and windowEnd = min(ceil(end + PAD), duration), so the
-  // fetched window contains [start, end] by construction. For a stitch
-  // clipStart/clipEnd are 0 and the stitch's own probed duration — not
-  // derived from PAD at all — but they are exactly the bounds `/api/window`
-  // reported windowStart/windowEnd as for *that* fetch, so they still sit
-  // inside them by construction, just a different one. Either way, and with
-  // marking confined to trimming, nothing reachable from here can move them
-  // out of it. The server re-validates the pair regardless.
+  // No window check here, but the reason has changed: this phase CAN now
+  // move clipStart/clipEnd, so "marking is confined to trimming" no longer
+  // holds. What holds instead is that the only thing that moves them is
+  // `dragHandle` above, which clamps to [windowStart, windowEnd] on the
+  // outside and to its neighbour less MIN_CLIP_S on the inside — so the
+  // pair cannot leave the fetched window or invert. `/api/window` reported
+  // that window as containing the marks by construction (windowStart =
+  // max(0, floor(start − PAD)) for a single range; 0 and the probed
+  // duration for a stitch), and the server re-validates the pair regardless.
   const exportable = (text: string) => keptLength(s) > 0 && text.trim() !== "" && !s.busy;
 
   const long = keptLength(s) > SHORTS_MAX_S;
@@ -1398,7 +1475,7 @@ function renderFraming(): Node[] {
           : el("span"),
       ),
     ),
-    el("div", { className: "bar-row" }, play, scrub),
+    el("div", { className: "bar-row" }, play, wave),
     el(
       "div",
       { className: "bar-row" },
