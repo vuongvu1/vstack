@@ -222,15 +222,19 @@ filling that cache is therefore load-bearing for the *validator*, not just for
 the boot hint — an empty cache rejects every export rather than accepting
 every voice, which is the right way for it to fail.
 
-**`isOutName` is the one client-supplied path component this API accepts.**
-Everywhere else the server takes window bounds or an id and reconstructs a
-path itself, so there is nothing to validate. Preview breaks that — publish
-and reveal both name a file that already exists — so the name is checked
-against exactly what `slugify` + `mmss` can emit (the `OUT_NAME` regex in
-`server/ffmpeg.ts`), plus an `existsSync` in `OUT_DIR`. Loosen the pattern and
-`open -R`, an upload, and `serveOut`'s file read all point at whatever the
-caller asked for — and since `OUT_DIR` now lives under `$HOME`, that is a
-reach into the user's home directory rather than into the repo.
+**`isOutName` is the one client-supplied path component on the `/out/` side
+of this API** — `/out/<name>`, `/api/reveal` and `/api/publish` all take it.
+Everywhere else on that side the server takes window bounds or an id and
+reconstructs a path itself, so there is nothing to validate. Preview breaks
+that — publish and reveal both name a file that already exists — so the name
+is checked against exactly what `slugify` + `mmss` can emit (the `OUT_NAME`
+regex in `server/ffmpeg.ts`), plus an `existsSync` in `OUT_DIR`. Loosen the
+pattern and `open -R`, an upload, and `serveOut`'s file read all point at
+whatever the caller asked for — and since `OUT_DIR` now lives under `$HOME`,
+that is a reach into the user's home directory rather than into the repo.
+`/api/export`'s `digest` (below) is the analogous case on the `/media/`
+side — narrower, eight lowercase hex characters rather than a full name, but
+validated for the identical reason.
 
 **Uploads are private and there is no option.** An unaudited YouTube Data API
 project has every `videos.insert` locked to private viewing. `buildSnippet`
@@ -494,7 +498,8 @@ the idle screen's dropdown was never cut in this session, so the client has
 no segments to hash. `digest` is validated against `/^[0-9a-f]{8}$/` — eight
 hex characters cannot traverse or escape `MEDIA_DIR`, `clipPath` still builds
 the actual path, and `listClips` hands back each row's digest for free so the
-reopen path always has one to send. The starter screen's `titlePng` is the
+reopen path always has one to send — the same posture `isOutName` (above)
+already takes on the `/out/` side. The starter screen's `titlePng` is the
 other exception — an image the client rendered, because this machine's ffmpeg
 *cannot rasterise text at all* — so it is length-capped and checked against
 the PNG signature before it reaches ffmpeg. Keep all three of those that way.
