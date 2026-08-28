@@ -393,13 +393,48 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   pointer-events: none;
 }
 
-/* The framing phase's own scrubber. Native <input type="range"> rather than
-   the trimming strip's hand-built track: it needs no marks on it, and
-   `accent-color` plus the `color-scheme` set above is the whole theme story. */
-.scrub {
+/* The framing phase's own strip: the clip's waveform, the kept range's two
+   handles, and the playhead. Hand-built rather than an <input type="range">
+   for the reason the trimming strip is — a native range carries one thumb,
+   and this needs two of them plus a painted background. `touch-action:none`
+   so a drag on a handle is a drag rather than a scroll gesture. */
+.wave {
+  position: relative;
   flex: 1 1 240px;
+  height: 48px;
   min-width: 160px;
-  accent-color: var(--blue-9);
+  border-radius: var(--radius-3);
+  background: var(--slate-a4);
+  cursor: pointer;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.wave > canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Everything outside the kept range — dimmed, never hidden. That footage is
+   PAD: the material the handles are dragged across, so it has to stay
+   legible while reading as excluded. `pointer-events:none` so it does not
+   eat the strip's own click-to-seek. */
+.wave-cut {
+  position: absolute;
+  inset-block: 0;
+  background: var(--slate-a7);
+  pointer-events: none;
+}
+
+.wave-handle {
+  position: absolute;
+  inset-block: 0;
+  width: 10px;
+  margin-left: -5px;
+  background: var(--blue-9);
+  cursor: ew-resize;
+  touch-action: none;
 }
 
 .boxes { position: absolute; pointer-events: none; }
