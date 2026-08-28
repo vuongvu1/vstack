@@ -1862,3 +1862,61 @@ window.addEventListener("keydown", (e) => {
   const dark = document.documentElement.classList.toggle("dark");
   localStorage.setItem(THEME_KEY, dark ? "dark" : "light");
 });
+
+// Space toggles playback in whichever phase owns a medium — the YouTube
+// iframe while trimming, the fetched clip while framing, the finished file
+// in preview. Idle owns none, so it is a no-op there.
+//
+// No label to keep in step: the framing bar's Play/Pause follows `onplay`/
+// `onpause` on the live <video>, and the trimming bar's follows YouTube's
+// `onStateChange` through `syncTransport`. Both exist because the native
+// controls could already change state without going through the bar, and
+// this is one more path that does exactly that.
+//
+// ponytail: a window listener, so — like the theme toggle above — this is
+// deaf while the YouTube iframe holds focus. Harmless here specifically:
+// YouTube binds space to play/pause inside the iframe, so the key does the
+// right thing anyway, which is not true of the theme shortcut.
+const SPACE_DEAF = new Set(["INPUT", "TEXTAREA", "SELECT", "BUTTON", "VIDEO", "AUDIO"]);
+
+window.addEventListener("keydown", (e) => {
+  if (e.code !== "Space") return;
+  // Modifier combinations belong to the OS or the browser, never here.
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+  // Three reasons to stand down, and each is a control the user would
+  // otherwise lose. A field takes the space as text — the URL, the starter
+  // title and all three publish fields all hold prose. A focused <button>
+  // takes it as a click, so hijacking it would break keyboard operation of
+  // every bar in the app. And a focused <video controls> already toggles on
+  // space by itself, so handling it here as well would toggle twice and
+  // look like the key did nothing.
+  const active = document.activeElement;
+  if (active instanceof HTMLElement) {
+    if (SPACE_DEAF.has(active.tagName) || active.isContentEditable) return;
+  }
+
+  const phase = getState().phase;
+  if (phase === "trimming") {
+    if (!player) return;
+    // Read once and act on the intent, not on a re-read: YouTube reports the
+    // new state asynchronously, the same reason the bar's own toggle does it
+    // this way.
+    if (player.playing()) player.pause();
+    else player.play();
+  } else if (phase === "framing") {
+    if (!videoEl) return;
+    if (videoEl.paused) void videoEl.play();
+    else videoEl.pause();
+  } else if (phase === "preview") {
+    if (!outVideoEl) return;
+    if (outVideoEl.paused) void outVideoEl.play();
+    else outVideoEl.pause();
+  } else {
+    return; // idle owns no medium — leave the page's own scroll alone
+  }
+  // Only once something was actually toggled: space scrolls the page by
+  // default, and suppressing that on a phase with nothing to play would be
+  // taking a key away for no benefit.
+  e.preventDefault();
+});
