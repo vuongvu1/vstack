@@ -3,7 +3,7 @@ import type { CustomBox } from "./custom.ts";
 import { isValidBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
 import { DEFAULT_LAYOUT_ID, cellsOf, layoutById, ratioOf, resolveLayout } from "./layout.ts";
-import { isValidSegments } from "./segments.ts";
+import { isValidSegments, totalDuration } from "./segments.ts";
 import type { Segment } from "./segments.ts";
 
 export type Phase = "idle" | "trimming" | "framing" | "preview";
@@ -350,4 +350,26 @@ export function restore(videoId: string, source: Size | null): Partial<AppState>
     boxes: usable ? s.boxes : [],
     customs: usableCustoms ? s.customs : [],
   };
+}
+
+/** The kept length — what decides whether this is too long for a Short. NOT
+ *  `lastMark − firstMark`: a two-part cut with a two-minute gap between the
+ *  parts spans four minutes and keeps forty seconds.
+ *
+ *  Two readings, one per phase, and they are not interchangeable. Before
+ *  `/api/window` answers, `clipStart`/`clipEnd` are both 0 and the segments
+ *  are the only truth. Once framing owns a clip the trim can move
+ *  `clipStart`/`clipEnd` inside the fetched window, and the segments no
+ *  longer describe what will be exported.
+ *
+ *  These two agreed exactly until framing could trim — a single segment's
+ *  marks ARE its clip bounds, and a stitch's `clipEnd − clipStart` is the
+ *  sum of its parts — which is precisely why reading the wrong one is
+ *  silent rather than loud. */
+export function keptLength(
+  s: Pick<AppState, "phase" | "segments" | "clipStart" | "clipEnd">,
+): number {
+  return s.phase === "framing"
+    ? Math.max(0, s.clipEnd - s.clipStart)
+    : totalDuration(s.segments);
 }

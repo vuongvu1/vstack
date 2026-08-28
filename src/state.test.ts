@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { MAX_CUSTOM, isValidCustom } from "./custom.ts";
 import { DEFAULT_LAYOUT_ID } from "./layout.ts";
 import { MAX_SEGMENTS } from "./segments.ts";
-import { restore, save, saveVoice, savedTitle, savedVoice, setState } from "./state.ts";
+import { keptLength, restore, save, saveVoice, savedTitle, savedVoice, setState } from "./state.ts";
 
 /** vitest's config runs this file under Node, which has no `localStorage`
  *  global. `state.ts` is pure logic over whatever object sits at
@@ -679,5 +679,55 @@ describe("savedTitle", () => {
   it("returns empty for a corrupt record instead of throwing", () => {
     localStorage.setItem("vstack:bad12345678", "{not json");
     expect(savedTitle("bad12345678")).toBe("");
+  });
+});
+
+describe("keptLength", () => {
+  it("reads the segments outside framing, where clip bounds are still 0", () => {
+    expect(
+      keptLength({
+        phase: "trimming",
+        segments: [{ start: 10, end: 20 }, { start: 50, end: 65 }],
+        clipStart: 0,
+        clipEnd: 0,
+      }),
+    ).toBe(25);
+  });
+
+  it("reads the clip bounds in framing, so a framing trim is counted", () => {
+    // The segments still say 25s; the trim says 12. Framing must report the
+    // trim, because that is what /api/export will render.
+    expect(
+      keptLength({
+        phase: "framing",
+        segments: [{ start: 10, end: 20 }, { start: 50, end: 65 }],
+        clipStart: 3,
+        clipEnd: 15,
+      }),
+    ).toBe(12);
+  });
+
+  it("agrees with the segments in framing before any trim", () => {
+    // The coincidence this function exists to survive: an untrimmed single
+    // segment's marks ARE its clip bounds, so both readings match.
+    expect(
+      keptLength({
+        phase: "framing",
+        segments: [{ start: 10, end: 40 }],
+        clipStart: 10,
+        clipEnd: 40,
+      }),
+    ).toBe(30);
+  });
+
+  it("never reports a negative length", () => {
+    expect(
+      keptLength({
+        phase: "framing",
+        segments: [{ start: 0, end: 5 }],
+        clipStart: 9,
+        clipEnd: 4,
+      }),
+    ).toBe(0);
   });
 });

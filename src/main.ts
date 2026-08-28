@@ -30,12 +30,13 @@ import {
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
-import { MAX_SEGMENTS, isValidSegments, normalize, totalDuration } from "./segments.ts";
+import { MAX_SEGMENTS, isValidSegments, normalize } from "./segments.ts";
 import type { Segment } from "./segments.ts";
 import { renderTitleArt } from "./starter.ts";
 import type { AppState } from "./state.ts";
 import {
   getState,
+  keptLength,
   restore,
   save,
   saveVoice,
@@ -80,13 +81,6 @@ function firstMark(s: AppState): number {
 
 function lastMark(s: AppState): number {
   return s.segments[s.segments.length - 1]?.end ?? 0;
-}
-
-/** The kept length — what actually decides whether this is too long for a
- *  Short. NOT `lastMark − firstMark`: a two-part cut with a two-minute gap
- *  between the parts spans four minutes and keeps forty seconds. */
-function keptLength(s: AppState): number {
-  return totalDuration(s.segments);
 }
 
 // Built once. render() never replaces these nodes: removing an <iframe>'s
