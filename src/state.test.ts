@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { MAX_CUSTOM, isValidCustom } from "./custom.ts";
 import { DEFAULT_LAYOUT_ID } from "./layout.ts";
+import { MAX_SEGMENTS } from "./segments.ts";
 import { restore, save, saveVoice, savedTitle, savedVoice, setState } from "./state.ts";
 
 /** vitest's config runs this file under Node, which has no `localStorage`
@@ -46,8 +47,7 @@ describe("save", () => {
     localStorage.setItem(
       `vstack:${videoId}`,
       JSON.stringify({
-        start: 5,
-        end: 50,
+        segments: [{ start: 5, end: 50 }],
         layoutId: "1-1",
         boxes: [
           { x: 0, y: 0, w: 180, h: 160 },
@@ -64,8 +64,7 @@ describe("save", () => {
     setState({
       videoId,
       phase: "trimming",
-      start: 12,
-      end: 60,
+      segments: [{ start: 12, end: 60 }],
       layoutId: "1-1",
       boxes: [],
       source: { w: 3840, h: 2160 },
@@ -73,8 +72,7 @@ describe("save", () => {
     save();
 
     expect(readRaw(videoId)).toEqual({
-      start: 12,
-      end: 60,
+      segments: [{ start: 12, end: 60 }],
       starterTitle: "",
       layoutId: "1-1",
       boxes: [
@@ -99,8 +97,7 @@ describe("save", () => {
     localStorage.setItem(
       `vstack:${videoId}`,
       JSON.stringify({
-        start: 1,
-        end: 10,
+        segments: [{ start: 1, end: 10 }],
         boxTop: { x: 0, y: 0, w: 180, h: 160 },
         boxBottom: { x: 5, y: 5, w: 180, h: 160 },
         sourceW: 1920,
@@ -111,8 +108,7 @@ describe("save", () => {
     setState({
       videoId,
       phase: "trimming",
-      start: 2,
-      end: 20,
+      segments: [{ start: 2, end: 20 }],
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
       source: { w: 3840, h: 2160 },
@@ -123,8 +119,7 @@ describe("save", () => {
     // from the written record, not merely that `boxes` was added alongside
     // them.
     expect(readRaw(videoId)).toEqual({
-      start: 2,
-      end: 20,
+      segments: [{ start: 2, end: 20 }],
       starterTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [
@@ -142,8 +137,7 @@ describe("save", () => {
     setState({
       videoId,
       phase: "framing",
-      start: 1,
-      end: 9,
+      segments: [{ start: 1, end: 9 }],
       layoutId: "1-1",
       boxes: [
         { x: 1, y: 1, w: 180, h: 160 },
@@ -154,8 +148,7 @@ describe("save", () => {
     save();
 
     expect(readRaw(videoId)).toEqual({
-      start: 1,
-      end: 9,
+      segments: [{ start: 1, end: 9 }],
       starterTitle: "",
       layoutId: "1-1",
       boxes: [
@@ -176,8 +169,7 @@ describe("save", () => {
     localStorage.setItem(
       `vstack:${videoId}`,
       JSON.stringify({
-        start: 3,
-        end: 30,
+        segments: [{ start: 3, end: 30 }],
         layoutId: "2v-1",
         boxes: [
           { x: 5, y: 5, w: 1080, h: 480 },
@@ -191,8 +183,7 @@ describe("save", () => {
     setState({
       videoId,
       phase: "framing",
-      start: 4,
-      end: 40,
+      segments: [{ start: 4, end: 40 }],
       layoutId: "2v-1",
       boxes: [{ x: 99, y: 99, w: 1080, h: 480 }], // only the first, so far
       source: { w: 1920, h: 1080 },
@@ -200,8 +191,7 @@ describe("save", () => {
     save();
 
     expect(readRaw(videoId)).toMatchObject({
-      start: 4,
-      end: 40,
+      segments: [{ start: 4, end: 40 }],
       layoutId: "2v-1",
       boxes: [
         { x: 5, y: 5, w: 1080, h: 480 },
@@ -216,8 +206,7 @@ describe("save", () => {
     setState({
       videoId,
       phase: "trimming",
-      start: 3,
-      end: 30,
+      segments: [{ start: 3, end: 30 }],
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
       source: { w: 0, h: 0 },
@@ -225,8 +214,7 @@ describe("save", () => {
 
     expect(() => save()).not.toThrow();
     expect(readRaw(videoId)).toEqual({
-      start: 3,
-      end: 30,
+      segments: [{ start: 3, end: 30 }],
       starterTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
@@ -242,8 +230,7 @@ describe("save", () => {
     setState({
       videoId,
       phase: "trimming",
-      start: 1,
-      end: 2,
+      segments: [{ start: 1, end: 2 }],
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
       source: { w: 0, h: 0 },
@@ -251,8 +238,7 @@ describe("save", () => {
 
     expect(() => save()).not.toThrow();
     expect(readRaw(videoId)).toEqual({
-      start: 1,
-      end: 2,
+      segments: [{ start: 1, end: 2 }],
       starterTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
@@ -273,8 +259,7 @@ describe("save", () => {
       videoId,
       phase: "framing",
       voice: "Mai Anh",
-      start: 1,
-      end: 9,
+      segments: [{ start: 1, end: 9 }],
       layoutId: "1-1",
       boxes: [
         { x: 1, y: 1, w: 180, h: 160 },
@@ -307,8 +292,7 @@ describe("save", () => {
       videoId,
       phase: "trimming",
       starterTitle: "Ăn cơm chưa bạn ơi",
-      start: 2,
-      end: 20,
+      segments: [{ start: 2, end: 20 }],
       layoutId: "1-1",
       boxes: [],
       source: { w: 3840, h: 2160 },
@@ -316,8 +300,7 @@ describe("save", () => {
     save();
 
     expect(readRaw(videoId)).toEqual({
-      start: 2,
-      end: 20,
+      segments: [{ start: 2, end: 20 }],
       starterTitle: "Ăn cơm chưa bạn ơi",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
@@ -352,8 +335,7 @@ describe("restore", () => {
     localStorage.setItem(
       `vstack:${videoId}`,
       JSON.stringify({
-        start: 7,
-        end: 70,
+        segments: [{ start: 7, end: 70 }],
         boxTop: { x: 0, y: 0, w: 180, h: 160 },
         boxBottom: { x: 1, y: 1, w: 180, h: 160 },
         sourceW: 1920,
@@ -362,8 +344,7 @@ describe("restore", () => {
     );
 
     expect(restore(videoId, { w: 1920, h: 1080 })).toEqual({
-      start: 7,
-      end: 70,
+      segments: [{ start: 7, end: 70 }],
       starterTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [
@@ -383,8 +364,7 @@ describe("restore", () => {
     localStorage.setItem(
       `vstack:${videoId}`,
       JSON.stringify({
-        start: 2,
-        end: 20,
+        segments: [{ start: 2, end: 20 }],
         layoutId: "1-1",
         boxes: [
           { x: 3, y: 3, w: 180, h: 160 },
@@ -398,8 +378,7 @@ describe("restore", () => {
     );
 
     expect(restore(videoId, { w: 1920, h: 1080 })).toEqual({
-      start: 2,
-      end: 20,
+      segments: [{ start: 2, end: 20 }],
       starterTitle: "",
       layoutId: "1-1",
       boxes: [
@@ -415,8 +394,7 @@ describe("restore", () => {
     localStorage.setItem(
       `vstack:${videoId}`,
       JSON.stringify({
-        start: 7,
-        end: 70,
+        segments: [{ start: 7, end: 70 }],
         layoutId: "2h-1",
         boxes: [
           { x: 0, y: 0, w: 540, h: 960 },
@@ -431,8 +409,7 @@ describe("restore", () => {
     // A re-fetch at a different resolution costs the boxes — rects are
     // stored in source pixels — but must not cost the layout choice.
     expect(restore(videoId, { w: 1280, h: 720 })).toEqual({
-      start: 7,
-      end: 70,
+      segments: [{ start: 7, end: 70 }],
       starterTitle: "",
       layoutId: "2h-1",
       boxes: [],
@@ -445,8 +422,7 @@ describe("restore", () => {
     localStorage.setItem(
       `vstack:${videoId}`,
       JSON.stringify({
-        start: 0,
-        end: 5,
+        segments: [{ start: 0, end: 5 }],
         layoutId: "2v-1", // 3 cells
         boxes: [{ x: 0, y: 0, w: 180, h: 160 }], // 1 box
         sourceW: 1920,
@@ -466,8 +442,7 @@ describe("restore", () => {
     localStorage.setItem(
       `vstack:${videoId}`,
       JSON.stringify({
-        start: 0,
-        end: 5,
+        segments: [{ start: 0, end: 5 }],
         layoutId: "2h-1",
         boxes: [
           { x: 0, y: 0, w: 180, h: 160 }, // 9:8 — wrong for a 9:16 cell
@@ -489,8 +464,7 @@ describe("restore", () => {
     localStorage.setItem(
       `vstack:${videoId}`,
       JSON.stringify({
-        start: 0,
-        end: 5,
+        segments: [{ start: 0, end: 5 }],
         layoutId: "not-a-layout",
         boxes: [{ x: 0, y: 0, w: 180, h: 160 }],
         sourceW: 1920,
@@ -507,9 +481,77 @@ describe("restore", () => {
     const videoId = "boxes-not-array";
     localStorage.setItem(
       `vstack:${videoId}`,
-      JSON.stringify({ start: 0, end: 5, layoutId: "1-1", boxes: "nope", sourceW: 1920, sourceH: 1080 }),
+      JSON.stringify({
+        segments: [{ start: 0, end: 5 }],
+        layoutId: "1-1",
+        boxes: "nope",
+        sourceW: 1920,
+        sourceH: 1080,
+      }),
     );
     expect(restore(videoId, { w: 1920, h: 1080 })).toMatchObject({ boxes: [] });
+  });
+});
+
+describe("segments", () => {
+  it("round-trips a multi-segment selection", () => {
+    setState({ videoId: "vid00000001", duration: 600, segments: [
+      { start: 10, end: 20 },
+      { start: 40, end: 50 },
+    ] });
+    save();
+    expect(restore("vid00000001", null).segments).toEqual([
+      { start: 10, end: 20 },
+      { start: 40, end: 50 },
+    ]);
+  });
+
+  it("migrates a pre-segments {start, end} record into one segment", () => {
+    localStorage.setItem(
+      "vstack:vid00000002",
+      JSON.stringify({ start: 12, end: 34, starterTitle: "x" }),
+    );
+    expect(restore("vid00000002", null).segments).toEqual([{ start: 12, end: 34 }]);
+  });
+
+  it("migrates a record marked at the very start of the video", () => {
+    // The case a truthiness check gets wrong: `s.start ?? s.end` reads a
+    // stored `start: 0` as "nothing here" and drops a real mark. Pressing
+    // Set Start without moving the playhead produces exactly this record.
+    localStorage.setItem("vstack:vid00000003", JSON.stringify({ start: 0, end: 34 }));
+    expect(restore("vid00000003", null).segments).toEqual([{ start: 0, end: 34 }]);
+  });
+
+  it("drops a stored selection that is not valid", () => {
+    localStorage.setItem(
+      "vstack:vid00000004",
+      JSON.stringify({ segments: [{ start: 40, end: 20 }] }),
+    );
+    expect(restore("vid00000004", null).segments).toBeUndefined();
+  });
+
+  it("drops a stored selection with more than MAX_SEGMENTS parts", () => {
+    // localStorage is untrusted input. A hand-edited record with twenty
+    // individually legal parts would otherwise reach fetchWindow and fire
+    // twenty downloads before the server's own check ever ran.
+    const many = Array.from({ length: MAX_SEGMENTS + 1 }, (_v, i) => ({
+      start: i * 10,
+      end: i * 10 + 5,
+    }));
+    localStorage.setItem("vstack:vid00000005", JSON.stringify({ segments: many }));
+    expect(restore("vid00000005", null).segments).toBeUndefined();
+  });
+
+  it("never persists clipStart, clipEnd or clipDigest", () => {
+    // They belong to a fetched window, not to the video — the same reason
+    // clipUrl and windowStart are absent from the record.
+    setState({ videoId: "vid00000006", duration: 600, segments: [{ start: 1, end: 2 }],
+      clipStart: 0, clipEnd: 1, clipDigest: "a1b2c3d4" });
+    save();
+    const raw = readRaw("vid00000006") as Record<string, unknown>;
+    expect(raw).not.toHaveProperty("clipStart");
+    expect(raw).not.toHaveProperty("clipEnd");
+    expect(raw).not.toHaveProperty("clipDigest");
   });
 });
 
@@ -552,8 +594,7 @@ describe("save / restore — custom boxes", () => {
     localStorage.setItem(
       `vstack:${videoId}`,
       JSON.stringify({
-        start: 0,
-        end: 10,
+        segments: [{ start: 0, end: 10 }],
         layoutId: DEFAULT_LAYOUT_ID,
         boxes: [
           { x: 0, y: 100, w: 900, h: 800 },
@@ -581,8 +622,7 @@ describe("save / restore — custom boxes", () => {
     localStorage.setItem(
       `vstack:${videoId}`,
       JSON.stringify({
-        start: 0,
-        end: 10,
+        segments: [{ start: 0, end: 10 }],
         layoutId: DEFAULT_LAYOUT_ID,
         boxes: [
           { x: 0, y: 100, w: 900, h: 800 },
@@ -602,7 +642,12 @@ describe("save / restore — custom boxes", () => {
     const videoId = "customs-legacy";
     localStorage.setItem(
       `vstack:${videoId}`,
-      JSON.stringify({ start: 1, end: 2, layoutId: DEFAULT_LAYOUT_ID, sourceW: 0, sourceH: 0 }),
+      JSON.stringify({
+        segments: [{ start: 1, end: 2 }],
+        layoutId: DEFAULT_LAYOUT_ID,
+        sourceW: 0,
+        sourceH: 0,
+      }),
     );
     expect(restore(videoId, source).customs).toEqual([]);
   });
@@ -627,7 +672,7 @@ describe("savedTitle", () => {
   it("returns empty for a record that predates starter titles", () => {
     // A pre-starter-screen save has no `starterTitle` key at all. The row
     // falls back to the videoId rather than rendering "undefined".
-    localStorage.setItem("vstack:old12345678", JSON.stringify({ start: 1, end: 2 }));
+    localStorage.setItem("vstack:old12345678", JSON.stringify({ segments: [{ start: 1, end: 2 }] }));
     expect(savedTitle("old12345678")).toBe("");
   });
 

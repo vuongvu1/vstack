@@ -3,6 +3,8 @@ import type { CustomBox } from "./custom.ts";
 import { isValidBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
 import { DEFAULT_LAYOUT_ID, cellsOf, layoutById, ratioOf, resolveLayout } from "./layout.ts";
+import { MAX_SEGMENTS, isValidSegments } from "./segments.ts";
+import type { Segment } from "./segments.ts";
 
 export type Phase = "idle" | "trimming" | "framing" | "preview";
 
@@ -30,8 +32,21 @@ export type AppState = {
    *  to the server's fallback, which is the whole bug this split fixes. */
   voice: string;
   duration: number;
-  start: number;
-  end: number;
+  /** The kept parts of the source timeline, in source seconds. Always at
+   *  least one; one segment is exactly the old `start`/`end` pair. These are
+   *  what the trimming strip draws and what "Back to trim" restores — they
+   *  are NOT what `/api/export` receives, because a stitch's clip has its
+   *  own timeline. See `clipStart`/`clipEnd`. */
+  segments: Segment[];
+  /** The range of the fetched clip file that is the finished cut, reported
+   *  by `/api/window`. For one segment these equal the marks; for a stitch
+   *  they are `0` and the clip's probed duration. `doExport` sends these. */
+  clipStart: number;
+  clipEnd: number;
+  /** A stitch's segment digest, `""` for an ordinary clip. `/api/export`
+   *  needs it to rebuild the cache path. Not persisted — it belongs to a
+   *  fetched window, like `clipUrl`. */
+  clipDigest: string;
   clipUrl: string;
   windowStart: number;
   windowEnd: number;
@@ -79,8 +94,10 @@ const initial: AppState = {
   starterTitle: "",
   voice: "",
   duration: 0,
-  start: 0,
-  end: 0,
+  segments: [{ start: 0, end: 0 }],
+  clipStart: 0,
+  clipEnd: 0,
+  clipDigest: "",
   clipUrl: "",
   windowStart: 0,
   windowEnd: 0,
@@ -124,8 +141,7 @@ export function subscribe(fn: () => void): void {
 }
 
 type Saved = {
-  start: number;
-  end: number;
+  segments: Segment[];
   starterTitle: string;
   layoutId: string;
   boxes: Rect[];
@@ -134,10 +150,15 @@ type Saved = {
   sourceH: number;
 };
 
-/** The pre-layouts stored shape. Records in a real user's localStorage
- *  predate this feature, and dropping them would silently un-frame every
- *  video already framed. */
-type Legacy = { boxTop?: Rect | null; boxBottom?: Rect | null };
+/** The pre-layouts and pre-segments stored shapes. Records in a real user's
+ *  localStorage predate both features, and dropping them would silently
+ *  un-frame — or un-mark — every video already worked on. */
+type Legacy = {
+  boxTop?: Rect | null;
+  boxBottom?: Rect | null;
+  start?: number;
+  end?: number;
+};
 
 const key = (videoId: string) => `vstack:${videoId}`;
 
@@ -181,9 +202,21 @@ function readSaved(videoId: string): Saved | null {
   const migrated: Rect[] | null =
     s.boxes === undefined && s.boxTop && s.boxBottom ? [s.boxTop, s.boxBottom] : null;
 
+  // Migration: a record with no `segments` but with the old pair is a
+  // pre-segments save, and that pair is by definition one segment.
+  //
+  // Tested on `!== undefined`, NOT on truthiness: a record marked from the
+  // very start of the video stores `start: 0`, and `s.start ?? s.end` would
+  // read that as "nothing here" and drop a real mark. The one case a
+  // truthiness check gets wrong is the one a user hits by pressing Set Start
+  // without moving the playhead.
+  const legacySegments: Segment[] | null =
+    s.segments === undefined && (s.start !== undefined || s.end !== undefined)
+      ? [{ start: s.start ?? 0, end: s.end ?? 0 }]
+      : null;
+
   return {
-    start: s.start ?? 0,
-    end: s.end ?? 0,
+    segments: legacySegments ?? (Array.isArray(s.segments) ? s.segments : []),
     starterTitle: typeof s.starterTitle === "string" ? s.starterTitle : "",
     layoutId: s.layoutId ?? DEFAULT_LAYOUT_ID,
     boxes: migrated ?? (Array.isArray(s.boxes) ? s.boxes : []),
@@ -240,8 +273,7 @@ export function save(): void {
   const cells = cellsOf(layout);
   const framed = state.phase === "framing" && state.boxes.length === cells.length;
   const saved: Saved = {
-    start: state.start,
-    end: state.end,
+    segments: state.segments,
     // Persisted unconditionally, like the marks and for the same reason: it
     // is typed this session and always reflects it. The framing-only gate
     // below exists for values that are meaningless before /api/window has
@@ -305,8 +337,14 @@ export function restore(videoId: string, source: Size | null): Partial<AppState>
     s.customs.length <= MAX_CUSTOM &&
     s.customs.every((c) => isValidCustom(c, source));
   return {
-    start: Number.isFinite(s.start) ? s.start : initial.start,
-    end: Number.isFinite(s.end) ? s.end : initial.end,
+    // The same validator the server runs on the wire. The count is bounded
+    // as well as each element's shape, the way the boxes above are bounded
+    // by their layout's cell count: a hand-edited record with twenty legal
+    // parts would otherwise mount, preview, and fire twenty downloads
+    // before /api/window's own check ever ran. `undefined` — not a
+    // fallback — so main.ts's `?? initial` decides what an unusable record
+    // means, which is what every other field here already does.
+    segments: isValidSegments(s.segments, Number.POSITIVE_INFINITY) ? s.segments : undefined,
     starterTitle: s.starterTitle,
     layoutId: layout ? layout.id : DEFAULT_LAYOUT_ID,
     boxes: usable ? s.boxes : [],
