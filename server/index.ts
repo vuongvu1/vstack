@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import type { Rect } from "../src/geometry.ts";
 import { layoutById } from "../src/layout.ts";
 import type { CustomBox } from "../src/custom.ts";
+import { MAX_SEGMENTS, isValidSegments } from "../src/segments.ts";
 import { HttpError } from "./errors.ts";
 import {
   OUT_DIR,
@@ -323,12 +324,21 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.url === "/api/window") {
     const body = await json<Record<string, unknown>>(req);
     const videoId = videoIdFrom(str(body.videoId, "videoId"));
-    const start = num(body.start, "start");
-    const end = num(body.end, "end");
     const duration = num(body.duration, "duration");
     if (!videoId) return send(res, 400, { error: "Bad video id." });
-    if (!(end > start)) return send(res, 400, { error: "End must be after start." });
-    return send(res, 200, await fetchWindow(videoId, start, end, duration));
+    // Shape and legality in one call, before any subprocess spawns — this is
+    // the same split validator `restore` runs on the client, so a selection
+    // that reaches here has already been checked once and is checked again
+    // because localStorage and the wire are both untrusted input.
+    const segments = body.segments;
+    if (!isValidSegments(segments, duration)) {
+      return send(res, 400, {
+        error:
+          `Segments must be 1 to ${MAX_SEGMENTS} non-overlapping ranges, ` +
+          `in order, inside [0, ${duration}].`,
+      });
+    }
+    return send(res, 200, await fetchWindow(videoId, segments, duration));
   }
 
   // The idle screen's second way in: everything already in `media/`, so a
@@ -348,6 +358,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const titlePng = png(raw.titlePng, "titlePng");
     const layoutId = str(raw.layoutId, "layoutId");
     const voiceName = str(raw.voice, "voice");
+    // The one client-supplied component of a cache path this route accepts,
+    // and it is not a path: exactly 8 lowercase hex characters, which cannot
+    // traverse, cannot escape MEDIA_DIR, and is still assembled into a path
+    // by clipPath rather than used as one. It exists because a stitch's
+    // filename carries a component window bounds do not — and the server
+    // cannot recompute it, because the `listClips` reopen path has no
+    // segments to hash. Same posture as `isOutName`, narrower alphabet.
+    const digestRaw = raw.digest ?? "";
+    if (typeof digestRaw !== "string" || (digestRaw !== "" && !/^[0-9a-f]{8}$/.test(digestRaw))) {
+      return send(res, 400, { error: "Bad digest." });
+    }
+    const digest = digestRaw;
     // Shape is checked here; legality (integers, per-cell ratio, in-bounds)
     // is checked below via assertBoxes/isValidBox, which safely reject null,
     // non-arrays, non-objects and non-integers instead of throwing a
@@ -381,12 +403,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // Window bounds in, never a path: the cache filename is reconstructed
     // here from videoId + window bounds, so there is no client-supplied
     // path to validate for traversal.
-    const input = clipPath(videoId, windowStart, windowEnd);
+    const input = clipPath(videoId, windowStart, windowEnd, digest);
     if (!existsSync(input)) {
       return send(res, 404, {
         error:
-          `Window ${windowStart}-${windowEnd} for ${videoId} is not cached. ` +
-          "Re-fetch it via /api/window before exporting.",
+          `Window ${windowStart}-${windowEnd}${digest === "" ? "" : `-${digest}`} ` +
+          `for ${videoId} is not cached. Re-fetch it via /api/window before exporting.`,
       });
     }
     const source = await probeFile(input);
