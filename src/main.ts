@@ -46,6 +46,13 @@ import {
   setState,
   subscribe,
 } from "./state.ts";
+import { peaks } from "./waveform.ts";
+
+declare global {
+  interface Window {
+    webkitOfflineAudioContext?: typeof OfflineAudioContext;
+  }
+}
 
 const appEl = document.querySelector<HTMLDivElement>("#app");
 if (!appEl) throw new Error("#app missing");
@@ -757,6 +764,87 @@ let sourceEditor: EditorHandle | null = null;
 // output overlay only exists while there is at least one piece.
 let outEditor: EditorHandle | null = null;
 
+/** How many buckets the clip is reduced to. Fixed rather than matched to the
+ *  canvas width so a resize redraws from the same envelope instead of
+ *  re-decoding megabytes of audio; 900 is comfortably above any width this
+ *  bar reaches, and `drawWave` samples down from it per pixel. */
+const WAVE_BUCKETS = 900;
+
+/** The framing clip's peak envelope, and the clip URL it came from. Cached
+ *  module-scoped for the same reason `framingFor` is: this bar is rebuilt on
+ *  every render, and decoding per render would re-fetch and re-decode the
+ *  same megabytes each time. */
+let wavePeaks: Float32Array | null = null;
+let waveFor = "";
+/** Disconnected and replaced on every render — the bar is rebuilt each time,
+ *  so an observer per built canvas would otherwise accumulate one per
+ *  render for the life of the phase. */
+let waveResize: ResizeObserver | null = null;
+
+/** Decodes the local clip's audio into a peak envelope, then re-renders.
+ *
+ *  Through an 8 kHz *mono* OfflineAudioContext rather than a live
+ *  AudioContext: `decodeAudioData` resamples to its context's own rate, so
+ *  this bounds the decode at ~8000 floats per second of clip regardless of
+ *  the source's 44.1 kHz stereo. A ten-minute clip costs ~19 MB of
+ *  Float32Array instead of the ~230 MB a native-rate stereo decode would.
+ *
+ *  Every failure is swallowed and leaves the strip flat. A clip with no
+ *  audio track is a real case this app already handles at export
+ *  (`hasAudio`), and the waveform is a nicety: it must never block trimming,
+ *  dragging or Export. */
+async function loadWave(clipUrl: string): Promise<void> {
+  if (waveFor === clipUrl) return;
+  waveFor = clipUrl;
+  wavePeaks = null;
+  try {
+    const res = await fetch(clipUrl);
+    if (!res.ok) return;
+    const bytes = await res.arrayBuffer();
+    const Ctor = window.OfflineAudioContext ?? window.webkitOfflineAudioContext;
+    if (!Ctor) return;
+    // length 1: this context is never rendered, only used to decode.
+    const decoded = await new Ctor(1, 1, 8000).decodeAudioData(bytes);
+    // A clip that raced a phase change while decoding must not paint over
+    // whatever is on screen now.
+    if (waveFor !== clipUrl) return;
+    wavePeaks = peaks(decoded.getChannelData(0), WAVE_BUCKETS);
+  } catch {
+    /* No audio track, an unsupported decode, a failed read: flat strip. */
+    return;
+  }
+  render();
+}
+
+/** Paints the envelope as a centred amplitude band.
+ *
+ *  The accent is read off the element rather than hardcoded, so the strip
+ *  follows the CMD+Shift+0 dark theme the way every other surface does —
+ *  canvas cannot read a custom property any other way. */
+function drawWave(canvas: HTMLCanvasElement): void {
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  if (w === 0 || h === 0) return;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  const g = canvas.getContext("2d");
+  if (!g) return;
+  g.scale(dpr, dpr);
+  g.clearRect(0, 0, w, h);
+  const env = wavePeaks;
+  if (!env || env.length === 0) return;
+  g.fillStyle = getComputedStyle(canvas).getPropertyValue("--blue-8").trim() || "#0090ff";
+  const mid = h / 2;
+  for (let x = 0; x < w; x++) {
+    const b = Math.min(env.length - 1, Math.floor((x * env.length) / w));
+    const amp = (env[b] ?? 0) * mid;
+    // At least 1px tall, so silence reads as a centre line rather than a
+    // hole in the strip.
+    g.fillRect(x, mid - amp, 1, Math.max(1, amp * 2));
+  }
+}
+
 /** The finished export, played from `/out/<name>`. Like the framing <video>
  *  it lives permanently in outSlot and is only ever hidden — see the
  *  module-level comment on the persistent shell. */
@@ -826,6 +914,13 @@ function ensureFraming(): void {
   // Only on a genuine clip change: assigning the same src reloads the
   // element and restarts playback, which a layout switch must not do.
   if (!sameClip) videoEl.src = s.clipUrl;
+  // Fire-and-forget: the waveform is a nicety and must never gate the phase,
+  // so this is deliberately not awaited and every failure inside it is
+  // swallowed. `loadWave` no-ops when the clip URL has not changed, which is
+  // what makes it safe on the layout-switch path — that path reaches here
+  // with `sameClip` true and must not re-decode (nor, per the guard above,
+  // reassign video.src).
+  void loadWave(s.clipUrl);
 
   if (!canvasEl) {
     canvasEl = el("canvas");
