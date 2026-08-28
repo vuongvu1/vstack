@@ -28,9 +28,14 @@ layouts doc and the frame-borders doc without superseding either (cells,
 `ratioOf`, `xstack` and the paint-over-the-composite rule all survive
 intact), and supersedes the layouts doc's `/api/export` body once more —
 `customs` on top of `layoutId` + `boxes` + `starterTitle` + `titlePng` +
-`voice`. No spec covers the speech engine: every one of them describes macOS
-`say` and its `Linh` voice, which this codebase no longer uses at all (see
-"the voice" below).
+`voice`, plus `docs/specs/2026-08-28-vstack-segments-design.md`, which covers
+multiple trim segments and a visible playhead and supersedes the 2026-08-20
+doc's one-`start`/`end`-pair trimming phase and `/api/window`'s body
+(`segments` + `duration`, not `start` + `end`), and supersedes the
+custom-boxes doc's `/api/export` body once more — an optional `digest` on top
+of everything else. No spec covers the speech engine: every one of them
+describes macOS `say` and its `Linh` voice, which this codebase no longer
+uses at all (see "the voice" below).
 `docs/plans/2026-08-20-vstack.md` is the historical build plan and carries
 inline "as built" corrections; treat it as a record, not as instructions.
 
@@ -41,7 +46,7 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 231 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 272 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -59,8 +64,9 @@ and the only remaining macOS dependency is `afplay` in `pnpm voices` and
 
 ```
 server/errors.ts   HttpError (status + message), toolError (stderr tail)
-server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, outName/outPath,
-                   isOutName, probeFile, buildFilter, assertBoxes, exportClip,
+server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
+                   outName/outPath, isOutName, probeFile, ConcatPart/
+                   concatClips, buildFilter, assertBoxes, exportClip,
                    firstFrame,
                    reportCache
 server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
@@ -84,6 +90,8 @@ server/ytdlp.ts    videoIdFrom, probe, fetchWindow, parseClipName, listClips
 server/index.ts    10 routes (9 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
+src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
+                   totalDuration
 src/layout.ts      nine layout presets, cellsOf, ratioOf, defaultBoxes
 src/custom.ts      CustomBox, MAX_CUSTOM/MIN_OUT_SIDE, outRatio, clampOut/
                    moveOut/resizeOut, resnapCrop, isValidOut/isValidCustom,
@@ -108,8 +116,11 @@ media/             clip cache (gitignored)
 ```
 
 Layering is strict and acyclic: `errors ← {ffmpeg, starter, youtube} ←
-{ytdlp, mask} ← index` on the server, `geometry ← {layout, custom} ← frame ←
-everything` on the client. `custom.ts` sits beside `layout.ts`, not above or
+{ytdlp, mask} ← index` on the server, `{geometry, segments} ← {layout,
+custom} ← frame ← everything` on the client. `segments.ts` sits at the very
+bottom beside `geometry.ts` and imports nothing — which is what lets the
+server import it directly too, the way `ytdlp.ts` already reaches across for
+`geometry.ts`'s `PAD`. `custom.ts` sits beside `layout.ts`, not above or
 below it, because a floating piece's ratio is its own rather than a cell's —
 it imports only `geometry.ts`, the same as `layout.ts` does, and never needs
 `cellsOf` or `ratioOf`. `frame.ts` does *not* import `custom.ts`, even though
@@ -329,6 +340,47 @@ corner arc — 16 on the two-cell default layout, 32 on a four-cell one — a
 difference the five-pixel spot check in `server/mask.test.ts` does not sample
 and so does not catch.
 
+**The framing phase must never learn that segments exist.** The cut is
+baked into the cached clip by `/api/window` — `fetchWindow` fetches each
+segment and `concatClips` stitches the kept ranges into one continuous file
+before the framing `<video>` ever sees it. Carrying segments to `/api/export`
+as well, instead of the clip-timeline `start`/`end` it already sends, would
+leave the framing `<video>` playing footage the export drops — the exact
+preview/export divergence this codebase treats as the cardinal failure,
+reintroduced at the one layer this design exists to keep it out of.
+
+**A segment is identified by which part contains an instant, never by exact
+`start` equality.** `normalize` merges overlapping parts, and a merged part
+keeps the *earlier* one's `start` — so `segs.findIndex(seg => seg.start ===
+t)` returns -1 after a backward merge, and a fallback there would silently
+aim the marking controls at an unrelated part. `segmentContaining` in
+`src/main.ts` is what both `+ Part` and `setMark` use instead, matching on
+containment of the whole edited/added range rather than a single point.
+`setMark` must also re-aim `activeSegment` at whatever `segmentContaining`
+returns *after* normalising: dragging a mark into a neighbour merges the two,
+so the active index can point at an untouched segment once the merge lands,
+even though the edited range's own identity survives inside the merged one.
+
+**`renderStrip`'s rAF loop is stopped in two places, and both are
+load-bearing.** `renderTrimming` stops the old loop before building its
+replacement — the ordinary re-render case. `render()` stops it and nulls the
+module-scoped handle whenever `phase` is not `trimming` — the departure
+case, the same way it already toggles `boxesLayer`/`outBoxesLayer` by phase.
+The normal flow (trim once, then frame, export, preview) never re-enters
+trimming, so nothing else ever calls the departure stop — without it the
+loop keeps `postMessage`-ing a hidden YouTube iframe every frame for the rest
+of the session, not just the rest of this visit to trimming.
+
+**`setMark` refuses an edit that would leave `end <= start`, rather than
+letting `normalize` handle it.** `normalize` *drops* a segment whose end is
+not after its start — the right behaviour for a merge, the wrong one for an
+edit in progress. Set End with the playhead sitting before the active part's
+own start would otherwise pass a doomed range straight to `normalize` and
+silently delete the very part the user was trying to adjust — the worst
+possible answer to an ordinary misclick. Refusing the edit outright leaves
+the strip exactly as it was, which reads as "that did nothing" instead of
+"that deleted your part".
+
 ## Gotchas that each cost real time
 
 **Never empty `sourceSlot` or `outSlot`.** They hold the trimming iframe,
@@ -343,9 +395,16 @@ the framing `<video>`, the crop overlay, the composite canvas, the output
 leaves `<name>.<uuid>.part.mp4` beside the finished clips, and that file is
 truncated by definition — listing it hands the framing phase a broken video
 that previews as a black canvas. `parseClipName`'s anchored
-`^(\d+)-(\d+)\.mp4$` is the whole guard (plus an `end > start` check, since
-`/api/export` rejects an empty window), and it is what `server/ytdlp.test.ts`
-pins down. Loosen it and the partial reappears as a row.
+`^(\d+)-(\d+)(?:-([0-9a-f]{8}))?\.mp4$` is the whole guard (plus an
+`end > start` check, since `/api/export` rejects an empty window), and it is
+what `server/ytdlp.test.ts` pins down — including cases for the digest form,
+a digest of the wrong length or alphabet, and a `.part.mp4` against the
+widened pattern. Loosen it and the partial reappears as a row. `listClips` must also
+build each row's path from the name `readdir` handed it, never by rebuilding
+one from the parsed bounds: `clipPath(videoId, windowStart, windowEnd)`
+silently drops a stitch's digest, so a multi-part clip would probe a file
+that does not exist, fail silently in the `probeFile` catch, and never be
+listed at all.
 
 **`cellsOf` order is load-bearing in four places that must agree:** the order boxes are stored in (`state.boxes`), the order the editor numbers them, the order the canvas preview draws them, and the order `xstack`'s `layout=` string lists positions. Reorder `cellsOf`'s traversal and all four silently disagree about which rect belongs to which cell.
 
@@ -422,9 +481,23 @@ are any customs — a layout with none keeps today's exact filename, so every
 mask cached before this feature shipped keeps hitting, and editing a custom's
 `out` rect changes the digest so it can never serve a stale border either.
 
-**`/api/export` takes window bounds, never a file path.** Its body is
-`videoId` + window/mark bounds + `layoutId` + `boxes` + `customs` +
-`starterTitle` + `titlePng` + `voice`. The server reconstructs the cache filename itself, so there is no client-supplied path to validate for traversal. The starter screen's `titlePng` is the one exception — an image the client rendered, because this machine's ffmpeg *cannot rasterise text at all* — so it is length-capped and checked against the PNG signature before it reaches ffmpeg. Keep both of those that way.
+**`/api/export` takes window bounds plus an optional 8-hex `digest`, still
+never a path.** Its body is `videoId` + window/mark bounds + `layoutId` +
+`boxes` + `customs` + `starterTitle` + `titlePng` + `voice` + `digest`. The
+server reconstructs the cache filename itself, so there is no client-supplied
+path to validate for traversal — except a stitch's filename carries a third
+component, `segmentDigest`'s hash of the segment bounds, that window bounds
+alone do not encode. Sending the segments themselves and recomputing the
+digest server-side would preserve "no client-supplied path component"
+exactly, but it breaks on the `listClips` reopen path: a video opened from
+the idle screen's dropdown was never cut in this session, so the client has
+no segments to hash. `digest` is validated against `/^[0-9a-f]{8}$/` — eight
+hex characters cannot traverse or escape `MEDIA_DIR`, `clipPath` still builds
+the actual path, and `listClips` hands back each row's digest for free so the
+reopen path always has one to send. The starter screen's `titlePng` is the
+other exception — an image the client rendered, because this machine's ffmpeg
+*cannot rasterise text at all* — so it is length-capped and checked against
+the PNG signature before it reaches ffmpeg. Keep all three of those that way.
 
 **This ffmpeg has no `drawtext`.** Homebrew 8.1.1 here is built without
 libfreetype, libass and librsvg; `ffmpeg -h filter=drawtext` says `Unknown
@@ -555,7 +628,7 @@ single-user tool; not something to fix here.
 
 ## Testing posture
 
-`geometry.ts`, `layout.ts` and `custom.ts` are the modules with exhaustive coverage, deliberately — their bugs are silent. `src/custom.test.ts` covers `clampOut`/`moveOut`/`resizeOut`'s even-snapping, `resizeOut`'s `MIN_OUT_SIDE` floor and frame bounds from every anchor corner, `clampOut`'s and `resnapCrop`'s idempotence under a repeated re-snap (`resnapCrop`'s also keeping the ratio exact), and `isValidOut`/`isValidCustom` against everything `clampOut`/`defaultCustom` can emit and everything illegal. `layout.test.ts` asserts the nine presets tile 1080×1920 exactly, that only the three documented cell shapes occur, and that `defaultBoxes` returns per-cell-valid boxes: a mis-tiled layout survives preview and only shows up as a seam in an exported clip. `server/ffmpeg.test.ts` shells out to real ffmpeg and asserts output pixels; it is the only thing proving the preview/export agreement from the ffmpeg side — now including the border, via white pixels in the seam and at a corner cut's diagonal against the source's colour just inside a piece, and now including a real export with one floating piece straddling a cell seam, asserting the piece's own colour survives the seam, the ring around it is white, and the stack's colour resumes just past the ring — and a second with TWO overlapping pieces cropped from different colour bands, which is the only end-to-end proof that the mask's walk is z-aware (the upper piece's nub and the upper half of its ring both land over the lower piece's window and read as that piece's own colour if it is not). `frame.test.ts` covers the window insets (every internal seam and frame margin
+`geometry.ts`, `layout.ts`, `custom.ts` and `segments.ts` are the modules with exhaustive coverage, deliberately — their bugs are silent. `src/custom.test.ts` covers `clampOut`/`moveOut`/`resizeOut`'s even-snapping, `resizeOut`'s `MIN_OUT_SIDE` floor and frame bounds from every anchor corner, `clampOut`'s and `resnapCrop`'s idempotence under a repeated re-snap (`resnapCrop`'s also keeping the ratio exact), and `isValidOut`/`isValidCustom` against everything `clampOut`/`defaultCustom` can emit and everything illegal. `src/segments.test.ts` covers `normalize` (idempotent, sorts, clamps, drops empties, merges overlaps), `isValidSegments` against everything `normalize` emits and everything illegal (empty, over `MAX_SEGMENTS`, unsorted, overlapping, `end <= start`, out of bounds, non-finite, non-array, `null`), and `totalDuration` against a known set. `layout.test.ts` asserts the nine presets tile 1080×1920 exactly, that only the three documented cell shapes occur, and that `defaultBoxes` returns per-cell-valid boxes: a mis-tiled layout survives preview and only shows up as a seam in an exported clip. `server/ffmpeg.test.ts` shells out to real ffmpeg and asserts output pixels; it is the only thing proving the preview/export agreement from the ffmpeg side — now including the border, via white pixels in the seam and at a corner cut's diagonal against the source's colour just inside a piece, now including a real export with one floating piece straddling a cell seam, asserting the piece's own colour survives the seam, the ring around it is white, and the stack's colour resumes just past the ring, and a second with TWO overlapping pieces cropped from different colour bands, which is the only end-to-end proof that the mask's walk is z-aware (the upper piece's nub and the upper half of its ring both land over the lower piece's window and read as that piece's own colour if it is not) — and now a real two-range `concatClips`, asserting the output's duration is the parts' sum and that a frame sampled from each half carries that part's own colour cropped from a different colour band, with the leg ordering mutation-tested (reversing the concat's input order fails the second sample), plus a part with no audio stood in with `anullsrc`, plus a non-square-SAR part, since a SAR mismatch is the failure `concat` is most likely to hit and it fails opaquely (`Nothing was written into output file`) rather than picking a side. `frame.test.ts` covers the window insets (every internal seam and frame margin
 exactly one gutter, adjacency decided on the *cells* because every pair of
 windows has a positive gap) and the mask's alpha, including the assertion that
 a window's square corner is opaque — the one that fails if `CORNER_RADIUS`
@@ -581,7 +654,7 @@ tail slot the voice leaves free, and the clip's own sound after the cut (the
 assertion that caught `hasAudio` reading the wrong ffprobe line). Each window
 is one where only that layer can be heard, so all four are load-bearing. `src/starter.ts` is DOM-driven and untested like the rest — it was
 verified by hand in a real browser and through a real export.
-`state.test.ts` covers the save-gating that guards against erasing framed boxes. `ytdlp.test.ts` covers `videoIdFrom`, the trust boundary that decides whether a subprocess spawns.
+`state.test.ts` covers the save-gating that guards against erasing framed boxes, and the `{start, end}` → `segments` migration: a stored old-shape record restores as one segment (tested on `!== undefined`, not truthiness, so a mark stored as `0` still migrates), and a stored `segments` array survives a round trip untouched. `ytdlp.test.ts` covers `videoIdFrom`, the trust boundary that decides whether a subprocess spawns, and the widened `CLIP_RE`: the digest form parses, a `.part.mp4` still does not, and a digest of the wrong length or alphabet (including uppercase) does not either.
 `src/defaults.test.ts` covers `defaultTitle` — that the tags survive a
 200-character starter title, that no input can exceed 100, and that the
 description template still carries a shorts tag so `buildSnippet`'s append
@@ -727,3 +800,11 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
 - Uploads land private and cannot be made public from here; that is Google's
   audit rule for unaudited API projects, not a missing feature. The endpoint
   also has its own ~100 uploads/day quota.
+- `.strip-range` is square-cornered on purpose, having dropped the
+  `--radius-3` it carried before multiple segments existed. A cut boundary is
+  a position, and a rounded end reads as a fade — several rounded ranges side
+  by side read as lozenges rather than cuts. That is exactly why `.strip`
+  itself gained `overflow: hidden`: without it, a part marked at 0 or ending
+  at the video's duration paints its square corner past the track's own
+  rounded one — a notch sticking out at exactly the two positions a user is
+  most likely to mark.
