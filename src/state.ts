@@ -3,7 +3,7 @@ import type { CustomBox } from "./custom.ts";
 import { isValidBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
 import { DEFAULT_LAYOUT_ID, cellsOf, layoutById, ratioOf, resolveLayout } from "./layout.ts";
-import { MAX_SEGMENTS, isValidSegments } from "./segments.ts";
+import { isValidSegments } from "./segments.ts";
 import type { Segment } from "./segments.ts";
 
 export type Phase = "idle" | "trimming" | "framing" | "preview";

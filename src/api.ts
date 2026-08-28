@@ -1,5 +1,6 @@
 import type { Rect } from "./geometry.ts";
 import type { CustomBox } from "./custom.ts";
+import type { Segment } from "./segments.ts";
 
 export type ProbeResult = {
   videoId: string;
@@ -14,6 +15,16 @@ export type WindowResult = {
   clipUrl: string;
   windowStart: number;
   windowEnd: number;
+  /** The range of the *clip file* that is the finished cut. For a single
+   *  segment these are the user's marks, so the export request is
+   *  unchanged; for a stitch the clip has its own timeline and these are
+   *  `0` and its probed duration. `doExport` sends these, never the marks. */
+  clipStart: number;
+  clipEnd: number;
+  /** A stitch's segment digest, `""` for an ordinary single-range clip.
+   *  `/api/export` needs it to rebuild the cache path, and cannot recompute
+   *  it — the `listClips` reopen path has no segments to hash. */
+  digest: string;
   width: number;
   height: number;
 };
@@ -70,11 +81,10 @@ export async function probe(url: string): Promise<ProbeResult> {
 
 export async function fetchWindow(
   videoId: string,
-  start: number,
-  end: number,
+  segments: Segment[],
   duration: number,
 ): Promise<WindowResult> {
-  return (await post("/api/window", { videoId, start, end, duration }))
+  return (await post("/api/window", { videoId, segments, duration }))
     .json() as Promise<WindowResult>;
 }
 
@@ -102,6 +112,10 @@ export async function exportClip(body: {
   windowEnd: number;
   start: number;
   end: number;
+  /** A stitch's segment digest, `""` for an ordinary clip. The server
+   *  rebuilds the cache path from window bounds plus this — it is 8 hex
+   *  characters, never a path. */
+  digest: string;
   /** The starter screen's title. Spoken aloud by the server, names the
    *  downloaded file, and required. */
   starterTitle: string;

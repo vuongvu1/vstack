@@ -30,6 +30,7 @@ import {
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
+import { normalize, totalDuration } from "./segments.ts";
 import { renderTitleArt } from "./starter.ts";
 import type { AppState } from "./state.ts";
 import {
@@ -65,6 +66,26 @@ function el<K extends keyof HTMLElementTagNameMap>(
   if (style !== undefined) node.style.cssText = style;
   node.append(...children);
   return node;
+}
+
+/** The first mark and the last, for the read-only places that describe the
+ *  cut as a span — badges, the over-3-minutes warning, the strip's own
+ *  extent. Under `noUncheckedIndexedAccess` both ends need a fallback; an
+ *  empty `segments` is unreachable (state starts with one and `− Part` is
+ *  disabled at one) but is not worth an assertion. */
+function firstMark(s: AppState): number {
+  return s.segments[0]?.start ?? 0;
+}
+
+function lastMark(s: AppState): number {
+  return s.segments[s.segments.length - 1]?.end ?? 0;
+}
+
+/** The kept length — what actually decides whether this is too long for a
+ *  Short. NOT `lastMark − firstMark`: a two-part cut with a two-minute gap
+ *  between the parts spans four minutes and keeps forty seconds. */
+function keptLength(s: AppState): number {
+  return totalDuration(s.segments);
 }
 
 // Built once. render() never replaces these nodes: removing an <iframe>'s
@@ -124,7 +145,11 @@ async function load(url: string): Promise<void> {
       // numbers — probe can report a resolution the actual download never
       // delivers, and crop rects are stored in the delivered clip's pixels.
       setState({ busy: "Fetching clip…" });
-      const win = await api.fetchWindow(info.videoId, 0, info.duration, info.duration);
+      const win = await api.fetchWindow(
+        info.videoId,
+        [{ start: 0, end: info.duration }],
+        info.duration,
+      );
       // Mirrors openWindow() below: boxes are stored in the clip's real
       // fetched pixels, so restoring them requires that resolution, not
       // probe's informational one — and it must happen before entering
@@ -136,11 +161,13 @@ async function load(url: string): Promise<void> {
         videoId: info.videoId,
         title: info.title,
         duration: info.duration,
-        start: 0,
-        end: info.duration,
+        segments: [{ start: 0, end: info.duration }],
         clipUrl: win.clipUrl,
         windowStart: win.windowStart,
         windowEnd: win.windowEnd,
+        clipStart: win.clipStart,
+        clipEnd: win.clipEnd,
+        clipDigest: win.digest,
         source,
         layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
         boxes: saved.boxes ?? [],
@@ -157,8 +184,11 @@ async function load(url: string): Promise<void> {
       title: info.title,
       duration: info.duration,
       source: { w: info.width, h: info.height },
-      start: saved.start ?? 0,
-      end: saved.end ?? info.duration,
+      // Normalised against the real duration: `restore` validates shape and
+      // count but has no duration to clamp to (it runs before probe on the
+      // cached-clip path), so a record saved against a different video's
+      // length would otherwise reach /api/window and 400.
+      segments: normalize(saved.segments ?? [{ start: 0, end: info.duration }], info.duration),
       phase: "trimming",
     });
   });
@@ -220,7 +250,7 @@ function ensureSourcePlayer(videoId: string): void {
       player = p;
       sourceIframe = sourceSlot.querySelector("iframe");
       const cur = getState();
-      if (cur.start > 0) p.seekTo(cur.start);
+      if (firstMark(cur) > 0) p.seekTo(firstMark(cur));
       render(); // player just went null -> ready; refresh the disabled state
     })
     .catch((err: unknown) => {
@@ -314,17 +344,24 @@ function renderTrimming(): Node[] {
   const ready = player !== null;
   const failed = playerFailed === s.videoId;
 
+  // ponytail: single-segment stopgap for Task 9, which replaces Set
+  // Start/Set End with real multi-part controls (+ Part, − Part, segment
+  // chips). Until then `s.segments` is always length 1, so a mark rewrites
+  // that one segment's start or end and leaves the other bound as-is —
+  // exactly the old start/end pair's behaviour.
   const setStart = el("button", { textContent: "Set Start", disabled: !ready });
   setStart.onclick = () => {
     if (!player) return;
-    setState({ start: clampMark(player.currentTime(), s.duration) });
+    const start = clampMark(player.currentTime(), s.duration);
+    setState({ segments: [{ start, end: lastMark(s) }] });
     save();
   };
 
   const setEnd = el("button", { textContent: "Set End", disabled: !ready });
   setEnd.onclick = () => {
     if (!player) return;
-    setState({ end: clampMark(player.currentTime(), s.duration) });
+    const end = clampMark(player.currentTime(), s.duration);
+    setState({ segments: [{ start: firstMark(s), end }] });
     save();
   };
 
@@ -372,8 +409,8 @@ function renderTrimming(): Node[] {
   // unset end is 0, and a *set* end of 0 would be an empty trim. Start
   // needs no such gate — an unset start is 0, which is also where the trim
   // genuinely begins, so the button is never wrong, only redundant.
-  const toStart = jump("⇤ Start", s.start, true);
-  const toEnd = jump("End ⇥", s.end, s.end > 0);
+  const toStart = jump("⇤ Start", firstMark(s), true);
+  const toEnd = jump("End ⇥", lastMark(s), lastMark(s) > 0);
 
   // Fine seeking. YouTube's own arrow keys move 5s, which is coarser than a
   // cut needs — and the iframe only hears them when it has focus, which it
@@ -406,10 +443,10 @@ function renderTrimming(): Node[] {
 
   const marks = el("span", {
     className: "badge",
-    textContent: `${clock(s.start)} → ${clock(s.end)}`,
+    textContent: `${clock(firstMark(s))} → ${clock(lastMark(s))}`,
   });
 
-  const long = s.end - s.start > SHORTS_MAX_S;
+  const long = keptLength(s) > SHORTS_MAX_S;
   const warn = long
     ? el("span", {
         className: "badge badge-warn",
@@ -420,7 +457,7 @@ function renderTrimming(): Node[] {
   const go = el("button", {
     className: "btn-solid",
     textContent: "Continue",
-    disabled: !ready || !(s.end > s.start),
+    disabled: !ready || !(keptLength(s) > 0),
   });
   go.onclick = () => void openWindow();
 
@@ -465,8 +502,8 @@ function renderTrimming(): Node[] {
       { className: "bar-row" },
       renderStrip({
         duration: s.duration,
-        start: s.start,
-        end: s.end,
+        start: firstMark(s),
+        end: lastMark(s),
         onSeek: (t) => player?.seekTo(t),
       }),
       marks,
@@ -485,13 +522,16 @@ function renderTrimming(): Node[] {
 async function openWindow(): Promise<void> {
   const s = getState();
   await guard("Fetching clip…", async () => {
-    const w = await api.fetchWindow(s.videoId, s.start, s.end, s.duration);
+    const w = await api.fetchWindow(s.videoId, s.segments, s.duration);
     const source = { w: w.width, h: w.height };
     const saved = restore(s.videoId, source);
     setState({
       clipUrl: w.clipUrl,
       windowStart: w.windowStart,
       windowEnd: w.windowEnd,
+      clipStart: w.clipStart,
+      clipEnd: w.clipEnd,
+      clipDigest: w.digest,
       source,
       layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
       boxes: saved.boxes ?? [],
@@ -528,11 +568,13 @@ function openClip(c: api.CachedClip): void {
     videoId: c.videoId,
     title: savedTitle(c.videoId) || c.videoId,
     duration: c.windowEnd,
-    start: c.windowStart,
-    end: c.windowEnd,
+    segments: [{ start: c.windowStart, end: c.windowEnd }],
     clipUrl: c.clipUrl,
     windowStart: c.windowStart,
     windowEnd: c.windowEnd,
+    clipStart: c.clipStart,
+    clipEnd: c.clipEnd,
+    clipDigest: c.digest,
     source,
     layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
     boxes: saved.boxes ?? [],
@@ -783,8 +825,11 @@ async function doExport(): Promise<void> {
       videoId: s.videoId,
       windowStart: s.windowStart,
       windowEnd: s.windowEnd,
-      start: s.start,
-      end: s.end,
+      // Clip time, not the marks: a stitch's clip has its own timeline. For
+      // a single segment these ARE the marks, so this request is unchanged.
+      start: s.clipStart,
+      end: s.clipEnd,
+      digest: s.clipDigest,
       starterTitle,
       titlePng: await renderTitleArt(starterTitle),
       layoutId: layout.id,
@@ -1044,9 +1089,9 @@ function renderFraming(): Node[] {
   // [start, end] by construction — and with marking confined to trimming,
   // nothing reachable from here can move them out of it. The server
   // re-validates the pair regardless.
-  const exportable = (text: string) => s.end > s.start && text.trim() !== "" && !s.busy;
+  const exportable = (text: string) => keptLength(s) > 0 && text.trim() !== "" && !s.busy;
 
-  const long = s.end - s.start > SHORTS_MAX_S;
+  const long = keptLength(s) > SHORTS_MAX_S;
   const download = el("button", {
     className: "btn-solid",
     textContent: "Export",
@@ -1086,7 +1131,13 @@ function renderFraming(): Node[] {
       el(
         "div",
         { className: "bar-end" },
-        el("span", { className: "badge", textContent: `${clock(s.start)} → ${clock(s.end)}` }),
+        el("span", {
+          className: "badge",
+          textContent:
+            s.segments.length === 1
+              ? `${clock(firstMark(s))} → ${clock(lastMark(s))}`
+              : `${s.segments.length} parts · ${clock(keptLength(s))}`,
+        }),
         el("span", {
           className: "badge",
           textContent: `source ${s.source.w}×${s.source.h}`,
