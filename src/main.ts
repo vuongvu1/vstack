@@ -31,6 +31,7 @@ import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
 import { MAX_SEGMENTS, isValidSegments, normalize, totalDuration } from "./segments.ts";
+import type { Segment } from "./segments.ts";
 import { renderTitleArt } from "./starter.ts";
 import type { AppState } from "./state.ts";
 import {
@@ -284,6 +285,29 @@ function clampMark(seconds: number, duration: number): number {
   return Math.min(Math.max(0, seconds), duration);
 }
 
+/** The index of the segment in `segs` that fully contains `[start, end]`,
+ *  falling back to the last index only if genuinely none does (unreachable
+ *  in practice — see below).
+ *
+ *  Shared by every place that has to re-find "the part I was just touching"
+ *  after a `normalize` call that may have merged it into a neighbour:
+ *  `normalize` can change both a segment's index *and* its exact bounds, so
+ *  neither a stale index nor an exact `start`/`end` match survives it.
+ *  Matching on containment of the *whole* edited/added range rather than a
+ *  single point also survives the one case a point match does not — two
+ *  segments touching exactly at the edited bound (which `normalize`
+ *  deliberately leaves unmerged), where a point membership test is
+ *  ambiguous between them but only one actually contains the whole range.
+ *
+ *  `normalize` only ever unions overlapping/touching input ranges into
+ *  connected components, so the range this is asked to find is always a
+ *  subset of exactly one output segment — the fallback exists only to
+ *  satisfy `noUncheckedIndexedAccess`, not because it is expected to fire. */
+function segmentContaining(segs: Segment[], start: number, end: number): number {
+  const i = segs.findIndex((seg) => seg.start <= start && seg.end >= end);
+  return i >= 0 ? i : Math.max(0, segs.length - 1);
+}
+
 // The pasted-timestamp text. It lives here rather than in AppState because
 // nothing about it is persisted, and `barSlot` is rebuilt on every render —
 // so the value has to survive that rebuild without ever causing one, the
@@ -297,7 +321,11 @@ let activeSegment = 0;
 
 // renderTrimming replaces the strip on every render, and the strip owns a
 // rAF loop now. Stopping the old one before building the new one is what
-// keeps a loop from reading a detached node for the life of the session.
+// keeps a loop from reading a detached node for the rest of *this* visit to
+// trimming — but renderTrimming only runs while `phase === "trimming"`, so
+// leaving the phase (Continue, and every phase after it) needs its own stop.
+// render() below does that, the same way it toggles boxesLayer/outBoxesLayer
+// by phase, since nothing calls back into renderTrimming to do it itself.
 let strip: { el: HTMLElement; stop(): void } | null = null;
 
 /** The paste-a-YouTube-timestamp affordance, shared by both marking phases.
@@ -365,7 +393,14 @@ function renderTrimming(): Node[] {
    *  Reads live state via getState(), never `s`: every path that writes
    *  segments goes through setState today, but this is the same hazard
    *  `+ Box` hit, and the cost of getting it wrong is a silently reverted
-   *  edit persisted by the save() on the next line. */
+   *  edit persisted by the save() on the next line.
+   *
+   *  Also re-aims `activeSegment` at whatever the edited bound landed in
+   *  after normalising: dragging a mark into a neighbour merges the two, so
+   *  the active *index* can point at an untouched segment afterwards even
+   *  though the active segment's own identity (the range containing the
+   *  edit) still exists — `segmentContaining` re-finds it instead of
+   *  trusting the index to have survived the merge. */
   const setMark = (which: "start" | "end") => {
     if (!player) return;
     const cur = getState();
@@ -380,7 +415,9 @@ function renderTrimming(): Node[] {
     // leaves the strip exactly as it was, which reads as "that did nothing".
     if (!(edited.end > edited.start)) return;
     const next = cur.segments.map((s2, i) => (i === active ? edited : s2));
-    setState({ segments: normalize(next, cur.duration) });
+    const normalized = normalize(next, cur.duration);
+    activeSegment = segmentContaining(normalized, edited.start, edited.end);
+    setState({ segments: normalized });
     save();
   };
 
@@ -501,13 +538,16 @@ function renderTrimming(): Node[] {
     if (!player) return;
     const cur = getState();
     const t = clampMark(player.currentTime(), cur.duration);
-    const next = normalize(
-      [...cur.segments, { start: t, end: Math.min(t + 5, cur.duration) }],
-      cur.duration,
-    );
-    // Found by identity of the bounds rather than by position: normalize
-    // sorts, so the new part is rarely last.
-    activeSegment = Math.max(0, next.findIndex((seg) => seg.start === t));
+    const added = { start: t, end: Math.min(t + 5, cur.duration) };
+    const next = normalize([...cur.segments, added], cur.duration);
+    // Found by containment of the whole added range, not by identity of its
+    // bounds: normalize can merge the new five-second span into an
+    // overlapping neighbour, which keeps the *neighbour's* start rather than
+    // `t` — an exact `seg.start === t` match would then find nothing and
+    // silently fall back to segment 0, aiming the marking controls at an
+    // unrelated part. `segmentContaining` re-finds whichever segment the
+    // added range ended up inside, merged or not.
+    activeSegment = segmentContaining(next, added.start, added.end);
     setState({ segments: next });
     save();
   };
@@ -1647,6 +1687,18 @@ function render(): void {
   // trim"), mixed with the other side's audio.
   if (sourceIframe) sourceIframe.hidden = s.phase !== "trimming";
   if (s.phase !== "trimming") player?.pause();
+  // The strip's rAF loop outlives renderTrimming's own return: nothing else
+  // calls renderTrimming once the phase moves on (Continue -> framing, and
+  // every phase after), so the strip-side `strip?.stop()` before a rebuild
+  // never runs again and the loop would otherwise keep polling the still-
+  // mounted YouTube iframe's currentTime and writing to a detached node
+  // forever. Stopped and cleared here, the same way boxesLayer/outBoxesLayer
+  // are handled by phase below, rather than left to whatever the next visit
+  // to trimming happens to do.
+  if (s.phase !== "trimming" && strip) {
+    strip.stop();
+    strip = null;
+  }
   // Same reasoning as sourceIframe above, but a <video> tolerates
   // detach/reattach fine — it just has no reason to move once it lives in
   // the persistent sourceSlot.
