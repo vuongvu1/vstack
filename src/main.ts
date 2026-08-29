@@ -1735,6 +1735,25 @@ function renderPreview(): Node[] {
   // Handed to the panel, which owns the title this is gated on.
   publishBtn = publish;
 
+  // Sits beside Studio rather than inside it: pasting the link into a chat
+  // is the next thing after an upload, and the only other way to get it is
+  // to open the video and copy the address bar. `/shorts/` and not
+  // `youtu.be/` because everything this tool makes is a Short, and that URL
+  // is what opens the Shorts player rather than the desktop one.
+  const copy = el("button", { textContent: "Copy link" });
+  // The label is the whole feedback channel — a clipboard write is invisible
+  // otherwise, and a callout for something this small reads as an error.
+  const flash = (text: string) => {
+    copy.textContent = text;
+    setTimeout(() => (copy.textContent = "Copy link"), 1200);
+  };
+  copy.onclick = () => {
+    void navigator.clipboard
+      .writeText(`https://www.youtube.com/shorts/${s.ytVideoId}`)
+      .then(() => flash("Copied"))
+      .catch(() => flash("Copy failed"));
+  };
+
   // Replaces Publish once the upload lands: the next step is on YouTube, and
   // uploading the same file twice is never what was meant.
   const studio = el("a", {
@@ -1771,7 +1790,13 @@ function renderPreview(): Node[] {
       // facts about the file and the three things you can do with it. Order
       // mirrors the framing bar — utility, then step back, then the action
       // that ends the phase.
-      el("div", { className: "bar-end" }, finder, back, published ? studio : publish),
+      el(
+        "div",
+        { className: "bar-end" },
+        finder,
+        back,
+        ...(published ? [copy, studio] : [publish]),
+      ),
     ),
   ];
 }

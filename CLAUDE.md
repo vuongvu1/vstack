@@ -245,7 +245,7 @@ the second is required by the API, and an upload without it is rejected.
 `defaultTitle` gives the starter title only `100 - len(TITLE_HASHTAGS) - 1`
 characters and puts the tags on the end. Concatenating first and slicing to
 100 afterwards cuts the *tail*, and the tail is the tags — a long Vietnamese
-title would upload ending in `#vtuber #vir`. A clipped title is one edit
+title would upload ending in `#vtubervn #vtuberv`. A clipped title is one edit
 away from fixed; a clipped hashtag reads as a typo to every viewer.
 
 **The preview URL carries the file's mtime.** The output name is stable
