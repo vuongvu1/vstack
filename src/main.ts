@@ -77,17 +77,18 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-/** The first mark and the last, for the read-only places that describe the
- *  cut as a span — badges, the over-3-minutes warning, the strip's own
- *  extent. Under `noUncheckedIndexedAccess` both ends need a fallback; an
- *  empty `segments` is unreachable (state starts with one and `− Part` is
- *  disabled at one) but is not worth an assertion. */
+/** Where the trimming player opens: the first mark, so a re-entered phase
+ *  starts at the cut rather than at the video. Under
+ *  `noUncheckedIndexedAccess` it needs a fallback; an empty `segments` is
+ *  unreachable (state starts with one and `− Part` is disabled at one) but
+ *  is not worth an assertion.
+ *
+ *  There is deliberately no `lastMark` beside it any more. It existed for
+ *  the framing badge, which now reads the cut instead — see the comment
+ *  there — and the trimming bar's own badge describes the *active* segment,
+ *  which is neither end of the whole span. */
 function firstMark(s: AppState): number {
   return s.segments[0]?.start ?? 0;
-}
-
-function lastMark(s: AppState): number {
-  return s.segments[s.segments.length - 1]?.end ?? 0;
 }
 
 // Built once. render() never replaces these nodes: removing an <iframe>'s
@@ -1551,9 +1552,22 @@ function renderFraming(): Node[] {
         { className: "bar-end" },
         el("span", {
           className: "badge",
+          // The CUT, never `firstMark`/`lastMark`. Those are the trimming
+          // phase's marks, and a framing trim moves `clipStart`/`clipEnd`
+          // without touching them — so this badge went on naming the
+          // untrimmed span while `doExport` sent the trimmed one and
+          // `outName` put the trimmed one in the filename. The bar claimed
+          // one range and the file on disk was another, which is exactly the
+          // preview/export divergence this codebase treats as the cardinal
+          // failure, showing up in prose instead of in pixels.
+          //
+          // Single range only: `clipStart`/`clipEnd` are source seconds
+          // there, so a clock reading means something. A stitch's are its own
+          // timeline, where an absolute time would be a lie — that branch
+          // shows a *length* instead, and `keptLength` is already the cut's.
           textContent:
             s.segments.length === 1
-              ? `${clock(firstMark(s))} → ${clock(lastMark(s))}`
+              ? `${clock(s.clipStart)} → ${clock(s.clipEnd)}`
               : `${s.segments.length} parts · ${clock(keptLength(s))}`,
         }),
         el("span", {
