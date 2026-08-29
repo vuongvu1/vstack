@@ -410,6 +410,41 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   pointer-events: none;
 }
 
+/* Play stacked over its "cut only" toggle, so the pair takes one column
+   beside the waveform. `align-items: start` keeps the label at the button's
+   own width rather than stretching it. */
+.transport {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-items: start;
+}
+
+/* A checkbox and its label, read as one control. The global `input` recipe
+   above is a *text field* — 32px tall, padded, on a field background behind
+   an inset border — and a checkbox inherits every part of that to its cost,
+   so this unwinds the four properties that do not belong on a box. What
+   replaces them is `accent-color` alone, which follows `.dark` on <html> for
+   free where a hand-drawn box would need a rule per theme. */
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 12px;
+  color: var(--slate-11);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.check input[type="checkbox"] {
+  height: auto;
+  padding: 0;
+  background: none;
+  box-shadow: none;
+  margin: 0;
+  accent-color: var(--blue-9);
+}
+.check:has(input:disabled) { opacity: 0.5; cursor: default; }
+
 /* The framing phase's own strip: the clip's waveform, the kept range's two
    handles, and the playhead. Hand-built rather than an <input type="range">
    for the reason the trimming strip is — a native range carries one thumb,

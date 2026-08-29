@@ -776,6 +776,37 @@ const WAVE_BUCKETS = 900;
  *  making. */
 const MIN_CLIP_S = 1;
 
+/** Whether Play covers the marked cut only, rather than the whole fetched
+ *  window. Module-scoped like `wavePeaks` below and for the same reason —
+ *  this bar is rebuilt on every render, so a local would reset with it.
+ *  Deliberately not in `AppState`: it names nothing the export carries, so
+ *  `save()` would have nothing to store and `restore` nothing to validate. */
+let playCutOnly = false;
+
+/** Play/pause the framing clip. Shared by the bar's own button and the
+ *  space-bar shortcut, because `playCutOnly` has to mean the same thing on
+ *  both paths — a toggle one control honours and the other ignores reads as
+ *  the checkbox being broken rather than as two controls.
+ *
+ *  Starting playback with the box ticked seeks into the cut whenever the
+ *  playhead sits outside it, which covers the ordinary case of pressing Play
+ *  again after the previous pass stopped on `clipEnd`. Live state, never a
+ *  render's snapshot: every handle drag writes through `setQuiet`. */
+function toggleClip(): void {
+  const v = videoEl;
+  if (v === null) return;
+  if (!v.paused) {
+    v.pause();
+    return;
+  }
+  if (playCutOnly) {
+    const s = getState();
+    const from = s.clipStart - s.windowStart;
+    if (v.currentTime < from || v.currentTime >= s.clipEnd - s.windowStart) v.currentTime = from;
+  }
+  void v.play();
+}
+
 /** The framing clip's peak envelope, and the clip URL it came from. Cached
  *  module-scoped for the same reason `framingFor` is: this bar is rebuilt on
  *  every render, and decoding per render would re-fetch and re-decode the
@@ -1262,6 +1293,25 @@ function renderFraming(): Node[] {
     title: "Play or pause the clip",
     disabled: !ready,
   });
+  // Stacked under Play rather than set beside it: the two are one control —
+  // play, and how much of it — and a column keeps the waveform on this row
+  // instead of pushing it onto a row of its own.
+  const cutOnly = el("input", { type: "checkbox", checked: playCutOnly, disabled: !ready });
+  cutOnly.onchange = () => {
+    playCutOnly = cutOnly.checked;
+  };
+  const transport = el(
+    "div",
+    { className: "transport" },
+    play,
+    el(
+      "label",
+      { className: "check", title: "Play the marked range only, and stop at its end" },
+      cutOnly,
+      el("span", { textContent: "Cut only" }),
+    ),
+  );
+
   // The clip's own strip: waveform, the kept range's handles, the playhead,
   // and click-to-seek. `s.clipStart`/`s.clipEnd` are in the same coordinate
   // system as `s.windowStart`/`s.windowEnd` — source seconds for a single
@@ -1308,15 +1358,21 @@ function renderFraming(): Node[] {
     // precisely because it has no such owner.
     v.ontimeupdate = () => {
       head.style.left = `${(100 * v.currentTime) / span}%`;
+      // The stop half of the cut-only toggle. ~4Hz can overshoot `clipEnd`
+      // by up to a quarter second before the pause lands, which is cheaper
+      // than a rAF loop and its two teardown sites for a difference nobody
+      // reviewing a cut can see. Live state: a handle drag moves `clipEnd`
+      // through `setQuiet`, so this render's snapshot would go on stopping
+      // at the mark the user just dragged away from.
+      if (playCutOnly && !v.paused && v.currentTime >= getState().clipEnd - s.windowStart) {
+        v.pause();
+      }
     };
     // The element may already be playing by the time a re-render builds
     // these: neither event fires again.
     play.textContent = v.paused ? "Play" : "Pause";
     head.style.left = `${(100 * v.currentTime) / span}%`;
-    play.onclick = () => {
-      if (v.paused) void v.play();
-      else v.pause();
-    };
+    play.onclick = toggleClip;
     // Click-to-seek on the strip body, matching the trimming strip. Handles
     // stop their own clicks below, so a drag never also seeks.
     wave.onclick = (e) => {
@@ -1500,7 +1556,7 @@ function renderFraming(): Node[] {
           : el("span"),
       ),
     ),
-    el("div", { className: "bar-row" }, play, wave),
+    el("div", { className: "bar-row" }, transport, wave),
     el(
       "div",
       { className: "bar-row" },
@@ -2135,8 +2191,7 @@ window.addEventListener("keydown", (e) => {
     else player.play();
   } else if (phase === "framing") {
     if (!videoEl) return;
-    if (videoEl.paused) void videoEl.play();
-    else videoEl.pause();
+    toggleClip();
   } else if (phase === "preview") {
     if (!outVideoEl) return;
     if (outVideoEl.paused) void outVideoEl.play();
