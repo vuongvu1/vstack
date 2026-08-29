@@ -1080,6 +1080,10 @@ async function doExport(): Promise<void> {
       end: s.clipEnd,
       digest: s.clipDigest,
       starterTitle,
+      // Sent raw, blank included: the server resolves blank to `starterTitle`,
+      // so the fallback is written once rather than on both sides of the wire.
+      // Only the *shown* title is rendered to art and only it names the file.
+      voiceTitle: s.voiceTitle.trim(),
       titlePng: await renderTitleArt(starterTitle),
       layoutId: layout.id,
       boxes,
@@ -1397,14 +1401,35 @@ function renderFraming(): Node[] {
   const title = el("input", {
     type: "text",
     placeholder: "Starter screen title (required)",
-    title: "Shown and read aloud before the clip",
+    title: "Shown on the starter screen, names the file, prefills the upload",
     ariaLabel: "Starter screen title",
-    // Grows to fill its row instead of carrying a `size`: it is the one field
-    // in this phase and the thing Export is gated on, so it gets the space.
+    // Grows to fill its row instead of carrying a `size`: it is the thing
+    // Export is gated on, so it gets the space. It shares the row with the
+    // voice field, which grows from the same basis — an even split.
     className: "field-grow",
     value: s.starterTitle,
     disabled: Boolean(s.busy),
   });
+
+  // What gets *said*, when that should differ from what is shown. Optional and
+  // deliberately gates nothing: blank falls back to the title above, resolved
+  // server-side. A title written for the eye — numbers, emoji, punctuation —
+  // reads badly aloud, and this is the escape hatch for that without changing
+  // the screen.
+  const voiceTitle = el("input", {
+    type: "text",
+    placeholder: "Spoken instead (optional)",
+    title: "Read aloud in place of the title. Blank reads the title itself.",
+    ariaLabel: "Spoken title",
+    className: "field-grow",
+    value: s.voiceTitle,
+    disabled: Boolean(s.busy),
+  });
+  // Quiet for the same reason the title field is — a notifying update per
+  // keystroke rebuilds this input and drops the caret. Nothing is gated on
+  // this value, so unlike the title's handler there is no button to flip.
+  voiceTitle.oninput = () => setQuiet({ voiceTitle: voiceTitle.value });
+  voiceTitle.onblur = () => save();
   // No window check here, but the reason has changed: this phase CAN now
   // move clipStart/clipEnd, so "marking is confined to trimming" no longer
   // holds. What holds instead is that the only thing that moves them is
@@ -1430,7 +1455,7 @@ function renderFraming(): Node[] {
   // render — so the button is flipped in place here. Without that it would
   // stay disabled until some unrelated setState happened along, which reads
   // as "Export is broken" rather than "type a title first".
-  const tryVoice = renderTryVoice(s, title);
+  const tryVoice = renderTryVoice(s, title, voiceTitle);
   title.oninput = () => {
     setQuiet({ starterTitle: title.value });
     download.disabled = !exportable(title.value);
@@ -1480,6 +1505,7 @@ function renderFraming(): Node[] {
       "div",
       { className: "bar-row" },
       title,
+      voiceTitle,
       renderVoicePicker(s),
       tryVoice,
       // Re-fetch first: it is the odd one out, a utility rather than a step,
@@ -1586,7 +1612,11 @@ let sampleUrl = "";
  *
  *  ponytail: no client-side cache, so re-trying the same title and voice pays
  *  the ~4.6s again. Add one keyed on `title + voice` the day that grates. */
-function renderTryVoice(s: AppState, titleField: HTMLInputElement): HTMLButtonElement {
+function renderTryVoice(
+  s: AppState,
+  titleField: HTMLInputElement,
+  voiceField: HTMLInputElement,
+): HTMLButtonElement {
   const button = el("button", {
     textContent: "▶ Try",
     title: "Hear the title in this voice",
@@ -1601,7 +1631,15 @@ function renderTryVoice(s: AppState, titleField: HTMLInputElement): HTMLButtonEl
     button.disabled = true;
     button.textContent = "…";
     void api
-      .say({ starterTitle: title, voice: currentVoice(getState()) })
+      .say({
+        starterTitle: title,
+        // Read off the live field rather than state for the same reason the
+        // title is: both are written with setQuiet, so `s` is stale by a
+        // keystroke. The server applies the same blank-means-the-title
+        // fallback the export does, so Try hears exactly what an export says.
+        voiceTitle: voiceField.value.trim(),
+        voice: currentVoice(getState()),
+      })
       .then((wav) => {
         // The previous sample's URL leaks otherwise: an object URL is held by
         // the document until it is revoked, not until the Audio is collected.

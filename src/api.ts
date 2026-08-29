@@ -119,6 +119,10 @@ export async function exportClip(body: {
   /** The starter screen's title. Spoken aloud by the server, names the
    *  downloaded file, and required. */
   starterTitle: string;
+  /** What to read aloud instead of `starterTitle`. `""` means "read
+   *  `starterTitle`" — the fallback is applied server-side, so this side
+   *  sends the field raw rather than resolving it twice. */
+  voiceTitle: string;
   /** The same title as a transparent 1080x1920 PNG, bare base64. Rendered
    *  here because the server's ffmpeg has no `drawtext` — see
    *  `renderTitleArt` in `starter.ts`. */
@@ -149,7 +153,11 @@ export async function voices(): Promise<{ voices: Voice[]; default: string }> {
 /** The title spoken in one voice, as a WAV, for the Try button. A blob rather
  *  than a URL because the sample is never written anywhere servable — the
  *  route answers the bytes and keeps nothing. */
-export async function say(body: { starterTitle: string; voice: string }): Promise<Blob> {
+export async function say(body: {
+  starterTitle: string;
+  voiceTitle: string;
+  voice: string;
+}): Promise<Blob> {
   return (await post("/api/say", body)).blob();
 }
 

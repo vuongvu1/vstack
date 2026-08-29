@@ -102,13 +102,26 @@ export function num(v: unknown, name: string): number {
  *  will cheerfully read a novel. */
 const TITLE_MAX = 200;
 
-export function readTitle(v: unknown): string {
-  const text = str(v, "starterTitle").trim();
-  if (text === "") throw new HttpError(400, "starterTitle must not be blank.");
+export function readTitle(v: unknown, name = "starterTitle"): string {
+  const text = str(v, name).trim();
+  if (text === "") throw new HttpError(400, `${name} must not be blank.`);
   if (text.length > TITLE_MAX) {
-    throw new HttpError(400, `starterTitle must be at most ${TITLE_MAX} characters.`);
+    throw new HttpError(400, `${name} must be at most ${TITLE_MAX} characters.`);
   }
   return text;
+}
+
+/** What the starter screen *reads aloud*, which need not be what it shows: a
+ *  title written for the eye reads badly, and the displayed one still names
+ *  the file and prefills the upload. Absent, null or blank means "say the
+ *  displayed title", so the common case sends nothing and every record and
+ *  request written before this field existed keeps working. When it is
+ *  present it goes through the same validator, because it reaches the same
+ *  engine. */
+export function readVoiceTitle(v: unknown, fallback: string): string {
+  if (v === undefined || v === null) return fallback;
+  if (typeof v === "string" && v.trim() === "") return fallback;
+  return readTitle(v, "voiceTitle");
 }
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -355,6 +368,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const start = num(raw.start, "start");
     const end = num(raw.end, "end");
     const starterTitle = readTitle(raw.starterTitle);
+    const voiceTitle = readVoiceTitle(raw.voiceTitle, starterTitle);
     const titlePng = png(raw.titlePng, "titlePng");
     const layoutId = str(raw.layoutId, "layoutId");
     const voiceName = str(raw.voice, "voice");
@@ -471,7 +485,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         main: body,
         title: art,
         voice: voicePath,
-        voiceSeconds: await speak(starterTitle, dir, voicePath, voiceName),
+        voiceSeconds: await speak(voiceTitle, dir, voicePath, voiceName),
         out: partial,
       });
       await rename(partial, out);
@@ -564,6 +578,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // title reaches an engine that would read a novel, and the voice reaches
     // a subprocess as argv.
     const starterTitle = readTitle(raw.starterTitle);
+    const voiceTitle = readVoiceTitle(raw.voiceTitle, starterTitle);
     const voiceName = str(raw.voice, "voice");
     if (!knownVoices().some((v) => v.name === voiceName)) {
       return send(res, 400, { error: `Unknown voice ${voiceName}.` });
@@ -575,7 +590,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // could ask for — the three reasons that Set exists. macOS sweeps it.
     try {
       const out = join(dir, "voice.wav");
-      await speak(starterTitle, dir, out, voiceName);
+      await speak(voiceTitle, dir, out, voiceName);
       const wav = await readFile(out);
       res.writeHead(200, { "content-type": "audio/wav", "content-length": wav.length });
       return void res.end(wav);

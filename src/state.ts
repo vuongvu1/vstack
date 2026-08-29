@@ -22,6 +22,13 @@ export type AppState = {
    *  export — the screen reads it aloud — and unrelated to `title`, which is
    *  YouTube's own and only names the downloaded file. */
   starterTitle: string;
+  /** What the starter screen READS ALOUD, when that should differ from what
+   *  it shows. Optional: `""` means "say `starterTitle`", which is resolved
+   *  server-side so the fallback lives in exactly one place. Never names the
+   *  file, never prefills the upload, never gates Export — those are all
+   *  `starterTitle`'s job, and this exists only because a title written for
+   *  the eye can read badly. */
+  voiceTitle: string;
   /** Which speech preset reads the starter title. Empty means "whatever the
    *  server's default is" — the name is not duplicated client-side, it
    *  arrives from /api/voices, so the two sides cannot drift apart.
@@ -92,6 +99,7 @@ const initial: AppState = {
   videoId: "",
   title: "",
   starterTitle: "",
+  voiceTitle: "",
   voice: "",
   duration: 0,
   segments: [{ start: 0, end: 0 }],
@@ -143,6 +151,7 @@ export function subscribe(fn: () => void): void {
 type Saved = {
   segments: Segment[];
   starterTitle: string;
+  voiceTitle: string;
   layoutId: string;
   boxes: Rect[];
   customs: CustomBox[];
@@ -218,6 +227,7 @@ function readSaved(videoId: string): Saved | null {
   return {
     segments: legacySegments ?? (Array.isArray(s.segments) ? s.segments : []),
     starterTitle: typeof s.starterTitle === "string" ? s.starterTitle : "",
+    voiceTitle: typeof s.voiceTitle === "string" ? s.voiceTitle : "",
     layoutId: s.layoutId ?? DEFAULT_LAYOUT_ID,
     boxes: migrated ?? (Array.isArray(s.boxes) ? s.boxes : []),
     customs: Array.isArray(s.customs) ? s.customs : [],
@@ -279,6 +289,9 @@ export function save(): void {
     // below exists for values that are meaningless before /api/window has
     // reported the clip's real size, which a title is not.
     starterTitle: state.starterTitle,
+    // Same unconditional persistence, same reason: it is typed this session
+    // beside the title it stands in for.
+    voiceTitle: state.voiceTitle,
     layoutId: framed ? layout.id : (prev?.layoutId ?? DEFAULT_LAYOUT_ID),
     boxes: framed ? state.boxes : (prev?.boxes ?? []),
     // Same gate as boxes, for the same reason: an `out` is frame space and
@@ -346,6 +359,7 @@ export function restore(videoId: string, source: Size | null): Partial<AppState>
     // means, which is what every other field here already does.
     segments: isValidSegments(s.segments, Number.POSITIVE_INFINITY) ? s.segments : undefined,
     starterTitle: s.starterTitle,
+    voiceTitle: s.voiceTitle,
     layoutId: layout ? layout.id : DEFAULT_LAYOUT_ID,
     boxes: usable ? s.boxes : [],
     customs: usableCustoms ? s.customs : [],

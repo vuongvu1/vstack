@@ -74,6 +74,7 @@ describe("save", () => {
     expect(readRaw(videoId)).toEqual({
       segments: [{ start: 12, end: 60 }],
       starterTitle: "",
+      voiceTitle: "",
       layoutId: "1-1",
       boxes: [
         { x: 0, y: 0, w: 180, h: 160 },
@@ -121,6 +122,7 @@ describe("save", () => {
     expect(readRaw(videoId)).toEqual({
       segments: [{ start: 2, end: 20 }],
       starterTitle: "",
+      voiceTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [
         { x: 0, y: 0, w: 180, h: 160 },
@@ -150,6 +152,7 @@ describe("save", () => {
     expect(readRaw(videoId)).toEqual({
       segments: [{ start: 1, end: 9 }],
       starterTitle: "",
+      voiceTitle: "",
       layoutId: "1-1",
       boxes: [
         { x: 1, y: 1, w: 180, h: 160 },
@@ -216,6 +219,7 @@ describe("save", () => {
     expect(readRaw(videoId)).toEqual({
       segments: [{ start: 3, end: 30 }],
       starterTitle: "",
+      voiceTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
       customs: [],
@@ -240,6 +244,7 @@ describe("save", () => {
     expect(readRaw(videoId)).toEqual({
       segments: [{ start: 1, end: 2 }],
       starterTitle: "",
+      voiceTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
       customs: [],
@@ -302,6 +307,7 @@ describe("save", () => {
     expect(readRaw(videoId)).toEqual({
       segments: [{ start: 2, end: 20 }],
       starterTitle: "Ăn cơm chưa bạn ơi",
+      voiceTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
       customs: [],
@@ -346,6 +352,7 @@ describe("restore", () => {
     expect(restore(videoId, { w: 1920, h: 1080 })).toEqual({
       segments: [{ start: 7, end: 70 }],
       starterTitle: "",
+      voiceTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [
         { x: 0, y: 0, w: 180, h: 160 },
@@ -380,6 +387,7 @@ describe("restore", () => {
     expect(restore(videoId, { w: 1920, h: 1080 })).toEqual({
       segments: [{ start: 2, end: 20 }],
       starterTitle: "",
+      voiceTitle: "",
       layoutId: "1-1",
       boxes: [
         { x: 3, y: 3, w: 180, h: 160 },
@@ -411,6 +419,7 @@ describe("restore", () => {
     expect(restore(videoId, { w: 1280, h: 720 })).toEqual({
       segments: [{ start: 7, end: 70 }],
       starterTitle: "",
+      voiceTitle: "",
       layoutId: "2h-1",
       boxes: [],
       customs: [],

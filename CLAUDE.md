@@ -222,6 +222,19 @@ filling that cache is therefore load-bearing for the *validator*, not just for
 the boot hint — an empty cache rejects every export rather than accepting
 every voice, which is the right way for it to fail.
 
+**The shown title and the spoken title are two fields, and only the shown
+one is required.** `starterTitle` is painted on the screen, names the file
+(`outName`) and prefills the upload (`defaultTitle`); `voiceTitle` is
+optional and only reaches `speak`. Blank means "say the shown title", and
+that fallback is applied in exactly one place — `readVoiceTitle` in
+`server/index.ts`, which both `/api/export` and `/api/say` call. The client
+sends the field raw, blank included, rather than resolving it too: two copies
+of a fallback is how Try comes to audition a different string from the one an
+export speaks. A present `voiceTitle` goes through `readTitle` unchanged,
+because it reaches the same engine that would read a novel. Absent, `null`
+and blank all fall back, so every stored record and every request written
+before this field existed still works.
+
 **`isOutName` is the one client-supplied path component on the `/out/` side
 of this API** — `/out/<name>`, `/api/reveal` and `/api/publish` all take it.
 Everywhere else on that side the server takes window bounds or an id and
@@ -487,7 +500,8 @@ mask cached before this feature shipped keeps hitting, and editing a custom's
 
 **`/api/export` takes window bounds plus an optional 8-hex `digest`, still
 never a path.** Its body is `videoId` + window/mark bounds + `layoutId` +
-`boxes` + `customs` + `starterTitle` + `titlePng` + `voice` + `digest`. The
+`boxes` + `customs` + `starterTitle` + `voiceTitle` + `titlePng` + `voice` +
+`digest`. The
 server reconstructs the cache filename itself, so there is no client-supplied
 path to validate for traversal — except a stitch's filename carries a third
 component, `segmentDigest`'s hash of the segment bounds, that window bounds
