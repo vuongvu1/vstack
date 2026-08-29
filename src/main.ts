@@ -1404,14 +1404,26 @@ function renderFraming(): Node[] {
       }
       place();
     };
-    const up = () => {
+    const up = (e: PointerEvent) => {
       target.releasePointerCapture(down.pointerId);
       target.onpointermove = null;
       target.onpointerup = null;
+      const cur = getState();
+      // A click rather than a drag — measured against where the pointer went
+      // down, since a press always emits a pointermove or two of jitter and a
+      // `moved` flag set from that would call every click a drag. Aim the
+      // playhead at the mark that was clicked: checking a cut means looking
+      // at the frame it lands on, and the handle is the thing you point at to
+      // say which end. A real drag deliberately does not seek — it ends
+      // wherever the pointer stopped, and yanking playback there on every
+      // adjustment is the behaviour the stopPropagation below was added for.
+      if (videoEl !== null && Math.abs(e.clientX - down.clientX) <= 2) {
+        const mark = which === "start" ? cur.clipStart : cur.clipEnd;
+        videoEl.currentTime = Math.min(span, Math.max(0, mark - s.windowStart));
+      }
       // One notifying update at the end, so the kept-duration badge, the
       // over-length warning and Export's gate all catch up in a single
       // render rather than one per pointermove.
-      const cur = getState();
       setState({ clipStart: cur.clipStart, clipEnd: cur.clipEnd });
     };
     target.onpointermove = move;
