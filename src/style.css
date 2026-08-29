@@ -120,7 +120,24 @@ body {
   overflow: hidden;
 }
 
-.source { position: relative; display: grid; place-items: center; }
+/* `grid-auto-rows` is what makes the `max-height: 100%` below mean anything.
+   Every child here lands in an implicit row, and an implicit `auto` row sizes
+   to its own content — so the row grew to the video's full 16:9 height and the
+   percentage resolved against *that* rather than against the card. On a wide,
+   short stage (a 1280x800 laptop, once the framing bar has wrapped to three
+   rows) the card is 948x504 while the video wants 948x533, and `overflow:
+   hidden` ate the bottom 29px — the video's own controls with it. `minmax(0,
+   1fr)` hands the row the card's height, which is definite, so the cap binds.
+   Deliberately not `object-fit: contain`: that letterboxes *inside* the
+   element's box, leaving `getBoundingClientRect()` reporting the padded rect
+   rather than the picture, and `.boxes` is placed against the video's rendered
+   rect — every crop box would sit over the wrong pixels. */
+.source {
+  position: relative;
+  display: grid;
+  place-items: center;
+  grid-auto-rows: minmax(0, 1fr);
+}
 .source > video, .source > iframe { max-width: 100%; max-height: 100%; display: block; }
 
 /* The YouTube API writes width/height *attributes* (640x360) on the iframe it
