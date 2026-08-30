@@ -357,6 +357,25 @@ corner arc — 16 on the two-cell default layout, 32 on a four-cell one — a
 difference the five-pixel spot check in `server/mask.test.ts` does not sample
 and so does not catch.
 
+**The framing strip has one axis, and it is `span`, not the file's own
+duration.** The handles and the playhead are placed in `windowEnd -
+windowStart`; the waveform envelope covers the decoded clip. Those agree for
+a single range, so `drawWave` spreading the envelope across the full canvas
+width looked right — but a stitch is named `0-<ceil(sum)>`, and
+`/api/export` rebuilds the cache path from that name, so `windowEnd` has to
+stay the ceil'd total while the file is only `sum` seconds long. The
+envelope was therefore stretched by `ceil(sum)/sum`: 0.5% on a 56s stitch,
+but ~11% on a short two-part cut, and progressive, so the waveform pulled
+furthest from the audio exactly at the out-point a user is checking.
+`bucketAt` in `src/waveform.ts` converts a column of the strip's axis into a
+bucket of the envelope and returns -1 for the phantom tail past the end of
+the decoded audio, which stays blank rather than repeating the last bucket.
+It reduces exactly to the old `floor(x * buckets / w)` when the two lengths
+agree, and `src/waveform.test.ts` mutation-tests that identity along with
+the stitch case — dropping `span` back out of the mapping fails both stitch
+tests and neither single-range one, which is why the single-range test alone
+could never have caught this.
+
 **The framing phase must never learn that segments exist.** The cut is
 baked into the cached clip by `/api/window` — `fetchWindow` fetches each
 segment and `concatClips` stitches the kept ranges into one continuous file

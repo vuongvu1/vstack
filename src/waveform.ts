@@ -32,3 +32,35 @@ export function peaks(samples: Float32Array, buckets: number): Float32Array {
   }
   return out;
 }
+
+/** Which envelope bucket the pixel column `x` shows, or -1 when that column
+ *  is strip time the decoded audio does not reach.
+ *
+ *  The strip's axis is `span` — `windowEnd - windowStart`, the same
+ *  coordinate system the handles and the playhead are placed in — while the
+ *  envelope covers `clipSeconds`, the file's own decoded duration. For a
+ *  single range those agree to a few milliseconds and this reduces exactly
+ *  to `floor(x * buckets / width)`, which is what it always was.
+ *
+ *  A stitch is the case that needs the conversion. Its clip is named
+ *  `0-<ceil(sum)>`, and `/api/export` rebuilds the cache path from that
+ *  name, so `windowEnd` has to stay the ceil'd total — which leaves the
+ *  strip's axis up to a second longer than the file it names. Spreading the
+ *  envelope across the full width regardless is what pulled the waveform
+ *  away from the playhead: ~0.5% on a 56s stitch, but ~11% on a short
+ *  two-part cut, and progressive, so the drift is worst exactly where a
+ *  user is checking the out-point. */
+export function bucketAt(
+  x: number,
+  width: number,
+  span: number,
+  clipSeconds: number,
+  buckets: number,
+): number {
+  if (!(width > 0) || !(span > 0) || !(clipSeconds > 0) || !(buckets > 0)) return -1;
+  const t = (x * span) / width;
+  // Not `>`: at t === clipSeconds the sample is one past the last one the
+  // file has, and the floor below would land on `buckets` exactly.
+  if (t >= clipSeconds) return -1;
+  return Math.min(buckets - 1, Math.floor((t * buckets) / clipSeconds));
+}

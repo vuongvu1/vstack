@@ -46,7 +46,7 @@ import {
   setState,
   subscribe,
 } from "./state.ts";
-import { peaks } from "./waveform.ts";
+import { bucketAt, peaks } from "./waveform.ts";
 
 declare global {
   interface Window {
@@ -848,6 +848,10 @@ function toggleClip(): void {
  *  same megabytes each time. */
 let wavePeaks: Float32Array | null = null;
 let waveFor = "";
+/** The decoded clip's own duration, in seconds. Kept beside the envelope
+ *  because the strip's axis is `windowEnd - windowStart`, which a stitch's
+ *  ceil'd name makes up to a second longer than the file — see `bucketAt`. */
+let waveSeconds = 0;
 /** Disconnected and replaced on every render — the bar is rebuilt each time,
  *  so an observer per built canvas would otherwise accumulate one per
  *  render for the life of the phase. */
@@ -869,6 +873,7 @@ async function loadWave(clipUrl: string): Promise<void> {
   if (waveFor === clipUrl) return;
   waveFor = clipUrl;
   wavePeaks = null;
+  waveSeconds = 0;
   try {
     const res = await fetch(clipUrl);
     if (!res.ok) return;
@@ -881,6 +886,7 @@ async function loadWave(clipUrl: string): Promise<void> {
     // whatever is on screen now.
     if (waveFor !== clipUrl) return;
     wavePeaks = peaks(decoded.getChannelData(0), WAVE_BUCKETS);
+    waveSeconds = decoded.duration;
   } catch {
     /* No audio track, an unsupported decode, a failed read: flat strip. */
     return;
@@ -888,12 +894,18 @@ async function loadWave(clipUrl: string): Promise<void> {
   render();
 }
 
-/** Paints the envelope as a centred amplitude band.
+/** Paints the envelope as a centred amplitude band, on the *strip's* axis.
+ *
+ *  `span` is that axis — `windowEnd - windowStart`, exactly what places the
+ *  handles and the playhead — and `bucketAt` is what converts a column of it
+ *  into a bucket of an envelope that covers the file's own duration instead.
+ *  Drawing straight across the width assumes the two are the same length,
+ *  which a stitch's ceil'd name makes false by up to a second.
  *
  *  The accent is read off the element rather than hardcoded, so the strip
  *  follows the CMD+Shift+0 dark theme the way every other surface does —
  *  canvas cannot read a custom property any other way. */
-function drawWave(canvas: HTMLCanvasElement): void {
+function drawWave(canvas: HTMLCanvasElement, span: number): void {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
   if (w === 0 || h === 0) return;
@@ -909,7 +921,10 @@ function drawWave(canvas: HTMLCanvasElement): void {
   g.fillStyle = getComputedStyle(canvas).getPropertyValue("--blue-8").trim() || "#0090ff";
   const mid = h / 2;
   for (let x = 0; x < w; x++) {
-    const b = Math.min(env.length - 1, Math.floor((x * env.length) / w));
+    const b = bucketAt(x, w, span, waveSeconds, env.length);
+    // Past the end of the decoded audio: strip time the file does not
+    // reach, so it stays blank rather than repeating the last bucket.
+    if (b < 0) continue;
     const amp = (env[b] ?? 0) * mid;
     // At least 1px tall, so silence reads as a centre line rather than a
     // hole in the strip.
@@ -1474,7 +1489,7 @@ function renderFraming(): Node[] {
   // and an observer per built canvas would accumulate for the life of the
   // phase.
   waveResize?.disconnect();
-  waveResize = new ResizeObserver(() => drawWave(canvas));
+  waveResize = new ResizeObserver(() => drawWave(canvas, span));
   waveResize.observe(wave);
 
   const addBox = el("button", {
