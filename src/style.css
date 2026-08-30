@@ -453,7 +453,13 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
 .wave {
   position: relative;
   flex: 1 1 240px;
-  height: 48px;
+  /* Twice the trimming strip's four bars, because this one is read rather
+     than just clicked: the envelope is what a cut is aimed at, and at 48px
+     the quiet passages between phrases — the gaps you actually mark on —
+     were a couple of pixels tall. Nothing else needs telling: the handles,
+     the dimmed cuts and the playhead are all `inset-block: 0`, and drawWave
+     re-reads clientHeight on every paint. */
+  height: 96px;
   min-width: 160px;
   border-radius: var(--radius-3);
   background: var(--slate-a4);
