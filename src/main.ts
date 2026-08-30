@@ -822,7 +822,7 @@ const WAVE_BUCKETS = 900;
  *  `min(WAVE_GAIN, 1 / peak)`: the loudest bucket just touches the strip's
  *  edge and nothing can ever clip, while a quiet clip still gets no more
  *  than this much help. A clip already mastered to 1.0 is left alone. */
-const WAVE_GAIN = 2;
+const WAVE_GAIN = 3;
 
 /** The framing trim's floor. `/api/export` rejects a window whose end is not
  *  after its start, so a handle dragged onto its neighbour would produce a
