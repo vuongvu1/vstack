@@ -1197,6 +1197,11 @@ async function doExport(): Promise<void> {
       boxes,
       customs: s.customs,
       voice: currentVoice(s),
+      // The render this one supersedes. In-memory only, so a reload between
+      // two exports leaves the older file on the Desktop — deliberate: the
+      // alternative is another persisted field whose only job is naming a
+      // file to delete.
+      prev: s.outName,
     });
     setState({
       phase: "preview",

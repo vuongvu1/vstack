@@ -65,7 +65,8 @@ and the only remaining macOS dependency is `afplay` in `pnpm voices` and
 ```
 server/errors.ts   HttpError (status + message), toolError (stderr tail)
 server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
-                   outName/outPath, isOutName, probeFile, ConcatPart/
+                   outName/outPath, isOutName, stillPath/removeExport,
+                   probeFile, ConcatPart/
                    concatClips, buildFilter, assertBoxes, exportClip,
                    firstFrame,
                    reportCache
@@ -236,7 +237,8 @@ and blank all fall back, so every stored record and every request written
 before this field existed still works.
 
 **`isOutName` is the one client-supplied path component on the `/out/` side
-of this API** — `/out/<name>`, `/api/reveal` and `/api/publish` all take it.
+of this API** — `/out/<name>`, `/api/reveal`, `/api/publish` and
+`/api/export`'s `prev` all take it.
 Everywhere else on that side the server takes window bounds or an id and
 reconstructs a path itself, so there is nothing to validate. Preview breaks
 that — publish and reveal both name a file that already exists — so the name
@@ -248,6 +250,21 @@ that is a reach into the user's home directory rather than into the repo.
 `/api/export`'s `digest` (below) is the analogous case on the `/media/`
 side — narrower, eight lowercase hex characters rather than a full name, but
 validated for the identical reason.
+
+**A re-export sweeps the render it replaces, and only after the new file is
+in place.** `outName` is deterministic in title and marks, so a crop tweak
+overwrites itself — but a *mark* or *title* edit lands under a new name and
+would leave the superseded `.mp4` and its `.jpg` on the Desktop forever. The
+client sends the previous name as `prev`; `/api/export` deletes it via
+`removeExport` after `rename(partial, out)` and `saveStill`, never before —
+a failed export must leave the render it was replacing intact — and skips
+the delete when `prev === name`, which would otherwise unlink the file just
+written. Best-effort, like `saveStill`: a stale file is not worth failing an
+export that succeeded. `prev` is in-memory (`state.outName`) rather than
+persisted, so a reload between two exports strands the older file; that is
+the accepted cost of not adding a persisted field whose only job is naming a
+file to destroy. Note the pattern is `isOutName`, never something looser —
+this is the one client string in the API that names a file to *delete*.
 
 **Uploads are private and there is no option.** An unaudited YouTube Data API
 project has every `videos.insert` locked to private viewing. `buildSnippet`
@@ -520,7 +537,7 @@ mask cached before this feature shipped keeps hitting, and editing a custom's
 **`/api/export` takes window bounds plus an optional 8-hex `digest`, still
 never a path.** Its body is `videoId` + window/mark bounds + `layoutId` +
 `boxes` + `customs` + `starterTitle` + `voiceTitle` + `titlePng` + `voice` +
-`digest`. The
+`digest` + `prev`. The
 server reconstructs the cache filename itself, so there is no client-supplied
 path to validate for traversal — except a stitch's filename carries a third
 component, `segmentDigest`'s hash of the segment bounds, that window bounds

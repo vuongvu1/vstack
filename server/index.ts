@@ -23,7 +23,9 @@ import {
   outName,
   outPath,
   probeFile,
+  removeExport,
   reportCache,
+  stillPath,
 } from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
 import { VOICE, checkStarter, knownVoices, prependStarter, speak } from "./starter.ts";
@@ -206,7 +208,7 @@ const server = createServer((req, res) => {
  *  `.mp4` only, so this file is never servable over `/out/` — it exists for
  *  Finder, not the browser. */
 async function saveStill(video: string): Promise<void> {
-  const still = video.replace(/\.mp4$/, ".jpg");
+  const still = stillPath(video);
   try {
     await firstFrame(video, still, "tall");
   } catch (err) {
@@ -384,6 +386,17 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return send(res, 400, { error: "Bad digest." });
     }
     const digest = digestRaw;
+    // The render this one replaces, deleted once the new file is safely in
+    // place. The third client-supplied string this API acts on, and the only
+    // one that names a file to *destroy* — so it goes through the same
+    // `isOutName` the `/out/` side uses, never a looser check. Absent, null
+    // and blank all mean "nothing to sweep", which is the first export of a
+    // session and every body written before this field existed.
+    const prevRaw = raw.prev ?? "";
+    if (typeof prevRaw !== "string" || (prevRaw !== "" && !isOutName(prevRaw))) {
+      return send(res, 400, { error: "Bad prev name." });
+    }
+    const prev = prevRaw;
     // Shape is checked here; legality (integers, per-cell ratio, in-bounds)
     // is checked below via assertBoxes/isValidBox, which safely reject null,
     // non-arrays, non-objects and non-integers instead of throwing a
@@ -490,6 +503,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       });
       await rename(partial, out);
       await saveStill(out);
+      // Only now, and only if the edit actually moved the name: `outName` is
+      // deterministic in title and marks, so an unchanged range already
+      // overwrote itself above and `prev` names the file just written.
+      // After the rename, never before — a failed export must leave the
+      // render it was replacing intact. Best-effort for the same reason
+      // `saveStill` is: the new video is the product, and a stale file left
+      // on the Desktop is not worth failing an export that succeeded.
+      if (prev !== "" && prev !== name) {
+        await removeExport(outPath(prev)).catch((err: unknown) => {
+          console.warn(`vstack: could not remove the previous out/${prev}:`, err);
+        });
+      }
       const { size, mtimeMs } = statSync(out);
       console.warn(`vstack: exported out/${name} (${Math.round(size / 1e6)} MB)`);
       // Nothing streams any more, so the whole headers-already-sent dance

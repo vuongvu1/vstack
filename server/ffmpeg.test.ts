@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -21,7 +21,9 @@ import {
   isOutName,
   outName,
   probeFile,
+  removeExport,
   segmentDigest,
+  stillPath,
 } from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
 
@@ -170,6 +172,42 @@ describe("outName — the traversal guard", () => {
     expect(isOutName(42)).toBe(false);
     expect(isOutName(undefined)).toBe(false);
     expect(isOutName({ toString: () => "clip-0000-0030.mp4" })).toBe(false);
+  });
+});
+
+// The cleanup a re-export runs on the render it replaces. Takes a path
+// rather than a name so this test needs no OUT_DIR: that constant reads
+// process.env at module load, and a name-taking helper would have to be
+// stubbed before the import.
+describe("removeExport", () => {
+  it("takes the still with the video", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "vstack-rm-"));
+    const video = join(dir, "clip-0000-0030.mp4");
+    await writeFile(video, "video");
+    await writeFile(stillPath(video), "still");
+
+    await removeExport(video);
+
+    await expect(stat(video)).rejects.toThrow();
+    await expect(stat(stillPath(video))).rejects.toThrow();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("is a no-op on a render whose still never extracted", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "vstack-rm-"));
+    const video = join(dir, "clip-0000-0030.mp4");
+    await writeFile(video, "video");
+
+    await expect(removeExport(video)).resolves.toBeUndefined();
+
+    await expect(stat(video)).rejects.toThrow();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("does not throw when neither file is there", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "vstack-rm-"));
+    await expect(removeExport(join(dir, "gone-0000-0030.mp4"))).resolves.toBeUndefined();
+    await rm(dir, { recursive: true, force: true });
   });
 });
 

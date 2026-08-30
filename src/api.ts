@@ -135,6 +135,10 @@ export async function exportClip(body: {
   /** Which preset reads the title. Validated server-side against the engine's
    *  own table — it reaches a subprocess as argv. */
   voice: string;
+  /** The render this one replaces, deleted server-side once the new file is
+   *  in place — so a re-export after a mark or title edit leaves one final
+   *  version rather than two. `""` on the first export of a session. */
+  prev: string;
 }): Promise<ExportResult> {
   return (await post("/api/export", body)).json() as Promise<ExportResult>;
 }

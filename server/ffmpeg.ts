@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -77,6 +78,31 @@ export function outName(title: string, start: number, end: number): string {
 
 export function outPath(name: string): string {
   return join(OUT_DIR, name);
+}
+
+/** The vertical still saved beside an export, for Studio's Shorts thumbnail
+ *  slot. One derivation, two callers — `saveStill` writes it and
+ *  `removeExport` takes it away. */
+export function stillPath(video: string): string {
+  return video.replace(/\.mp4$/, ".jpg");
+}
+
+/** Deletes a finished export and its still.
+ *
+ *  A re-export after a mark or title edit lands under a *different* name —
+ *  `outName` is deterministic in both — so the render it replaces would
+ *  otherwise sit on the Desktop forever beside the one that supersedes it.
+ *  `/api/export` calls this on the previous name once the new file has
+ *  renamed into place, never before: a failed export must not take the good
+ *  render with it.
+ *
+ *  Takes a path rather than a name so it needs no OUT_DIR of its own — the
+ *  caller has already put a validated name through `outPath`. `force` makes
+ *  a missing file a no-op, which is the normal case for the still: it is
+ *  best-effort on the way in too. */
+export async function removeExport(path: string): Promise<void> {
+  await rm(path, { force: true });
+  await rm(stillPath(path), { force: true });
 }
 
 /** Anchored to what `slugify` (emits dash-separated alphanumeric groups,
