@@ -805,6 +805,25 @@ let outEditor: EditorHandle | null = null;
  *  bar reaches, and `drawWave` samples down from it per pixel. */
 const WAVE_BUCKETS = 900;
 
+/** The most `drawWave` will amplify the envelope by.
+ *
+ *  `peaks` reports absolute sample amplitude, and only a clip mastered to
+ *  the ceiling ever reaches 1.0 — speech sits nearer 0.5, so at unity gain
+ *  the strip used barely half its height and the gaps between phrases, which
+ *  are what a cut is aimed at, were a pixel or two tall. The fix is to scale
+ *  the bars inside the strip rather than to make the strip taller: the box
+ *  is sized to the bar row it lives in, and the legibility problem was the
+ *  envelope.
+ *
+ *  A *fixed* 2x is the obvious spelling and the wrong one. It clips, and
+ *  measured against a real clip's envelope it clips half the audible
+ *  buckets — the loud passages flat-top into one solid block, which reads as
+ *  a broken waveform rather than a bigger one. `drawWave` therefore takes
+ *  `min(WAVE_GAIN, 1 / peak)`: the loudest bucket just touches the strip's
+ *  edge and nothing can ever clip, while a quiet clip still gets no more
+ *  than this much help. A clip already mastered to 1.0 is left alone. */
+const WAVE_GAIN = 2;
+
 /** The framing trim's floor. `/api/export` rejects a window whose end is not
  *  after its start, so a handle dragged onto its neighbour would produce a
  *  400 rather than a short clip. One second is also the shortest trim worth
@@ -920,12 +939,20 @@ function drawWave(canvas: HTMLCanvasElement, span: number): void {
   if (!env || env.length === 0) return;
   g.fillStyle = getComputedStyle(canvas).getPropertyValue("--blue-8").trim() || "#0090ff";
   const mid = h / 2;
+  // Fill the strip without ever clipping — see WAVE_GAIN. Recomputed per
+  // paint rather than cached beside the envelope because this only runs on
+  // a resize, and 900 buckets is nothing next to the decode that built them.
+  let peak = 0;
+  for (const v of env) if (v > peak) peak = v;
+  const gain = peak > 0 ? Math.min(WAVE_GAIN, 1 / peak) : 1;
   for (let x = 0; x < w; x++) {
     const b = bucketAt(x, w, span, waveSeconds, env.length);
     // Past the end of the decoded audio: strip time the file does not
     // reach, so it stays blank rather than repeating the last bucket.
     if (b < 0) continue;
-    const amp = (env[b] ?? 0) * mid;
+    // No clamp needed: `gain` is capped at 1 / peak, so this is <= mid by
+    // construction.
+    const amp = (env[b] ?? 0) * gain * mid;
     // At least 1px tall, so silence reads as a centre line rather than a
     // hole in the strip.
     g.fillRect(x, mid - amp, 1, Math.max(1, amp * 2));
