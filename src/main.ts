@@ -672,6 +672,26 @@ async function openWindow(): Promise<void> {
   });
 }
 
+/** The first stored mark that overlaps a reopened clip, clamped to it.
+ *
+ *  `null` when nothing usable overlaps — the marks belong to a different
+ *  window of the same video, or they clip to less than the trim floor — and
+ *  the caller then opens on the whole file, which is what a reopen always
+ *  did. A stored range is only a starting point either way: the handles
+ *  still reach the whole file, pad included.
+ *
+ *  First match rather than widest, and never `first.start` to `last.end`:
+ *  the stored marks can be a multi-part set from an earlier session, and
+ *  spanning them end to end would silently put the dropped middle back. */
+function markedCut(segments: Segment[], from: number, to: number): Segment | null {
+  for (const seg of segments) {
+    const start = Math.max(seg.start, from);
+    const end = Math.min(seg.end, to);
+    if (end - start >= MIN_CLIP_S) return { start, end };
+  }
+  return null;
+}
+
 /** The idle screen's other way in: a clip already in `media/` goes straight
  *  to framing, with no network involved at all. Everything here is
  *  `openWindow`'s tail with the fetch removed — the fields line up because
@@ -712,14 +732,28 @@ function openClip(c: api.CachedClip): void {
   const source = { w: c.width, h: c.height };
   const saved = restore(c.videoId, source);
   const isStitch = c.digest !== "";
-  const storedSegments = isStitch ? saved.segments : undefined;
+  // Stored marks are preferred for a PLAIN clip too, not just a stitch. They
+  // used to be dropped here on the grounds that framing had no marking
+  // controls, so the whole cached file — PAD and all — was the only window
+  // whose edges a user could reach. The waveform handles ended that: the pad
+  // is one drag away, and fabricating a range instead cost real work. The
+  // fabrication went into `save()` a line below, overwriting the video's real
+  // marks in localStorage, and into `clipStart`/`clipEnd` below that, so a
+  // reopened clip exported PAD seconds wider at BOTH ends than the range that
+  // was marked — silently, since every part of the bar agreed with itself.
+  const storedSegments = saved.segments;
   const segments = storedSegments ?? [{ start: c.windowStart, end: c.windowEnd }];
   const duration = Math.max(c.windowEnd, ...segments.map((seg) => seg.end));
-  // True for every plain clip (unchanged behaviour) and for a stitch whose
-  // stored segments are real — writing those back is a no-op. False only for
-  // a stitch with nothing truthful to store, where `segments` above is a
-  // fabrication that must never reach localStorage.
+  // True whenever `segments` above is truthful: a plain clip's own bounds
+  // really are source seconds, and stored marks are stored marks. False only
+  // for a stitch with nothing stored, where the fallback is clip-timeline
+  // garbage that must never reach localStorage.
   const persistSegments = !isStitch || storedSegments !== undefined;
+  // Where the cut opens. `c.clipStart`/`c.clipEnd` span the whole cached
+  // file; a stored mark that overlaps it is what the user actually chose.
+  // Stitch excluded: its clip bounds are its own timeline, and a source-time
+  // mark compared against them would be meaningless rather than merely wrong.
+  const cut = isStitch ? null : markedCut(segments, c.clipStart, c.clipEnd);
   setState({
     videoId: c.videoId,
     title: savedTitle(c.videoId) || c.videoId,
@@ -728,8 +762,8 @@ function openClip(c: api.CachedClip): void {
     clipUrl: c.clipUrl,
     windowStart: c.windowStart,
     windowEnd: c.windowEnd,
-    clipStart: c.clipStart,
-    clipEnd: c.clipEnd,
+    clipStart: cut?.start ?? c.clipStart,
+    clipEnd: cut?.end ?? c.clipEnd,
     clipDigest: c.digest,
     source,
     layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
