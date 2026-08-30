@@ -1904,11 +1904,22 @@ function renderPreview(): Node[] {
   // Handed to the panel, which owns the title this is gated on.
   publishBtn = publish;
 
-  // Sits beside Studio rather than inside it: pasting the link into a chat
-  // is the next thing after an upload, and the only other way to get it is
-  // to open the video and copy the address bar. `/shorts/` and not
-  // `youtu.be/` because everything this tool makes is a Short, and that URL
-  // is what opens the Shorts player rather than the desktop one.
+  // The Studio edit page, and the same URL the button beside it opens —
+  // one const rather than two literals, since a copied link that pointed
+  // somewhere other than where Studio opens is a difference nobody would
+  // notice until they pasted it.
+  //
+  // Deliberately NOT the `/shorts/` watch URL this used to copy. Every
+  // upload here lands private and there is no option (see buildSnippet), so
+  // a watch link opens to "Video unavailable" for everyone except the
+  // account that made it — and the thing actually wanted after an export is
+  // the page where the description, the thumbnail and the visibility can be
+  // finished off, which the Data API cannot do from here.
+  const editUrl = `https://studio.youtube.com/video/${s.ytVideoId}/edit`;
+
+  // Sits beside Studio rather than inside it: getting the link onto the
+  // clipboard and following it are two different intents, and the only
+  // other way to get it is to open the video and copy the address bar.
   const copy = el("button", { textContent: "Copy link" });
   // The label is the whole feedback channel — a clipboard write is invisible
   // otherwise, and a callout for something this small reads as an error.
@@ -1918,7 +1929,7 @@ function renderPreview(): Node[] {
   };
   copy.onclick = () => {
     void navigator.clipboard
-      .writeText(`https://www.youtube.com/shorts/${s.ytVideoId}`)
+      .writeText(editUrl)
       .then(() => flash("Copied"))
       .catch(() => flash("Copy failed"));
   };
@@ -1927,7 +1938,7 @@ function renderPreview(): Node[] {
   // uploading the same file twice is never what was meant.
   const studio = el("a", {
     className: "btn-link",
-    href: `https://studio.youtube.com/video/${s.ytVideoId}/edit`,
+    href: editUrl,
     target: "_blank",
     rel: "noreferrer",
     textContent: "Open in YouTube Studio →",
