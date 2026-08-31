@@ -153,7 +153,10 @@ const MUSIC_GAIN = 0.35;
  *  (mean -14 dB at 0:00 against -3 dB by 0:20), so raise this to drop into a
  *  livelier bar, or raise MUSIC_GAIN. This and the gain are the two knobs. */
 const MUSIC_START = 0;
-const CUE_GAIN = 0.9;
+/** Was 0.9, which read as a shout over the bed. `server/starter.test.ts`
+ *  isolates the cue in the tail slot and needs a peak above 0.5, so this is
+ *  about as low as it goes before that window stops being cue-only. */
+const CUE_GAIN = 0.6;
 /** The title hit peaks at -6 dB in the file, louder than the bed at
  *  MUSIC_GAIN, and it overlaps the start of the voice. Turned down so it
  *  announces the title without burying the first syllable. */
