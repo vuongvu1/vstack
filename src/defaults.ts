@@ -27,11 +27,11 @@ export const YT_TITLE_MAX = 100;
  *
  *  Every character here is taken off `defaultTitle`'s budget for the title
  *  itself — 44 of the 100 now, leaving 55. */
-export const TITLE_HASHTAGS = "#vtubervn #vtubervietnam #siini #habine #sim";
+export const TITLE_HASHTAGS = "#vtubervn #vtubervietnam #habine #siini #sim";
 
 /** Pre-fills the description field. Already carries a shorts tag, which is
  *  why `buildSnippet`'s append is a no-op against it — see the test. */
-export const DESCRIPTION_TEMPLATE = `#vtuber #vtubervn #vtubervietnam #viral #shorts #siini #habine #sim
+export const DESCRIPTION_TEMPLATE = `#vtuber #vtubervn #vtubervietnam #viral #shorts #habine #siini #sim
 
 ------
 
@@ -59,6 +59,8 @@ export const TAGS_DEFAULT = "vtuber, vtubervn, vtuber vietnam, viral, shorts";
  *  `#vtubervn #vtuberv`. A clipped title is recoverable by editing the field; a
  *  clipped hashtag reads as a typo to every viewer. */
 export function defaultTitle(starterTitle: string): string {
-  const head = starterTitle.slice(0, YT_TITLE_MAX - TITLE_HASHTAGS.length - 1).trim();
+  const head = starterTitle
+    .slice(0, YT_TITLE_MAX - TITLE_HASHTAGS.length - 1)
+    .trim();
   return head === "" ? TITLE_HASHTAGS : `${head} ${TITLE_HASHTAGS}`;
 }
