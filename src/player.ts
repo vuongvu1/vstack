@@ -1,3 +1,5 @@
+import { MAX_SEGMENTS } from "./segments.ts";
+
 type YtErrorEvent = { data: number };
 
 type YtPlayerInstance = {
@@ -241,7 +243,12 @@ export function renderStrip(opts: {
   const pct = (s: number) => `${(100 * s) / Math.max(1, opts.duration)}%`;
   opts.segments.forEach((seg, i) => {
     const range = document.createElement("div");
-    range.className = i === opts.active ? "strip-range is-active" : "strip-range";
+    // `seg-c<i>` carries the part's hue (style.css), so several kept ranges
+    // are told apart by colour rather than only by position — and the chip
+    // that aims at a part wears the same one. Modulo MAX_SEGMENTS' worth of
+    // scales, which cannot wrap today but keeps a bad `segments` length from
+    // painting an uncoloured range.
+    range.className = `strip-range seg-c${i % MAX_SEGMENTS}${i === opts.active ? " is-active" : ""}`;
     range.style.left = pct(seg.start);
     range.style.width = pct(Math.max(0, seg.end - seg.start));
     strip.append(range);

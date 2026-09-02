@@ -321,6 +321,20 @@ let stampText = "";
 // every render — so it has to survive that rebuild without ever causing one.
 let activeSegment = 0;
 
+// Which bounds the user has aimed with Set Start / Set End, for the ticks on
+// those two buttons. Keyed by the mark's own *value*, never by segment index:
+// `normalize` sorts and merges, so an index-keyed flag would follow the wrong
+// part the moment two ranges touch, and the value is what identifies a mark
+// everywhere else in this phase (see `segmentContaining`). A merge that
+// discards a bound discards its tick with it, which is what should happen —
+// that mark no longer exists.
+//
+// Module-scoped for `activeSegment`'s reason and with its lifetime: nothing
+// here is persisted, so a reload drops the ticks until the next click. That is
+// the whole cost of not adding a field to `Segment`, which is validated on
+// both sides of the wire and shared with the server.
+const aimed = { start: new Set<number>(), end: new Set<number>() };
+
 // renderTrimming replaces the strip on every render, and the strip owns a
 // rAF loop now. Stopping the old one before building the new one is what
 // keeps a loop from reading a detached node for the rest of *this* visit to
@@ -416,6 +430,7 @@ function renderTrimming(): Node[] {
     // the worst possible answer to an ordinary misclick. Refusing the edit
     // leaves the strip exactly as it was, which reads as "that did nothing".
     if (!(edited.end > edited.start)) return;
+    aimed[which].add(t);
     const next = cur.segments.map((s2, i) => (i === active ? edited : s2));
     const normalized = normalize(next, cur.duration);
     activeSegment = segmentContaining(normalized, edited.start, edited.end);
@@ -423,11 +438,29 @@ function renderTrimming(): Node[] {
     save();
   };
 
-  const setStart = el("button", { textContent: "Set Start", disabled: !ready });
-  setStart.onclick = () => setMark("start");
+  /** Whether the *active part's* bound is one the user aimed, which is what
+   *  makes the tick worth having once there are several parts: `+ Part`
+   *  defaults a new range to `{t, t + 5}`, so a rule derived from the video's
+   *  edges reads "marked" for every part after the first before it has been
+   *  aimed at all. Each part is asked about its own bounds, so switching chips
+   *  switches the ticks. */
+  const marked = (which: "start" | "end") => {
+    const seg = s.segments[active];
+    return seg !== undefined && aimed[which].has(seg[which]);
+  };
 
-  const setEnd = el("button", { textContent: "Set End", disabled: !ready });
-  setEnd.onclick = () => setMark("end");
+  const markButton = (label: string, which: "start" | "end") => {
+    const b = el(
+      "button",
+      { textContent: label, disabled: !ready },
+      marked(which) ? el("span", { className: "tick", textContent: "✓" }) : "",
+    );
+    b.onclick = () => setMark(which);
+    return b;
+  };
+
+  const setStart = markButton("Set Start", "start");
+  const setEnd = markButton("Set End", "end");
 
   // Playback transport. The iframe has YouTube's own controls, but they are
   // only reachable by clicking *into* the video — which then swallows the
@@ -574,7 +607,12 @@ function renderTrimming(): Node[] {
   chips.setAttribute("role", "group");
   s.segments.forEach((seg, i) => {
     const chip = el("button", {
-      className: i === active ? "" : "btn-gray",
+      // The part's own hue rather than accent-vs-gray: with several parts on
+      // the strip, "which range is this button" is the question the control
+      // has to answer, and position alone stops answering it once two parts
+      // sit close together. Active is a ring on the same hue — see
+      // `.chip-seg` in style.css.
+      className: `chip-seg seg-c${i % MAX_SEGMENTS}${i === active ? " is-active" : ""}`,
       textContent: String(i + 1),
       title: `${clock(seg.start)} → ${clock(seg.end)}`,
       disabled: !ready,

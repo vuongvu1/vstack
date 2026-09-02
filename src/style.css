@@ -393,11 +393,56 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   position: absolute;
   inset-block: 0;
   border-radius: 0;
-  background: var(--blue-8);
+  /* Falls back to blue so a range with no `seg-c*` class still paints — the
+     class is the caller's to add, and a missing one should read as the old
+     single-colour strip rather than as a hole in the track. */
+  background: var(--seg-8, var(--blue-8));
 }
 
 /* The part the marking controls are aimed at. */
-.strip-range.is-active { background: var(--blue-9); }
+.strip-range.is-active { background: var(--seg-9, var(--blue-9)); }
+
+/* One scale per part, in the crop boxes' own hue order (box-c0..c5), so an
+   index means the same colour everywhere in the app — and six scales is
+   exactly MAX_SEGMENTS, so no two parts can ever collide.
+
+   Indirected through four custom properties rather than written out per
+   element: the strip's range wants `-8`/`-9` solid, the part chip wants
+   `-a3` behind `-11` text, and doing that directly would be one rule per
+   index per element. This way a new surface that wants a part's colour adds
+   one rule, not six. `-11` on `-a3` is Radix's own guaranteed-contrast
+   pairing, which is why the chip is tinted rather than filled: white on
+   `amber-9` is not readable and filling would need a per-hue exception. */
+.seg-c0 { --seg-8: var(--blue-8);   --seg-9: var(--blue-9);   --seg-11: var(--blue-11);   --seg-a3: var(--blue-a3);   --seg-a4: var(--blue-a4);   --seg-a5: var(--blue-a5); }
+.seg-c1 { --seg-8: var(--amber-8);  --seg-9: var(--amber-9);  --seg-11: var(--amber-11);  --seg-a3: var(--amber-a3);  --seg-a4: var(--amber-a4);  --seg-a5: var(--amber-a5); }
+.seg-c2 { --seg-8: var(--grass-8);  --seg-9: var(--grass-9);  --seg-11: var(--grass-11);  --seg-a3: var(--grass-a3);  --seg-a4: var(--grass-a4);  --seg-a5: var(--grass-a5); }
+.seg-c3 { --seg-8: var(--violet-8); --seg-9: var(--violet-9); --seg-11: var(--violet-11); --seg-a3: var(--violet-a3); --seg-a4: var(--violet-a4); --seg-a5: var(--violet-a5); }
+.seg-c4 { --seg-8: var(--cyan-8);   --seg-9: var(--cyan-9);   --seg-11: var(--cyan-11);   --seg-a3: var(--cyan-a3);   --seg-a4: var(--cyan-a4);   --seg-a5: var(--cyan-a5); }
+.seg-c5 { --seg-8: var(--orange-8); --seg-9: var(--orange-9); --seg-11: var(--orange-11); --seg-a3: var(--orange-a3); --seg-a4: var(--orange-a4); --seg-a5: var(--orange-a5); }
+
+/* A part chip wears its part's colour, so the strip's ranges and the
+   selector that aims at them agree without a legend. Tinted, not filled —
+   see the note above. The active one is ringed and bold rather than a
+   different hue, because the hue is already saying which part this is. */
+.chip-seg {
+  background: var(--seg-a3);
+  color: var(--seg-11);
+}
+
+.chip-seg.is-active {
+  box-shadow: inset 0 0 0 1px var(--seg-8);
+  font-weight: 700;
+}
+
+/* The same specificity fight `.layout-pick:hover` and `.box-remove:hover`
+   document: the generic `button:hover:not(:disabled)` rule is (0,2,1) and
+   beats a plain `.chip-seg:hover`'s (0,1,1), so every part chip flashed
+   `--blue-a4` on hover — throwing away the hue on the one interaction where
+   the user is asking which part this is. Matching the generic rule's shape
+   brings these to (0,3,0). */
+.chip-seg:hover:not(:disabled) { background: var(--seg-a4); }
+.chip-seg:active:not(:disabled) { background: var(--seg-a5); }
+.chip-seg:focus-visible { outline-color: var(--seg-8); }
 
 /* Where the player actually is. Above the ranges, and `pointer-events: none`
    so it never eats the strip's own click-to-seek. */
@@ -658,3 +703,12 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
 .handle-ne { top: -7px; right: -7px; cursor: nesw-resize; }
 .handle-sw { bottom: -7px; left: -7px; cursor: nesw-resize; }
 .handle-se { bottom: -7px; right: -7px; cursor: nwse-resize; }
+
+/* The mark-placed tick inside Set Start / Set End. A span rather than a
+   character in the label because only the tick is green — the label keeps the
+   soft button's own colour. */
+.tick {
+  margin-left: var(--space-1);
+  color: var(--grass-11);
+  font-weight: 700;
+}
