@@ -28,7 +28,11 @@ export type ProbeResult = {
   width: number;
   height: number;
   title: string;
-  isLive: boolean;
+  /** yt-dlp's own `live_status`: `not_live`, `was_live`, `is_live`,
+   *  `is_upcoming` or `post_live`. Kept raw rather than reduced to a
+   *  boolean because the three unusable states fail for different reasons
+   *  and want different messages — see NOT_FETCHABLE in `server/index.ts`. */
+  liveStatus: string;
 };
 
 const ID_RE = /^[A-Za-z0-9_-]{11}$/;
@@ -82,7 +86,7 @@ export async function probe(videoId: string): Promise<ProbeResult> {
     width: Number(j.width ?? 0),
     height: Number(j.height ?? 0),
     title: String(j.title ?? videoId),
-    isLive: Boolean(j.is_live),
+    liveStatus: String(j.live_status ?? (j.is_live ? "is_live" : "not_live")),
   };
 }
 

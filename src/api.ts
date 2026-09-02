@@ -8,7 +8,7 @@ export type ProbeResult = {
   width: number;
   height: number;
   title: string;
-  isLive: boolean;
+  liveStatus: string;
 };
 
 export type WindowResult = {

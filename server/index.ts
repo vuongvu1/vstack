@@ -317,6 +317,25 @@ function pipeOut(file: ReturnType<typeof createReadStream>, res: ServerResponse)
   file.pipe(res);
 }
 
+/** The `live_status` values a window cannot be cut out of, and why.
+ *
+ *  `post_live` is the one that cost real time: the stream has *ended*, so
+ *  `is_live` is false and probe used to wave it through, but YouTube has not
+ *  finished muxing the VOD yet — every format is still `http_dash_segments`
+ *  live fragments with `source=yt_live_broadcast&noclen=1`. The ffmpeg
+ *  downloader cannot seek into those (`Invalid data found when processing
+ *  input`), and there is no muxed rendition for the `best` rung to fall back
+ *  to (`Requested format is not available`), so all three rungs of ATTEMPTS
+ *  fail with a wall of signed URLs that reads like an extractor regression
+ *  rather than "come back in an hour". */
+const NOT_FETCHABLE: Record<string, string> = {
+  is_live: "This is an ongoing live stream — a section of it is not well-defined.",
+  is_upcoming: "This stream has not started yet.",
+  post_live:
+    "This stream just ended and YouTube is still processing the replay — " +
+    "only live fragments exist, which cannot be cut. Try again in an hour.",
+};
+
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // Above the POST-only guard, and deliberately the only thing that is.
   if (req.method === "GET" && (req.url ?? "").startsWith("/out/")) return serveOut(req, res);
@@ -328,11 +347,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const videoId = videoIdFrom(url);
     if (!videoId) return send(res, 400, { error: "Not a YouTube video URL." });
     const result = await probe(videoId);
-    if (result.isLive) {
-      return send(res, 400, {
-        error: "This is an ongoing live stream — a section of it is not well-defined.",
-      });
-    }
+    const why = NOT_FETCHABLE[result.liveStatus];
+    if (why) return send(res, 400, { error: why });
     return send(res, 200, result);
   }
 
