@@ -338,12 +338,17 @@ player), and `hidden` alone is not enough, so the panel is covered by
 `style.css`'s existing `.source > [hidden] { display: none; }`.
 
 It renders a numbered list, one row per uploaded file: a grip, index, display
-name, duration, then `↑`, `↓`, `✕`.
+name, duration, then `⤒`, `↑`, `↓`, `⤓`, `✕`.
 
 Rows reorder two ways, and both are load-bearing. A row is `draggable` and
-drops onto any other row through the HTML5 drag API; the `↑`/`↓` buttons stay
-beside it because native drag-and-drop has no keyboard path at all. Both ends
-call the same `reorder(from, to)` — two array splices against live state.
+drops onto any other row through the HTML5 drag API; the buttons stay beside
+it because native drag-and-drop has no keyboard path at all. `⤒`/`⤓` jump a
+row to either end, which is what a long list needs — dragging from row 18 to
+row 1 has to cross the panel's scroll edge, and there is no autoscroll. All
+of them call the same `reorder(from, to)` — two array splices against live
+state. `⤓` passes `getState().parts.length - 1` rather than a captured
+`s.parts.length - 1`, the same live-state rule every other handler here
+follows.
 
 The drop target is marked with a 2px line — `is-drop-before` on the target's
 top edge, `is-drop-after` on its bottom. Which side is not cosmetic: `reorder`
@@ -411,7 +416,7 @@ copy silently reverts whatever happened since the last notifying update.
 idle  ──[Long form →]──▶  stacking
                             │  <input type=file> → N × POST /api/upload
                             │      → media/uploads/<uuid>.mp4, probed
-                            │  ↑ ↓ ✕ reorder state.parts
+                            │  ⤒ ↑ ↓ ⤓ ✕ reorder state.parts
                             │  title typed
                             └──[Render →]── POST /api/stack {ids, title}
                                               → stackWide(paths, part)

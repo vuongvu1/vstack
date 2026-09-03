@@ -2027,6 +2027,14 @@ function renderStackPanel(): Node[] {
     // ponytail: the HTML5 drag API, so there is no autoscroll when the list
     // runs past the panel and no drop indicator beyond the dragged row going
     // translucent. Reach for pointer events the day either one bites.
+    const top = el("button", {
+      textContent: "⤒",
+      title: "Move to the top",
+      ariaLabel: `Move ${part.name} to the top`,
+      disabled: locked || i === 0,
+    });
+    top.onclick = () => reorder(i, 0);
+
     const up = el("button", {
       textContent: "↑",
       title: "Move earlier",
@@ -2042,6 +2050,16 @@ function renderStackPanel(): Node[] {
       disabled: locked || i === s.parts.length - 1,
     });
     down.onclick = () => reorder(i, i + 1);
+
+    const bottom = el("button", {
+      textContent: "⤓",
+      title: "Move to the bottom",
+      ariaLabel: `Move ${part.name} to the bottom`,
+      disabled: locked || i === s.parts.length - 1,
+    });
+    // `reorder` splices the row out first, so the last index of the *shortened*
+    // array is the end — `length - 1` against the array as it stands here.
+    bottom.onclick = () => reorder(i, getState().parts.length - 1);
 
     const remove = el("button", {
       textContent: "✕",
@@ -2060,8 +2078,10 @@ function renderStackPanel(): Node[] {
       el("span", { className: "stack-index", textContent: String(i + 1) }),
       el("span", { className: "stack-name", title: part.name, textContent: part.name }),
       el("span", { className: "stack-dur", textContent: clock(part.duration) }),
+      top,
       up,
       down,
+      bottom,
       remove,
     );
 
