@@ -16,6 +16,7 @@ import {
   DESCRIPTION_TEMPLATE,
   LONG_DESCRIPTION_TEMPLATE,
   LONG_TAGS_DEFAULT,
+  MAX_PARTS,
   TAGS_DEFAULT,
   YT_TITLE_MAX,
   defaultTitle,
@@ -1283,6 +1284,18 @@ async function doExport(): Promise<void> {
  *  throughput on a loopback socket. */
 async function doUpload(files: File[]): Promise<void> {
   await guard("Uploading…", async () => {
+    // Checked before a byte moves, the same posture UPLOAD_MAX_BYTES's
+    // client-side check already takes on file size (see api.ts's `upload`):
+    // /api/stack enforces MAX_PARTS too, but only after every file in the
+    // batch has already gone up the loopback socket. Refusing here means the
+    // user gets a sentence instead of a stack of uploads to `✕` back down.
+    const existing = getState().parts.length;
+    if (existing + files.length > MAX_PARTS) {
+      throw new Error(
+        `That's ${existing + files.length} parts — the limit is ${MAX_PARTS}. ` +
+          `Remove some first, or pick fewer files.`,
+      );
+    }
     for (const [i, file] of files.entries()) {
       setState({ busy: `Uploading ${i + 1}/${files.length}…` });
       const { id, duration } = await api.upload(file);

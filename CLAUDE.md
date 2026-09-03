@@ -71,6 +71,7 @@ and the only remaining macOS dependency is `afplay` in `pnpm voices` and
 server/errors.ts   HttpError (status + message), toolError (stderr tail)
 server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
                    outName/outPath, isOutName, stillPath/removeExport,
+                   UPLOADS_DIR/uploadPath, isUploadId,
                    probeFile, ConcatPart/
                    concatClips, buildFilter, assertBoxes, exportClip,
                    firstFrame,

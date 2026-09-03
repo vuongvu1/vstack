@@ -696,9 +696,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       // No `.jpg` still beside it, unlike an export: that file exists for
       // Studio's *Shorts* thumbnail slot, and a 16:9 video has no such slot.
       //
-      // ponytail: no `prev` sweep either. A long-form name varies only in
-      // the title and the total, so a re-render after a reorder produces the
-      // SAME name and overwrites itself; only a title edit strands a file.
+      // ponytail: no `prev` sweep either. A long-form name varies in both
+      // the title AND the total, so a title edit strands a file and so does
+      // adding or removing a part (it changes `total`) — reordering is the
+      // only edit that produces the SAME name and overwrites in place.
       // Add `prev` (four lines, `isOutName` unchanged) if that gets annoying.
       const { size, mtimeMs } = statSync(out);
       console.warn(`vstack: stacked out/${name} (${Math.round(size / 1e6)} MB)`);

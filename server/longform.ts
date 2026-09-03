@@ -82,7 +82,14 @@ export async function stackWide(paths: string[], out: string): Promise<string> {
         `scale=${WIDE.w}:${WIDE.h},setsar=1[bgz${i}]`,
       `[fg${i}]scale=${WIDE.w}:${WIDE.h}:force_original_aspect_ratio=decrease:` +
         `force_divisible_by=2,setsar=1[fgz${i}]`,
-      `[bgz${i}][fgz${i}]overlay=(W-w)/2:(H-h)/2,fps=${FPS},` +
+      // `force_divisible_by=2` only guarantees the fitted size is even, not
+      // that `(W-w)/2` is: it lands odd whenever `w ≡ 2 (mod 4)` (e.g. a
+      // 1084x1920 upload fits to 610x1080, offset 655). An overlay at an odd
+      // offset in yuv420p sits on a half-chroma-sample boundary — the same
+      // invariant the custom-boxes feature states for its own overlay.
+      // floor(x/2)*2 forces both axes even; W/w are only known to ffmpeg, so
+      // this stays an expression rather than a TypeScript computation.
+      `[bgz${i}][fgz${i}]overlay=floor((W-w)/4)*2:floor((H-h)/4)*2,fps=${FPS},` +
         `setpts=PTS-STARTPTS,format=yuv420p[v${i}]`,
     );
     // A silent part's leg is cut out of the shared anullsrc instead, trimmed

@@ -115,12 +115,14 @@ export async function upload(file: File): Promise<UploadResult> {
   return res.json() as Promise<UploadResult>;
 }
 
-/** What `/api/stack` answers with. Same three fields `/api/export` returns,
- *  plus the total duration — the long-form bar has no marks to show, so the
- *  length is the only thing it can say about what came out. `url` already
- *  carries the file's mtime as a cache-buster, for the same reason the
- *  export's does. */
-export type StackResult = { name: string; url: string; size: number; duration: number };
+/** What `/api/stack` answers with — the same three fields `/api/export`
+ *  returns. `url` already carries the file's mtime as a cache-buster, for
+ *  the same reason the export's does.
+ *
+ *  The server also sends `duration`, which this type omits: nothing on the
+ *  client consumes it today. Extra JSON properties are ignored, so adding it
+ *  back is a one-line change the day something wants to show it. */
+export type StackResult = { name: string; url: string; size: number };
 
 /** Renders the uploaded parts, in the order given, into one horizontal
  *  video. `ids` are the UUIDs `upload` returned — never paths, and never
