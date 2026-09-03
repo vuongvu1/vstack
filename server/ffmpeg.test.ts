@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,11 +20,14 @@ import {
   exportClip,
   firstFrame,
   isOutName,
+  isUploadId,
   outName,
   probeFile,
   removeExport,
   segmentDigest,
   stillPath,
+  UPLOADS_DIR,
+  uploadPath,
 } from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
 
@@ -172,6 +176,44 @@ describe("outName — the traversal guard", () => {
     expect(isOutName(42)).toBe(false);
     expect(isOutName(undefined)).toBe(false);
     expect(isOutName({ toString: () => "clip-0000-0030.mp4" })).toBe(false);
+  });
+});
+
+describe("isUploadId", () => {
+  // The gate on the /media/uploads side of the API. Given the same
+  // exhaustive treatment `isOutName` and `videoIdFrom` get: it decides
+  // whether a client-supplied string becomes a path handed to ffmpeg.
+  it("accepts what randomUUID emits", () => {
+    expect(isUploadId(randomUUID())).toBe(true);
+    expect(isUploadId("f81d4fae-7dec-41d0-a765-00a0c91e6bf6")).toBe(true);
+  });
+
+  it("rejects traversal, absolute paths and separators", () => {
+    expect(isUploadId("../../etc/passwd")).toBe(false);
+    expect(isUploadId("/etc/passwd")).toBe(false);
+    expect(isUploadId("f81d4fae-7dec-41d0-a765-00a0c91e6bf6/../x")).toBe(false);
+    expect(isUploadId("f81d4fae\\7dec\\41d0\\a765\\00a0c91e6bf6")).toBe(false);
+  });
+
+  it("rejects the wrong shape, the wrong alphabet and the wrong case", () => {
+    expect(isUploadId("")).toBe(false);
+    expect(isUploadId("f81d4fae7dec41d0a76500a0c91e6bf6")).toBe(false);
+    expect(isUploadId("f81d4fae-7dec-41d0-a765-00a0c91e6bf")).toBe(false);
+    expect(isUploadId("f81d4fae-7dec-41d0-a765-00a0c91e6bf67")).toBe(false);
+    expect(isUploadId("F81D4FAE-7DEC-41D0-A765-00A0C91E6BF6")).toBe(false);
+    expect(isUploadId("g81d4fae-7dec-41d0-a765-00a0c91e6bf6")).toBe(false);
+  });
+
+  it("rejects non-strings", () => {
+    expect(isUploadId(undefined)).toBe(false);
+    expect(isUploadId(null)).toBe(false);
+    expect(isUploadId(42)).toBe(false);
+    expect(isUploadId(["f81d4fae-7dec-41d0-a765-00a0c91e6bf6"])).toBe(false);
+  });
+
+  it("builds a path inside UPLOADS_DIR", () => {
+    const id = randomUUID();
+    expect(uploadPath(id)).toBe(join(UPLOADS_DIR, `${id}.mp4`));
   });
 });
 

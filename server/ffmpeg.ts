@@ -44,6 +44,41 @@ export function clipPath(
   return join(MEDIA_DIR, videoId, clipName(windowStart, windowEnd, digest));
 }
 
+/** Files the user uploaded for a long-form stack.
+ *
+ *  Under MEDIA_DIR so `reportCache` counts them for free, but at the top
+ *  level rather than inside a `<videoId>/` directory — these have no video
+ *  id, and `listClips` walks per-video directories and matches CLIP_RE, so
+ *  it can never offer one of these as a clip.
+ *
+ *  Grows without eviction, exactly as `media/` and OUT_DIR already do.
+ *  Deliberate: re-rendering a stack after a title fix must not mean
+ *  re-uploading a gigabyte.
+ *  ponytail: no eviction. Add an LRU here the day it gets annoying. */
+export const UPLOADS_DIR = join(MEDIA_DIR, "uploads");
+
+export function uploadPath(id: string): string {
+  return join(UPLOADS_DIR, `${id}.mp4`);
+}
+
+/** Exactly what `randomUUID` emits, lowercase.
+ *
+ *  The gate on the `/media/uploads` side of this API — the counterpart to
+ *  `isOutName` on the `/out/` side and to `/api/export`'s eight-hex
+ *  `digest`. It is the strictest of the three, and can afford to be: the
+ *  server minted the id itself, so a client has nothing legitimate to send
+ *  here that this does not match. No slash, no dot-dot, no backslash, no
+ *  absolute path, no uppercase and no non-hex survives it.
+ *
+ *  Takes `unknown` for the same reason `isOutName` does: it is called on a
+ *  raw request-body field, and a `string` annotation there would be a
+ *  compile-time claim about a value that arrives from the wire. */
+const UPLOAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function isUploadId(id: unknown): id is string {
+  return typeof id === "string" && UPLOAD_ID.test(id);
+}
+
 /** A short, stable digest of a stitch's segment bounds. Hex only, so nothing
  *  client-shaped can reach the path — the same construction, and the same
  *  reasoning, as `customKey` in `server/mask.ts`.
