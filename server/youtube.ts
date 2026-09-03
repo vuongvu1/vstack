@@ -152,7 +152,23 @@ type ThumbnailSetResponse = {
   items?: { maxres?: { url?: string } }[];
 };
 
-export type SnippetInput = { title: string; description: string; tags: string };
+export type SnippetInput = {
+  title: string;
+  description: string;
+  tags: string;
+  /** Whether to guarantee a `#shorts` tag in the description.
+   *
+   *  Optional and defaulting to TRUE, so every existing caller, every test
+   *  and every request body written before this field existed behaves
+   *  exactly as it did.
+   *
+   *  It is false for exactly one thing: the long-form stack. `#shorts` is
+   *  what tells YouTube to classify an upload as a Short, and a
+   *  twenty-minute compilation carrying it is misfiled at the platform
+   *  level — which is not a cosmetic difference, and not something the
+   *  uploader can undo from Studio. */
+  shorts?: boolean;
+};
 
 export type VideoResource = {
   snippet: { title: string; description: string; tags: string[]; categoryId: string };
@@ -169,14 +185,17 @@ const CATEGORY = "22";
  *  be tested without a network. */
 export function buildSnippet(input: SnippetInput): VideoResource {
   const description = input.description.trim();
+  const shorts = input.shorts ?? true;
   return {
     snippet: {
       title: input.title.trim().slice(0, YT_TITLE_MAX),
       // Case-insensitive, and only when absent: a user who typed the tag
-      // themselves must not get it twice.
-      description: /#shorts\b/i.test(description)
-        ? description
-        : `${description === "" ? "" : `${description}\n\n`}${SHORTS}`,
+      // themselves must not get it twice. And only when this upload IS a
+      // short — see SnippetInput.shorts.
+      description:
+        !shorts || /#shorts\b/i.test(description)
+          ? description
+          : `${description === "" ? "" : `${description}\n\n`}${SHORTS}`,
       tags: input.tags
         .split(",")
         .map((tag) => tag.trim())

@@ -84,3 +84,47 @@ describe("buildSnippet with the shipped defaults", () => {
     ]);
   });
 });
+
+describe("buildSnippet's shorts flag", () => {
+  it("leaves the description alone when shorts is false", () => {
+    const { snippet } = buildSnippet({
+      title: "Tổng hợp",
+      description: "Xem thêm ở đây",
+      tags: "vtuber",
+      shorts: false,
+    });
+    expect(snippet.description).toBe("Xem thêm ở đây");
+    expect(snippet.description).not.toMatch(/#shorts/i);
+  });
+
+  it("still appends #Shorts when shorts is true", () => {
+    const { snippet } = buildSnippet({
+      title: "Ăn cơm chưa",
+      description: "Xem thêm ở đây",
+      tags: "vtuber",
+      shorts: true,
+    });
+    expect(snippet.description).toBe("Xem thêm ở đây\n\n#Shorts");
+  });
+
+  it("defaults to appending, so a body written before this field still works", () => {
+    const { snippet } = buildSnippet({
+      title: "Ăn cơm chưa",
+      description: "Xem thêm ở đây",
+      tags: "vtuber",
+    });
+    expect(snippet.description).toBe("Xem thêm ở đây\n\n#Shorts");
+  });
+
+  it("does not append to an empty description when shorts is false", () => {
+    // The true branch turns "" into "#Shorts"; the false branch must leave
+    // it empty rather than producing a lone newline pair.
+    const { snippet } = buildSnippet({
+      title: "Tổng hợp",
+      description: "",
+      tags: "",
+      shorts: false,
+    });
+    expect(snippet.description).toBe("");
+  });
+});

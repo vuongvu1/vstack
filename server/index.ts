@@ -748,6 +748,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       title: str(body.title, "title"),
       description: str(body.description, "description"),
       tags: str(body.tags, "tags"),
+      // Absent and `true` both mean "this is a short", so a body from a
+      // client that predates this field publishes exactly as it used to.
+      // Only an explicit `false` turns the tag off.
+      shorts: body.shorts !== false,
     });
     // After buildSnippet, not before: it is what trims, so a title of nothing
     // but spaces has to be caught on the other side of it.
