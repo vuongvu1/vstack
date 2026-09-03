@@ -33,7 +33,12 @@ multiple trim segments and a visible playhead and supersedes the 2026-08-20
 doc's one-`start`/`end`-pair trimming phase and `/api/window`'s body
 (`segments` + `duration`, not `start` + `end`), and supersedes the
 custom-boxes doc's `/api/export` body once more — an optional `digest` on top
-of everything else. No spec covers the speech engine: every one of them
+of everything else, plus `docs/specs/2026-09-03-vstack-longform-design.md`,
+which supersedes nothing and instead adds a SECOND journey through the app:
+uploaded vertical mp4s letterboxed onto blurred copies of themselves,
+concatenated into one 1920x1080 video, and published through the same
+preview phase. Everything every other spec describes is the *short* journey
+and is unchanged by it. No spec covers the speech engine: every one of them
 describes macOS `say` and its `Linh` voice, which this codebase no longer
 uses at all (see "the voice" below).
 `docs/plans/2026-08-20-vstack.md` is the historical build plan and carries
@@ -71,6 +76,7 @@ server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
                    firstFrame,
                    reportCache
 server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
+server/longform.ts WIDE, stackWide (the long journey's one ffmpeg pass)
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
                    starterDuration, checkStarter, installedVoices,
                    knownVoices, synthesize, speak, prependStarter (the title
@@ -88,7 +94,7 @@ server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
                    setThumbnail
 scripts/youtube-auth.ts  `pnpm youtube-auth` — the one-off OAuth dance
 server/ytdlp.ts    videoIdFrom, probe, fetchWindow, parseClipName, listClips
-server/index.ts    10 routes (9 POST + GET /out/<name>), serveOut range
+server/index.ts    12 routes (11 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
@@ -106,8 +112,9 @@ src/player.ts      YT IFrame API wrapper + trim strip
 src/editor.ts      box drag/resize overlay (crops over the <video>, pieces'
                    `out` rects over the <canvas>); returns { place, stop }
 src/preview.ts     canvas composite rAF loop
-src/main.ts        persistent shell, phase machine, all four phases
+src/main.ts        persistent shell, phase machine, all five phases
 media/             clip cache (gitignored)
+media/uploads/     long-form parts, one <uuid>.mp4 per upload (gitignored)
 ~/Desktop/vstack/  finished shorts, plus a vertical .jpg still beside each
                    one (OUT_DIR; VSTACK_OUT_DIR overrides). Outside the repo,
                    so the user sweeps it, not .gitignore
@@ -140,16 +147,21 @@ itself rather than importing `MEDIA_DIR` or `OUT_DIR` from `ffmpeg.ts`.
 `layout.ts` instead of `geometry.ts`. `mask.ts` sits *above* `ffmpeg.ts`
 because it needs `MEDIA_DIR`, which is why the mask path is passed into
 `exportClip` as `ExportOpts.mask` rather than resolved inside it.
+`longform.ts` sits beside `ffmpeg.ts` and `starter.ts`, not above either —
+it takes an output path from the caller and needs neither `MEDIA_DIR` nor
+`OUT_DIR`, and it imports `probeFile` from `ffmpeg.ts` and nothing else.
 
-Four phases: `idle` (URL) → `trimming` (YouTube iframe, mark start/end, no
-download) → `framing` (real `<video>` of the fetched window, crop boxes,
-canvas composite, export) → `preview` (the finished file played back on the
-right, with the upload's title/description/tags in a panel on the left where
-the framing `<video>` was — it has nothing left to say once the export
-exists). `publishForm` is a child of `sourceSlot`, not a third `.stage`
-column, and `sourceSlot` itself is never hidden: that would put the YouTube
-iframe's ancestor into `display:none`, and only its children are ever
-toggled. Export no longer downloads: it writes
+Five phases in two journeys that share the last one: `idle` (URL) →
+`trimming` (YouTube iframe, mark start/end, no download) → `framing` (real
+`<video>` of the fetched window, crop boxes, canvas composite, export) →
+`preview` (the finished file played back on the right, with the upload's
+title/description/tags in a panel on the left where the framing `<video>`
+was — it has nothing left to say once the export exists) is the short
+journey, and `idle` → `stacking` → `preview` is the long one. `publishForm`
+is a child of `sourceSlot`, not a third `.stage` column, and `stackPanel` is
+another beside it, under the same rule — `sourceSlot` itself is never
+hidden: that would put the YouTube iframe's ancestor into `display:none`,
+and only its children are ever toggled. Export no longer downloads: it writes
 `<OUT_DIR>/<slug>-<mmss>-<mmss>.mp4`, saves the opening frame beside it as a
 vertical `.jpg` for Studio's Shorts thumbnail slot, and advances the phase. Videos under
 `SKIP_TRIM_UNDER` (180s) skip `trimming`. `idle` has a second way in beside the
@@ -433,6 +445,53 @@ silently delete the very part the user was trying to adjust — the worst
 possible answer to an ordinary misclick. Refusing the edit outright leaves
 the strip exactly as it was, which reads as "that did nothing" instead of
 "that deleted your part".
+
+**`mode` is claimed on every exit from `idle`, not just the long one.** The
+`Long form →` button sets `"long"`; all three short-journey exits —
+`load()`'s skip-trim branch, `load()`'s trimming branch, and the
+cached-clip picker's open path — set `"short"`. Miss one of the three and
+`mode` sticks on whatever a previous session last set, which is silent
+because nothing downstream errors: an ordinary short export publishes
+*without* `#Shorts` — the exact misclassification the `shorts` flag exists
+to prevent, in reverse — and its `← Back` button on `preview` jumps to
+`stacking` instead of `framing`. Found in review, not by a test (fixed in
+commit `b7fe004`) — `state.test.ts` only exercises `save()`/`restore()`,
+which never touch `mode` at all, so nothing pins the three call sites down.
+
+**`#shorts` is what classifies an upload, so `buildSnippet` must not force
+it.** The flag is optional and defaults to `true`, which is what keeps every
+existing caller and every request body written before it exact — only the
+long journey sends `false`. A twenty-minute compilation carrying the tag is
+misfiled by YouTube at the platform level, and the uploader cannot undo it
+from Studio.
+
+**A long-form output's name passes `isOutName` unchanged, and that is load-
+bearing.** `outName(title, 0, total)` emits `<slug>-0000-<mmss>.mp4`, which
+today's `OUT_NAME` regex already accepts — which is the entire reason
+`/out/`, `/api/reveal` and `/api/publish` needed no edits for this feature.
+Do not widen `OUT_NAME` for long form; there is nothing to widen it for.
+
+**`stackWide` blurs at 480x270 and stretches back up, never at full
+resolution.** A 1080x1920 source scaled to *cover* 1920x1080 is 1920x3413,
+and `gblur` over that costs roughly fifty times what it costs at 480x270 —
+for a picture whose entire purpose is to be out of focus. The upscale
+supplies most of the softening on its own, which is also why
+`longform.ts`'s own `BLUR_SIGMA` is 12 where `starter.ts`'s is 30. The two
+are deliberately not shared: one constant for two blurs at two scales means
+tuning either one moves the other.
+
+**`stackWide`'s foreground uses `decrease`, not `-2:1080`.** An upload is
+whatever file the user picked; only the common case is 9:16. A part wider
+than 16:9 scaled to a fixed height overflows the frame, so the foreground
+is `scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2`
+— fits inside on both axes, even on both, for any input aspect.
+
+**`isUploadId` is the third client-string gate in this API, and the
+strictest.** `isOutName` validates a name the client chose; `/api/export`'s
+`digest` validates eight hex characters the client computed; this validates
+a UUID the *server* minted, so there is nothing legitimate a client can send
+that it does not match. The original filename never crosses the wire at all
+— the client keeps it purely for display.
 
 ## Gotchas that each cost real time
 
@@ -723,6 +782,18 @@ The HTTP calls, `open -R`, the preview bar and the auth script have no tests,
 like the rest of the network and DOM surface. The out-name tests in
 `server/ffmpeg.test.ts` are the traversal guard and get the same exhaustive
 treatment `videoIdFrom` does.
+`server/longform.test.ts` shells out to real ffmpeg and asserts output
+pixels, the same posture `server/ffmpeg.test.ts` holds: the output is
+1920x1080, a centre sample in each half carries that part's own colour, and
+a left-edge sample is NOT black — which is the assertion that fails if the
+blur leg is dropped and the graph pillarboxes instead. The two parts are
+different colours so the edge sample also proves each background tracks its
+own part, and the leg ordering is mutation-tested the way `concatClips`'
+already is. A silent second part covers the `anullsrc` stand-in, and a 16:9
+part covers an upload that is not vertical. `server/youtube.test.ts` gains
+the `shorts` flag's four cases. The upload route, the stacking panel and
+the reorder buttons have no tests, like the rest of the network and DOM
+surface.
 
 DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by design — vitest runs `environment: "node"` here and those behaviours are verified by hand.
 
@@ -863,3 +934,23 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
   at the video's duration paints its square corner past the track's own
   rounded one — a notch sticking out at exactly the two positions a user is
   most likely to mark.
+
+**`.out` is `aspect-ratio: 9 / 16` and a long-form video is not.** The slot
+holds the framing canvas (always vertical) as well as the preview `<video>`,
+so the shape is toggled by `render()` on the phase AND the mode
+(`.out.is-wide`), never set once. Without it a 16:9 output is squeezed into
+a thin strip with most of the card empty, which reads as a broken render.
+
+**`media/uploads/` grows without eviction and nothing lists it.**
+Deliberate: re-rendering a stack after a title fix must not mean
+re-uploading a gigabyte. `listClips` cannot reach it — it walks per-video
+directories and matches `CLIP_RE`, and a UUID at the top level is neither.
+`reportCache` counts it, so the boot log shows it growing.
+
+**`/api/upload` destroys the socket past `UPLOAD_MAX_BYTES` rather than
+answering.** Replying politely means having read the whole body first, which
+is the cost the cap exists to avoid — but a destroyed socket surfaces
+client-side as `BACKEND_DOWN` ("start the backend"), which is the wrong
+sentence for a file that is simply too big. That is why the client checks
+`file.size` first and the server's check is the backstop. Both read the same
+constant from `src/defaults.ts`.

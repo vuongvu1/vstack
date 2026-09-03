@@ -1559,6 +1559,32 @@ In `renderIdle`, add a third row. Replace the `rows` construction:
   return rows;
 ```
 
+- [ ] **Step 3b: Claim the mode on the way out of `idle` on the SHORT side too**
+
+`mode` is "set once on the way out of `idle`" — and the button above is only
+half of that. The three `setState` calls that leave `idle` on the short
+journey must each claim `mode: "short"`, or a session that visits `Long
+form →` and steps back reads a stale `"long"` for the rest of its life. That
+is invisible today and Critical after Task 9, which gates `doPublish`'s
+`shorts` flag and the preview back button on the same field: a short export
+would publish without `#Shorts` and offer a "Frame again" that jumps to
+`stacking`.
+
+Add `mode: "short",` to each of:
+
+1. the `phase: "framing"` call in `load()`'s skip-trim branch (videos under
+   `SKIP_TRIM_UNDER`),
+2. the `phase: "trimming"` call at the end of `load()`,
+3. the `phase: "framing"` call on the cached-clip picker's open path.
+
+Do **not** add it to the `phase: "framing"` call in the Continue-from-trimming
+path. That is not an exit from `idle` — it is already inside the short
+journey, and setting it there blurs the rule.
+
+One comment, on whichever of the three reads best, saying why: the two
+journeys' only shared phase is `preview`, so whichever way you leave `idle`
+has to claim the mode.
+
 - [ ] **Step 4: Add the panel and bar renderers**
 
 Add these to `src/main.ts`, next to `renderPublishForm`:
