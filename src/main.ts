@@ -182,6 +182,11 @@ async function load(url: string): Promise<void> {
         layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
         boxes: saved.boxes ?? [],
         customs: saved.customs ?? [],
+        // Every exit from `idle` on the short journey claims the mode: the
+        // two journeys' only shared phase is `preview`, so whichever way out
+        // of `idle` is taken has to set it, or a later visit reads whatever
+        // the long journey last left behind.
+        mode: "short",
         phase: "framing",
       });
       save();
@@ -199,6 +204,7 @@ async function load(url: string): Promise<void> {
       // cached-clip path), so a record saved against a different video's
       // length would otherwise reach /api/window and 400.
       segments: normalize(saved.segments ?? [{ start: 0, end: info.duration }], info.duration),
+      mode: "short",
       phase: "trimming",
     });
   });
@@ -815,6 +821,7 @@ function openClip(c: api.CachedClip): void {
     boxes: saved.boxes ?? [],
     customs: saved.customs ?? [],
     error: "",
+    mode: "short",
     phase: "framing",
   });
   if (persistSegments) save();
