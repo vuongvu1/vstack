@@ -322,7 +322,20 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   border-radius: var(--radius-2);
   background: var(--slate-a3);
   font-size: 13px;
+  /* Background only. Transitioning `all` would also animate the drop line,
+     which is a box-shadow and has to appear the instant the cursor crosses a
+     row — a fade there reads as lag on a control that is tracking a drag. */
+  transition: background 120ms;
 }
+
+/* `--slate-a4`, the same step `.btn-gray:hover` takes. No `:not(:disabled)`
+   dance here: a row is a div, so the generic `button:hover:not(:disabled)`
+   rule this file documents elsewhere never enters the fight. */
+.stack-row:hover { background: var(--slate-a4); }
+
+/* The grip is the row's draggability, so it comes up out of the background
+   on hover rather than staying at the resting `--slate-9`. */
+.stack-row:hover .stack-grip { color: var(--slate-11); }
 
 /* The filename takes the free space so the buttons stay pinned right. */
 .stack-name {
