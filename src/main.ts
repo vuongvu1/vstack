@@ -2034,8 +2034,35 @@ function renderStacking(): Node[] {
 
   const back = el("button", { className: "btn-gray", textContent: "← Back", disabled: busy });
   // The uploads stay in state: stepping back to pick a different journey
-  // must not throw away files already sent.
-  back.onclick = () => setState({ phase: "idle" });
+  // must not throw away files already sent. `parts` is deliberately absent
+  // from the clear below for exactly that reason — leave it alone, or the
+  // next "Long form →" makes the user re-upload a gigabyte to fix a typo.
+  //
+  // Everything else session-scoped from this render DOES get cleared. This
+  // is the first route back to `idle` this app has ever had, and `outName`
+  // survives into a following short journey as `state.outName` — which
+  // `doExport` sends as `prev`, and `prev` names a file to *delete*
+  // (`removeExport`, after the new export lands). Left set, a long-form
+  // render gets silently unlinked by an unrelated short export, no error, no
+  // badge. `starterTitle` and the `yt*` publish fields ride along for the
+  // same reason: none of them describe anything once the user is back at the
+  // URL field, and leaving them set either overwrites a *different* video's
+  // stored title (`starterTitle` persists unconditionally, see `save()`) or
+  // prefills the next short's publish panel with this journey's title,
+  // description and tags.
+  back.onclick = () =>
+    setState({
+      phase: "idle",
+      outName: "",
+      outUrl: "",
+      outSize: 0,
+      starterTitle: "",
+      ytTitle: "",
+      ytDescription: "",
+      ytTags: "",
+      ytVideoId: "",
+      ytThumbnail: false,
+    });
 
   // `go`, not `render` — a local named `render` would shadow this module's
   // own render() function for the rest of this scope, which is a landmine
