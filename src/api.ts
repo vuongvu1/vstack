@@ -1,6 +1,7 @@
 import type { Rect } from "./geometry.ts";
 import type { CustomBox } from "./custom.ts";
 import type { Segment } from "./segments.ts";
+import { UPLOAD_MAX_BYTES } from "./defaults.ts";
 
 export type ProbeResult = {
   videoId: string;
@@ -34,14 +35,14 @@ export type WindowResult = {
 const BACKEND_DOWN =
   "Backend not reachable \u2014 start it with `pnpm server` in a second terminal.";
 
-async function post(path: string, body: unknown): Promise<Response> {
+/** Everything both senders share: the network-down translation and the
+ *  server's own error body. Extracted from `post` when `upload` arrived —
+ *  it sends raw bytes rather than JSON but wants identical failure
+ *  reporting, and duplicating this is how the two would drift. */
+async function send(path: string, init: RequestInit): Promise<Response> {
   let res: Response;
   try {
-    res = await fetch(path, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    res = await fetch(path, init);
   } catch {
     // Nothing answered at all — no dev server, or it refused the connection.
     // fetch() rejects with an opaque "TypeError: Failed to fetch" that means
@@ -73,6 +74,59 @@ async function post(path: string, body: unknown): Promise<Response> {
     throw new Error(message);
   }
   return res;
+}
+
+async function post(path: string, body: unknown): Promise<Response> {
+  return send(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export type UploadResult = { id: string; duration: number; width: number; height: number };
+
+/** Sends one file's raw bytes to `/api/upload`.
+ *
+ *  Not `post`: the body is the file itself, not JSON. `multipart/form-data`
+ *  would need a parser on the other end that this dependency-free server
+ *  does not have, and buys nothing for a single file over loopback — the
+ *  platform streams a `File` body for free.
+ *
+ *  The size check is here as well as on the server, and the split is
+ *  deliberate: the server DESTROYS the socket past the cap (answering
+ *  politely would mean reading the whole thing first, which is the cost the
+ *  cap exists to avoid), and a destroyed socket surfaces as `BACKEND_DOWN`
+ *  — "start the backend" for a file that is simply too big. This is what
+ *  turns that into a sentence the user can act on. The server's check is
+ *  still the actual boundary. */
+export async function upload(file: File): Promise<UploadResult> {
+  if (file.size > UPLOAD_MAX_BYTES) {
+    throw new Error(
+      `${file.name} is ${(file.size / 1e6).toFixed(0)} MB — the limit is ` +
+        `${Math.round(UPLOAD_MAX_BYTES / 1e6)} MB.`,
+    );
+  }
+  const res = await send("/api/upload", {
+    method: "POST",
+    headers: { "content-type": "video/mp4" },
+    body: file,
+  });
+  return res.json() as Promise<UploadResult>;
+}
+
+/** What `/api/stack` answers with. Same three fields `/api/export` returns,
+ *  plus the total duration — the long-form bar has no marks to show, so the
+ *  length is the only thing it can say about what came out. `url` already
+ *  carries the file's mtime as a cache-buster, for the same reason the
+ *  export's does. */
+export type StackResult = { name: string; url: string; size: number; duration: number };
+
+/** Renders the uploaded parts, in the order given, into one horizontal
+ *  video. `ids` are the UUIDs `upload` returned — never paths, and never
+ *  the local filenames, which the server has no idea about. */
+export async function stack(body: { ids: string[]; title: string }): Promise<StackResult> {
+  return (await post("/api/stack", body)).json() as Promise<StackResult>;
 }
 
 export async function probe(url: string): Promise<ProbeResult> {
@@ -174,6 +228,13 @@ export async function publish(body: {
   title: string;
   description: string;
   tags: string;
+  /** Whether this upload is a Short. `#shorts` in the description is what
+   *  classifies it, and a long-form compilation carrying that tag is
+   *  misfiled at the platform level — so this is `false` for a stack and
+   *  `true` for everything the short journey produces. Required here rather
+   *  than optional: the caller always knows which journey it is on, and a
+   *  default would let a new call site get it wrong silently. */
+  shorts: boolean;
 }): Promise<{ videoId: string; url: string; thumbnail: boolean }> {
   return (await post("/api/publish", body)).json() as Promise<{
     videoId: string;

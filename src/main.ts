@@ -1291,6 +1291,7 @@ async function doPublish(): Promise<void> {
         title,
         description: s.ytDescription,
         tags: s.ytTags,
+        shorts: true,
       });
       setState({ ytVideoId: videoId, ytThumbnail: thumbnail });
       bell();
