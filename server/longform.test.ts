@@ -122,6 +122,38 @@ describe("stackWide", () => {
     expect(mid.r).toBeLessThan(90);
   }, 120_000);
 
+  // Pins the anySilent === false branch: no anullsrc input is appended at
+  // all, so every leg's audio comes straight from its own part (`i:a`).
+  // This is the PRODUCTION-COMMON case — every part vstack itself exports
+  // has audio — and the one that fails if the no-anullsrc input-index
+  // arithmetic is ever broken.
+  it("stacks two sounded parts with no anullsrc input at all", async () => {
+    const out = join(dir, "both-sound.mp4");
+    await stackWide([red, red], out);
+
+    const probed = await probeFile(out);
+    expect(probed.width).toBe(1920);
+    expect(probed.height).toBe(1080);
+    expect(probed.hasAudio).toBe(true);
+    expect(probed.seconds).toBeGreaterThan(3.5);
+    expect(probed.seconds).toBeLessThan(4.5);
+  }, 120_000);
+
+  // Pins the shared-anullsrc branch with MORE THAN ONE silent leg: both
+  // parts' audio legs reference the same anullsrc input label. This is the
+  // case that fails if the shared label cannot be referenced twice.
+  it("stacks two silent parts off one shared anullsrc input", async () => {
+    const out = join(dir, "both-silent.mp4");
+    await stackWide([blue, blue], out);
+
+    const probed = await probeFile(out);
+    expect(probed.width).toBe(1920);
+    expect(probed.height).toBe(1080);
+    expect(probed.hasAudio).toBe(true);
+    expect(probed.seconds).toBeGreaterThan(3.5);
+    expect(probed.seconds).toBeLessThan(4.5);
+  }, 120_000);
+
   it("refuses an empty part list", async () => {
     await expect(stackWide([], join(dir, "never.mp4"))).rejects.toThrow(/at least one/);
   });
