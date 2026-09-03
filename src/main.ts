@@ -667,6 +667,36 @@ function renderTrimming(): Node[] {
     return "";
   }, !ready);
 
+  // Back to the range `load()` starts every video on. Only offered at one
+  // part, because `normalize` unions overlapping ranges: a full-video reset
+  // with several parts on the strip would swallow every other part into it,
+  // which is a trim thrown away by a button labelled "Reset".
+  // ponytail: per-part reset with siblings would need a "what should this
+  // part become" answer that nothing in the design has — drop the extras
+  // first.
+  const reset = el("button", {
+    className: "btn-gray",
+    textContent: "Reset",
+    title:
+      s.segments.length === 1
+        ? "Reset this part to the whole video"
+        : "Reset needs a single part — drop the extras first",
+    disabled: !ready || s.segments.length !== 1,
+  });
+  reset.onclick = () => {
+    const cur = getState();
+    if (cur.segments.length !== 1) return;
+    const seg = cur.segments[0];
+    if (seg === undefined) return;
+    // The ticks are keyed by mark *value*, so the bounds being discarded
+    // take theirs with them — those marks no longer exist.
+    aimed.start.delete(seg.start);
+    aimed.end.delete(seg.end);
+    activeSegment = 0;
+    setState({ segments: [{ start: 0, end: cur.duration }] });
+    save();
+  };
+
   // Four rows, grouped by what each row is *for*, because one row of a dozen
   // controls wrapped wherever it ran out of width — which put Continue, the
   // only phase-advancing action, on a line of its own below everything else.
@@ -696,6 +726,7 @@ function renderTrimming(): Node[] {
       { className: "bar-row" },
       ...controls,
       ...stamp,
+      reset,
       el("div", { className: "bar-end" }, warn, go),
     ),
   ];
