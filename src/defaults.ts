@@ -64,3 +64,21 @@ export function defaultTitle(starterTitle: string): string {
     .trim();
   return head === "" ? TITLE_HASHTAGS : `${head} ${TITLE_HASHTAGS}`;
 }
+
+/** The largest file `/api/upload` will take, in bytes.
+ *
+ *  Lives here rather than in the server because BOTH sides need it: the
+ *  client refuses an oversized file before sending a byte (so the user gets
+ *  a sentence instead of a dead connection), and the server enforces it
+ *  anyway as the actual boundary. `defaults.ts` is already the shared
+ *  client/server module — `server/youtube.ts` imports `YT_TITLE_MAX` from
+ *  it — and this is exactly the kind of value that gets edited by hand.
+ *
+ *  512 MB is roughly a 20-minute 1080p short at this app's own bitrate,
+ *  which is far past anything this feature is for. */
+export const UPLOAD_MAX_BYTES = 512 << 20;
+
+/** How many parts one stack may hold. A cap rather than no cap because
+ *  `stackWide` opens every part as a simultaneous ffmpeg input, and the
+ *  filter graph grows five legs per part. */
+export const MAX_PARTS = 20;

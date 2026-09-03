@@ -1,33 +1,46 @@
 import { execFile, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createReadStream, existsSync, statSync, unlinkSync } from "node:fs";
+import {
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import type { Rect } from "../src/geometry.ts";
 import { layoutById } from "../src/layout.ts";
 import type { CustomBox } from "../src/custom.ts";
+import { MAX_PARTS, UPLOAD_MAX_BYTES } from "../src/defaults.ts";
 import { MAX_SEGMENTS, isValidSegments } from "../src/segments.ts";
 import { HttpError } from "./errors.ts";
 import {
   OUT_DIR,
+  UPLOADS_DIR,
   assertBoxes,
   assertCustoms,
   clipPath,
   exportClip,
   firstFrame,
   isOutName,
+  isUploadId,
   outName,
   outPath,
   probeFile,
   removeExport,
   reportCache,
   stillPath,
+  uploadPath,
 } from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
+import { stackWide } from "./longform.ts";
 import { VOICE, checkStarter, knownVoices, prependStarter, speak } from "./starter.ts";
 import {
   buildSnippet,
@@ -556,6 +569,153 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       });
       await rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
         console.error("vstack: temp dir cleanup failed:", err);
+      });
+    }
+  }
+
+  // The first route in this server that takes BYTES rather than JSON, and
+  // deliberately raw ones: `multipart/form-data` would mean hand-rolling a
+  // boundary parser (a bug farm) or taking a dependency (this server has
+  // none), and buys nothing for a single file over loopback.
+  //
+  // Note what is NOT here: the original filename. The client keeps it for
+  // display and the server's handle is the UUID it minted itself, so unlike
+  // `isOutName` and `/api/export`'s `digest` there is no client-supplied
+  // path component to validate on the way IN at all.
+  if (req.url === "/api/upload") {
+    await mkdir(UPLOADS_DIR, { recursive: true });
+    const id = randomUUID();
+    const final = uploadPath(id);
+    // The id is already unique, so the partial needs no second UUID the way
+    // an export's does — `outName` is deterministic and can collide, this
+    // cannot. The `.part` suffix is still the same lesson: a half-written
+    // file must never sit under the name a later request can ask for.
+    const partial = join(UPLOADS_DIR, `${id}.part.mp4`);
+    inFlight.add(partial);
+    let tooBig = false;
+    try {
+      let seen = 0;
+      // Counted in a Transform IN the pipeline, never in a `req.on("data")`
+      // listener: attaching one of those switches the request into flowing
+      // mode before `pipeline` has piped it anywhere, and the first chunks
+      // go on the floor. A truncated upload that still probes is the worst
+      // possible failure here — it would render, and only the tail would be
+      // missing.
+      const cap = new Transform({
+        transform(chunk: Buffer, _enc, done) {
+          seen += chunk.length;
+          if (seen > UPLOAD_MAX_BYTES) {
+            // Erroring the pipeline destroys the request with it. Failing
+            // rather than answering politely is the point: a polite reply
+            // means having read the whole body first, which is the cost the
+            // cap exists to avoid. The client checks `UPLOAD_MAX_BYTES`
+            // before sending, so this is the backstop, not the message.
+            tooBig = true;
+            done(new Error("upload exceeds UPLOAD_MAX_BYTES"));
+            return;
+          }
+          done(null, chunk);
+        },
+      });
+      await pipeline(req, cap, createWriteStream(partial));
+      // THE TRUST BOUNDARY. Nothing else inspects these bytes, and nothing
+      // needs to — ffmpeg is their only consumer, so "ffprobe understands
+      // it" is exactly the property that matters.
+      const probed = await probeFile(partial);
+      await rename(partial, final);
+      console.warn(
+        `vstack: uploaded ${id} (${Math.round(statSync(final).size / 1e6)} MB)`,
+      );
+      reportCache();
+      return send(res, 200, {
+        id,
+        duration: probed.seconds,
+        width: probed.width,
+        height: probed.height,
+      });
+    } catch (err) {
+      if (tooBig) {
+        // The socket is already gone; there is nothing to answer on.
+        console.warn(`vstack: refused an upload over ${UPLOAD_MAX_BYTES} bytes`);
+        return;
+      }
+      throw new HttpError(400, `That file is not video ffmpeg can read: ${
+        err instanceof Error ? err.message : String(err)
+      }`);
+    } finally {
+      inFlight.delete(partial);
+      // force:true suppresses ENOENT, which is the success path — the
+      // rename already took the partial away. A throwing finally would
+      // escape this route entirely, so it swallows its own errors.
+      await rm(partial, { force: true }).catch((err: unknown) => {
+        console.error("vstack: upload partial cleanup failed:", err);
+      });
+    }
+  }
+
+  // The long-form render. Takes ids, never paths: `uploadPath` builds the
+  // path from an id `isUploadId` has already reduced to 36 hex-and-dash
+  // characters.
+  if (req.url === "/api/stack") {
+    const raw = await json<Record<string, unknown>>(req);
+    const title = readTitle(raw.title, "title");
+    const ids = raw.ids;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return send(res, 400, { error: "ids must be a non-empty array." });
+    }
+    if (ids.length > MAX_PARTS) {
+      return send(res, 400, { error: `At most ${MAX_PARTS} parts.` });
+    }
+    if (!ids.every(isUploadId)) return send(res, 400, { error: "Bad upload id." });
+    const paths = ids.map(uploadPath);
+    const missing = paths.find((p) => !existsSync(p));
+    if (missing !== undefined) {
+      return send(res, 404, { error: "One of those uploads is no longer on disk." });
+    }
+
+    const probed = await Promise.all(paths.map((p) => probeFile(p)));
+    // Ceiled, so the name is stable and integral the way every other name
+    // this app writes is. NOT segments.ts's `totalDuration`, which sums
+    // source-timeline segments and has nothing to do with this path despite
+    // the matching shape.
+    const total = Math.ceil(probed.reduce((sum, p) => sum + p.seconds, 0));
+
+    await mkdir(OUT_DIR, { recursive: true });
+    // Marks of 0 and the total: `outName` emits `<slug>-0000-<mmss>.mp4`,
+    // which today's OUT_NAME regex already accepts. That is the whole
+    // reason /out/, /api/reveal and /api/publish need no changes — as far
+    // as they can tell this is an ordinary export.
+    const name = outName(title, 0, total);
+    const out = join(OUT_DIR, name);
+    const partial = out.replace(/\.mp4$/, `.${randomUUID()}.part.mp4`);
+
+    inFlight.add(partial);
+    try {
+      await stackWide(paths, partial);
+      await rename(partial, out);
+      // No `.jpg` still beside it, unlike an export: that file exists for
+      // Studio's *Shorts* thumbnail slot, and a 16:9 video has no such slot.
+      //
+      // ponytail: no `prev` sweep either. A long-form name varies only in
+      // the title and the total, so a re-render after a reorder produces the
+      // SAME name and overwrites itself; only a title edit strands a file.
+      // Add `prev` (four lines, `isOutName` unchanged) if that gets annoying.
+      const { size, mtimeMs } = statSync(out);
+      console.warn(`vstack: stacked out/${name} (${Math.round(size / 1e6)} MB)`);
+      return send(res, 200, {
+        name,
+        // The mtime is load-bearing for the same reason it is on /api/export:
+        // the name is stable across re-renders, so without a cache-buster the
+        // <video> re-shows the previous render and a reorder looks like it
+        // did nothing.
+        url: `/out/${name}?t=${Math.round(mtimeMs)}`,
+        size,
+        duration: total,
+      });
+    } finally {
+      inFlight.delete(partial);
+      await rm(partial, { force: true }).catch((err: unknown) => {
+        console.error("vstack: stack partial cleanup failed:", err);
       });
     }
   }
