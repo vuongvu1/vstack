@@ -345,10 +345,23 @@ drops onto any other row through the HTML5 drag API; the `↑`/`↓` buttons sta
 beside it because native drag-and-drop has no keyboard path at all. Both ends
 call the same `reorder(from, to)` — two array splices against live state.
 
+The drop target is marked with a 2px line — `is-drop-before` on the target's
+top edge, `is-drop-after` on its bottom. Which side is not cosmetic: `reorder`
+splices the moved row OUT before inserting it at `to`, so every index past the
+source shifts down by one and a downward move lands *after* the target while
+an upward one lands *before* it. A fixed side would point at the wrong gap on
+every second drag. It is an inset `box-shadow` rather than a border, which
+would add 2px to the row's box and nudge the whole list on every `dragover`.
+
+`clearDropMarks` runs at the top of each `dragover` rather than out of a
+`dragleave` handler: `dragleave` also fires when the pointer crosses into one
+of the row's own children, so a per-row clear flickers the line as the cursor
+travels along a row it is still over.
+
 `ponytail:` the HTML5 drag API rather than pointer events, so there is no
-autoscroll when the list runs past the panel and no drop indicator beyond the
-dragged row going translucent. Reach for pointer capture the day either one
-bites. The source index lives in a module-scoped `dragFrom` rather than being
+autoscroll when the list runs past the panel and the line marks a whole row
+rather than tracking the cursor's position within it. Reach for pointer
+capture the day either one bites. The source index lives in a module-scoped `dragFrom` rather than being
 read back out of `dataTransfer`, because the spec only exposes the payload on
 `drop` and a `dragover` handler has to know the source to decide whether to
 accept at all; the transfer still carries it as `text/plain`, since Firefox

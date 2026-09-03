@@ -1982,6 +1982,18 @@ let stackBtn: HTMLButtonElement | null = null;
  *  `dataTransfer` is empty. */
 let dragFrom = -1;
 
+/** Wipes the drop line from every row. Called at the top of each `dragover`
+ *  rather than from a `dragleave` handler: `dragleave` also fires when the
+ *  pointer crosses into one of the row's own children — the name span, a
+ *  button — so a per-row clear flickers the line off and on as the cursor
+ *  travels along a row it is still over. Clearing the panel and re-marking
+ *  the one row under the cursor has no such state to get wrong. */
+function clearDropMarks(): void {
+  stackPanel
+    .querySelectorAll(".stack-row")
+    .forEach((r) => r.classList.remove("is-drop-before", "is-drop-after"));
+}
+
 /** The left column during `stacking`: the uploaded parts, in render order. */
 function renderStackPanel(): Node[] {
   const s = getState();
@@ -2065,17 +2077,31 @@ function renderStackPanel(): Node[] {
     row.ondragend = () => {
       dragFrom = -1;
       row.classList.remove("is-dragging");
+      clearDropMarks();
     };
     // preventDefault is what marks a node as a drop target at all; without it
     // `drop` never fires. Skipping the row being dragged keeps the cursor
     // reading "no" over its own origin.
     row.ondragover = (e) => {
-      if (dragFrom === -1 || dragFrom === i) return;
+      if (dragFrom === -1) return;
+      clearDropMarks();
+      // Back over its own row: no line and no preventDefault, so the cursor
+      // reads "no drop" and nothing claims the row would move. Clearing
+      // BEFORE this return is the point — returning first would strand the
+      // line on whichever row the cursor last crossed.
+      if (dragFrom === i) return;
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      // Which side the line goes on is not a preference — it is where the row
+      // actually lands. `reorder` splices the moved row OUT before inserting
+      // it at `to`, so every index past the source shifts down by one: a
+      // downward move ends up after the target, an upward one before it. One
+      // fixed side would point at the wrong gap on every second drag.
+      row.classList.add(dragFrom < i ? "is-drop-after" : "is-drop-before");
     };
     row.ondrop = (e) => {
       e.preventDefault();
+      clearDropMarks();
       if (dragFrom !== -1 && dragFrom !== i) reorder(dragFrom, i);
       dragFrom = -1;
     };
