@@ -286,6 +286,61 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   text-align: left;
 }
 
+/* Mirrors .publish-form: it owns the same column in a different phase. */
+.stack-panel {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  overflow-y: auto;
+  /* `.source` is `place-items: center`, which would otherwise centre every
+     row's text as well as the panel itself. */
+  text-align: left;
+}
+
+.stack-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-2);
+  background: var(--slate-a3);
+  font-size: 13px;
+}
+
+/* The filename takes the free space so the buttons stay pinned right. */
+.stack-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stack-index {
+  font-variant-numeric: tabular-nums;
+  color: var(--slate-11);
+  min-width: 1.5em;
+}
+
+.stack-dur { font-variant-numeric: tabular-nums; color: var(--slate-11); }
+
+/* Square-ish, so a row of three reads as controls on the row rather than as
+   three separate actions. */
+.stack-row button {
+  min-width: var(--control-height);
+  padding-inline: var(--space-2);
+}
+
+.stack-empty {
+  margin: 0;
+  color: var(--slate-11);
+  font-size: 13px;
+}
+
 .publish-heading {
   margin: 0;
   font-size: 13px;

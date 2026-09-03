@@ -14,6 +14,8 @@ import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER, moveBy, resizeFromCorner } from 
 import type { Rect } from "./geometry.ts";
 import {
   DESCRIPTION_TEMPLATE,
+  LONG_DESCRIPTION_TEMPLATE,
+  LONG_TAGS_DEFAULT,
   TAGS_DEFAULT,
   YT_TITLE_MAX,
   defaultTitle,
@@ -109,7 +111,12 @@ const outPlaceholder = el("p", { textContent: "Output preview." });
 // removed, and never by hiding sourceSlot itself, which would put the YouTube
 // iframe's ancestor into display:none.
 const publishForm = el("div", { className: "publish-form", hidden: true });
-const sourceSlot = el("div", { className: "source" }, sourcePlaceholder, publishForm);
+// The long-form phase's part list. Part of the persistent shell for the same
+// reason publishForm is: it takes over the left column during `stacking`,
+// and is only ever hidden — never removed, and never by hiding sourceSlot
+// itself, which would put the YouTube iframe's ancestor into display:none.
+const stackPanel = el("div", { className: "stack-panel", hidden: true });
+const sourceSlot = el("div", { className: "source" }, sourcePlaceholder, publishForm, stackPanel);
 const outSlot = el("div", { className: "out" }, outPlaceholder);
 const barSlot = el("div", { className: "bar" });
 const statusSlot = el("div", { className: "status" });
@@ -1260,6 +1267,53 @@ async function doExport(): Promise<void> {
   });
 }
 
+/** Uploads each picked file and appends it to the stack, in the order the
+ *  file dialog handed them over.
+ *
+ *  Sequential rather than `Promise.all`: these are hundreds of megabytes
+ *  each, the order of the resulting list is the order they were picked, and
+ *  a parallel upload of four files would race that ordering for no
+ *  throughput on a loopback socket. */
+async function doUpload(files: File[]): Promise<void> {
+  await guard("Uploading…", async () => {
+    for (const [i, file] of files.entries()) {
+      setState({ busy: `Uploading ${i + 1}/${files.length}…` });
+      const { id, duration } = await api.upload(file);
+      // Live state, not a snapshot: each iteration appends to what the
+      // previous one wrote.
+      setState({ parts: [...getState().parts, { id, name: file.name, duration }] });
+    }
+  });
+}
+
+/** Renders the stack and moves to the preview phase. The file lands in
+ *  `out/` server-side under a name today's `isOutName` already accepts, so
+ *  preview, Reveal and Publish all work on it unchanged. */
+async function doStack(): Promise<void> {
+  const s = getState();
+  // Both checks the Render button is disabled on, repeated here rather than
+  // trusting it — the title reaches the button through a quiet update.
+  const title = s.starterTitle.trim();
+  if (title === "" || s.parts.length === 0) return;
+  await guard("Rendering… (a 5-minute stack takes ~1-2 min)", async () => {
+    const out = await api.stack({ ids: s.parts.map((p) => p.id), title });
+    setState({
+      phase: "preview",
+      outName: out.name,
+      outUrl: out.url,
+      outSize: out.size,
+      // Both defaults are `||`-guarded for the same reason the export's are:
+      // a re-render after a reorder keeps whatever was already typed.
+      ytTitle: getState().ytTitle || defaultTitle(title),
+      ytDescription: getState().ytDescription || LONG_DESCRIPTION_TEMPLATE,
+      ytTags: getState().ytTags || LONG_TAGS_DEFAULT,
+      ytVideoId: "",
+      ytThumbnail: false,
+    });
+    bell();
+  });
+}
+
 /** Uploads the finished short as a private draft and remembers its id.
  *
  *  The percentage comes from polling rather than from this request, which
@@ -1858,6 +1912,163 @@ function renderTryVoice(
   return button;
 }
 
+/** The Render button lives in the bar and the parts it is gated on live in
+ *  the panel — two functions, one render pass. Uploading flips it in place
+ *  the way `publishBtn` is flipped by a quiet keystroke, because an upload
+ *  finishing calls setState anyway but the *disabled* state has to be right
+ *  the moment the list changes. Both are rebuilt in the same render() call,
+ *  so this is never stale. */
+let stackBtn: HTMLButtonElement | null = null;
+
+/** The left column during `stacking`: the uploaded parts, in render order. */
+function renderStackPanel(): Node[] {
+  const s = getState();
+  const locked = Boolean(s.busy);
+
+  if (s.parts.length === 0) {
+    return [
+      el("h2", { className: "publish-heading", textContent: "Parts" }),
+      el("p", {
+        className: "stack-empty",
+        textContent: "Add .mp4 files below. They play in this order, top to bottom.",
+      }),
+    ];
+  }
+
+  // Reads live state rather than a snapshot, the same rule `+ Box` follows:
+  // every handler here rewrites the array, and two clicks before a render
+  // lands would otherwise each build from the same stale copy.
+  const reorder = (from: number, to: number) => {
+    const parts = [...getState().parts];
+    const moved = parts[from];
+    if (moved === undefined || to < 0 || to >= parts.length) return;
+    parts.splice(from, 1);
+    parts.splice(to, 0, moved);
+    setState({ parts });
+  };
+
+  const rows = s.parts.map((part, i) => {
+    // ponytail: reorder is buttons, not drag-and-drop. Two array splices
+    // against a pointer-capture state machine with drop targets and
+    // autoscroll — and these are keyboard-reachable for free. Upgrade to
+    // dragging the day the list routinely runs past a screenful.
+    const up = el("button", {
+      textContent: "↑",
+      title: "Move earlier",
+      ariaLabel: `Move ${part.name} earlier`,
+      disabled: locked || i === 0,
+    });
+    up.onclick = () => reorder(i, i - 1);
+
+    const down = el("button", {
+      textContent: "↓",
+      title: "Move later",
+      ariaLabel: `Move ${part.name} later`,
+      disabled: locked || i === s.parts.length - 1,
+    });
+    down.onclick = () => reorder(i, i + 1);
+
+    const remove = el("button", {
+      textContent: "✕",
+      title: "Remove from this stack",
+      ariaLabel: `Remove ${part.name}`,
+      disabled: locked,
+    });
+    // Removes it from the stack, NOT from disk: the upload stays in
+    // media/uploads so re-adding it costs nothing.
+    remove.onclick = () => setState({ parts: getState().parts.filter((p) => p.id !== part.id) });
+
+    return el(
+      "div",
+      { className: "stack-row" },
+      el("span", { className: "stack-index", textContent: String(i + 1) }),
+      el("span", { className: "stack-name", title: part.name, textContent: part.name }),
+      el("span", { className: "stack-dur", textContent: clock(part.duration) }),
+      up,
+      down,
+      remove,
+    );
+  });
+
+  return [el("h2", { className: "publish-heading", textContent: "Parts" }), ...rows];
+}
+
+/** The stacking bar: adding files, naming the output, and rendering it. */
+function renderStacking(): Node[] {
+  const s = getState();
+  const busy = s.busy !== "";
+  const total = s.parts.reduce((sum, p) => sum + p.duration, 0);
+
+  const picker = el("input", {
+    type: "file",
+    multiple: true,
+    accept: "video/mp4",
+    disabled: busy,
+  });
+  // The choice IS the action, like the cached-clip picker: there is nothing
+  // to confirm about having picked files. `value` is cleared afterwards so
+  // picking the same file twice in a row still fires a change event.
+  picker.onchange = () => {
+    const files = [...(picker.files ?? [])];
+    picker.value = "";
+    if (files.length > 0) void doUpload(files);
+  };
+
+  const title = el("input", {
+    type: "text",
+    placeholder: "Title (names the file)",
+    className: "field-grow",
+    value: s.starterTitle,
+    disabled: busy,
+  });
+
+  const back = el("button", { className: "btn-gray", textContent: "← Back", disabled: busy });
+  // The uploads stay in state: stepping back to pick a different journey
+  // must not throw away files already sent.
+  back.onclick = () => setState({ phase: "idle" });
+
+  // `go`, not `render` — a local named `render` would shadow this module's
+  // own render() function for the rest of this scope, which is a landmine
+  // for whoever next adds a line here that needs it.
+  const go = el("button", {
+    className: "btn-solid",
+    textContent: "Render →",
+    disabled: busy || s.parts.length === 0 || s.starterTitle.trim() === "",
+  });
+  go.onclick = () => void doStack();
+  stackBtn = go;
+
+  // Quiet, like every other text field here: a notifying update per
+  // keystroke would rebuild the very input being typed into and drop the
+  // caret. Which is exactly why Render's `disabled` is flipped in place —
+  // without this it would stay disabled until some unrelated setState
+  // happened along, which reads as a broken button rather than as "type a
+  // title first". `doStack` re-checks the title itself rather than trusting
+  // the button.
+  title.oninput = () => {
+    setQuiet({ starterTitle: title.value });
+    if (stackBtn) {
+      const live = getState();
+      stackBtn.disabled =
+        title.value.trim() === "" || live.parts.length === 0 || Boolean(live.busy);
+    }
+  };
+
+  return [
+    el(
+      "div",
+      { className: "bar-row" },
+      picker,
+      el("span", {
+        className: "badge",
+        textContent: `${s.parts.length} part${s.parts.length === 1 ? "" : "s"}`,
+      }),
+      el("span", { className: "badge", textContent: clock(total) }),
+    ),
+    el("div", { className: "bar-row" }, title, el("div", { className: "bar-end" }, back, go)),
+  ];
+}
+
 /** The preview bar: what came out, publishing it, and the ways out of here. */
 /** The Publish button is rendered into the bar, but the title that gates it
  *  is rendered into the left panel — two functions, one render pass. A quiet
@@ -2132,13 +2343,22 @@ function renderIdle(s: AppState): Node[] {
   input.onkeydown = (e) => {
     if (e.key === "Enter") void load(input.value);
   };
-  // Two ways in, one row each: paste a URL, or reopen something already
-  // fetched. The second row is omitted entirely when the cache is empty —
-  // which is also what a failed /api/clips looks like.
+  // Three ways in: paste a URL, reopen something already fetched, or start a
+  // long-form stack. The middle row is omitted entirely when the cache is
+  // empty — which is also what a failed /api/clips looks like.
+  const long = el("button", {
+    className: "btn-gray",
+    textContent: "Long form →",
+    title: "Stack finished vertical videos into one horizontal video",
+    disabled: busy,
+  });
+  long.onclick = () => setState({ mode: "long", phase: "stacking", error: "" });
+
   const rows: Node[] = [el("div", { className: "bar-row" }, input, go)];
   if (clipList.length > 0) {
     rows.push(el("div", { className: "bar-row" }, renderClipPicker(s)));
   }
+  rows.push(el("div", { className: "bar-row" }, long));
   return rows;
 }
 
@@ -2201,11 +2421,17 @@ function render(): void {
   if (outBoxesLayer) outBoxesLayer.hidden = s.phase !== "framing";
 
   publishForm.hidden = s.phase !== "preview";
+  stackPanel.hidden = s.phase !== "stacking";
 
   if (s.phase === "idle") barSlot.replaceChildren(...renderIdle(s));
   else if (s.phase === "trimming") barSlot.replaceChildren(...renderTrimming());
   else if (s.phase === "framing") barSlot.replaceChildren(...renderFraming());
-  else {
+  else if (s.phase === "stacking") {
+    // Bar first: it assigns stackBtn, which the title handler flips in place
+    // on a quiet keystroke.
+    barSlot.replaceChildren(...renderStacking());
+    stackPanel.replaceChildren(...renderStackPanel());
+  } else {
     // Bar first: it assigns publishBtn, which the panel's title handler flips
     // in place on a quiet keystroke.
     barSlot.replaceChildren(...renderPreview());
@@ -2214,12 +2440,15 @@ function render(): void {
 
   const status: Node[] = [];
   const meta: Node[] = [];
-  if (s.phase !== "idle") {
+  // The long journey has no probed video behind it: `title`, `duration` and
+  // `source` are all still their initial values, and three empty badges read
+  // as a broken header rather than as an absence.
+  if (s.phase !== "idle" && s.mode === "short") {
     meta.push(el("span", { className: "badge badge-title", textContent: s.title }));
     meta.push(el("span", { className: "badge", textContent: clock(s.duration) }));
     meta.push(el("span", { className: "badge", textContent: `${s.source.w}×${s.source.h}` }));
-    meta.push(el("span", { className: "badge", textContent: s.phase }));
   }
+  if (s.phase !== "idle") meta.push(el("span", { className: "badge", textContent: s.phase }));
   if (s.busy) meta.push(el("span", { className: "badge badge-info", textContent: s.busy }));
   if (meta.length > 0) status.push(el("div", { className: "status-row" }, ...meta));
   if (s.error) status.push(el("pre", { className: "callout", textContent: s.error }));
@@ -2354,7 +2583,7 @@ window.addEventListener("keydown", (e) => {
     if (outVideoEl.paused) void outVideoEl.play();
     else outVideoEl.pause();
   } else {
-    return; // idle owns no medium — leave the page's own scroll alone
+    return; // idle and stacking own no medium — leave the page's own scroll alone
   }
   // Only once something was actually toggled: space scrolls the page by
   // default, and suppressing that on a phase with nothing to play would be
