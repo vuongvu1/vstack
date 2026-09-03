@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   DESCRIPTION_TEMPLATE,
+  LONG_DESCRIPTION_TEMPLATE,
+  LONG_TAGS_DEFAULT,
   TAGS_DEFAULT,
   TITLE_HASHTAGS,
   YT_TITLE_MAX,
@@ -91,5 +93,39 @@ describe("TAGS_DEFAULT", () => {
   // truncates — so the default has to be comfortably clear of it by itself.
   it("stays far under YouTube's total tag ceiling", () => {
     expect(TAGS_DEFAULT.length).toBeLessThan(200);
+  });
+});
+
+describe("the long-form defaults", () => {
+  // buildSnippet with shorts:false does not append, so the template is the
+  // whole description — a shorts tag left in here would ship in the upload
+  // and misfile a twenty-minute video as a Short.
+  it("carries no shorts tag anywhere", () => {
+    expect(LONG_DESCRIPTION_TEMPLATE).not.toMatch(/#shorts\b/i);
+    expect(LONG_TAGS_DEFAULT).not.toMatch(/\bshorts\b/i);
+  });
+
+  it("still carries the channel's own tags and links", () => {
+    expect(LONG_DESCRIPTION_TEMPLATE).toMatch(/#vtubervn\b/);
+    expect(LONG_DESCRIPTION_TEMPLATE).toContain("youtube.com/@habine03");
+  });
+
+  // buildSnippet splits on commas and trims, so a "#" here would ship a
+  // literal "#vtuber" as a tag. Same rule the short list already follows.
+  it("is comma-separated rather than hashtagged", () => {
+    expect(LONG_TAGS_DEFAULT).not.toContain("#");
+    expect(LONG_TAGS_DEFAULT.split(",").every((t) => t.trim() !== "")).toBe(true);
+  });
+
+  // YouTube rejects an upload whose concatenated tags run past roughly 500
+  // characters, and nothing downstream truncates.
+  it("stays well inside YouTube's tag budget", () => {
+    expect(LONG_TAGS_DEFAULT.length).toBeLessThan(400);
+  });
+
+  // The title needs no long-form variant, and this is the assertion that
+  // fails if someone ever puts a shorts tag into the shared one.
+  it("shares TITLE_HASHTAGS, which carries no shorts tag", () => {
+    expect(TITLE_HASHTAGS).not.toMatch(/#shorts\b/i);
   });
 });

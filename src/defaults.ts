@@ -51,6 +51,28 @@ Sim: https://www.youtube.com/@simchan_hojo`;
  *  characters and nothing downstream truncates, so keep additions short. */
 export const TAGS_DEFAULT = "vtuber, vtubervn, vtuber vietnam, viral, shorts";
 
+/** Pre-fills the description field on the LONG-FORM path.
+ *
+ *  The same channel links, with every shorts tag removed. Unlike its
+ *  short-form twin this is the whole description — `buildSnippet` is called
+ *  with `shorts: false` for a stack, so nothing is appended to it and
+ *  anything shorts-flavoured left here would ship. */
+export const LONG_DESCRIPTION_TEMPLATE = `#vtuber #vtubervn #vtubervietnam #habine #siini #sim
+
+------
+
+Habi nè: https://www.youtube.com/@habine03
+Siini: https://www.youtube.com/@SiiniYT
+Sim: https://www.youtube.com/@simchan_hojo`;
+
+/** Pre-fills the tags field on the long-form path. Comma-separated, not
+ *  hashtagged — `buildSnippet` splits on commas and trims, so a `#` here
+ *  would ship a literal "#vtuber" as a tag.
+ *
+ *  "shorts" is gone and "tổng hợp" takes its place: a compilation is what
+ *  someone searching for this would actually type. */
+export const LONG_TAGS_DEFAULT = "vtuber, vtubervn, vtuber vietnam, tổng hợp, compilation";
+
 /** The starter title plus the hashtags, capped for YouTube.
  *
  *  Room for the tags is reserved *first* and the title takes what is left.
