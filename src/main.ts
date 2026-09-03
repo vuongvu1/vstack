@@ -1352,7 +1352,10 @@ async function doPublish(): Promise<void> {
         title,
         description: s.ytDescription,
         tags: s.ytTags,
-        shorts: true,
+        // `#shorts` in the description is what classifies an upload as a
+        // Short. A long-form compilation carrying it is misfiled at the
+        // platform level, and the uploader cannot undo that from Studio.
+        shorts: s.mode === "short",
       });
       setState({ ytVideoId: videoId, ytThumbnail: thumbnail });
       bell();
@@ -2176,11 +2179,16 @@ function renderPreview(): Node[] {
       });
   };
 
-  const back = el("button", { className: "btn-gray", textContent: "Frame again" });
-  // Boxes, layout and marks are all untouched, so this lands back on the
-  // same framing the export came from — a bad crop is one click from a
-  // re-render.
-  back.onclick = () => setState({ phase: "framing" });
+  const long = s.mode === "long";
+  const back = el("button", {
+    className: "btn-gray",
+    textContent: long ? "Edit the stack" : "Frame again",
+  });
+  // Everything the previous phase held is untouched — boxes and marks on the
+  // short path, the part list on the long one — so this lands back on
+  // exactly what the render came from. A bad crop or a wrong order is one
+  // click from a re-render.
+  back.onclick = () => setState({ phase: long ? "stacking" : "framing" });
 
   const published = s.ytVideoId !== "";
 
@@ -2415,6 +2423,9 @@ function render(): void {
     outVideoEl.hidden = s.phase !== "preview";
     if (s.phase !== "preview") outVideoEl.pause();
   }
+  // Only in preview, and only on the long journey: the framing canvas lives
+  // in this same slot and is always 1080x1920.
+  outSlot.classList.toggle("is-wide", s.phase === "preview" && s.mode === "long");
   // The crop-box overlay is positioned against videoEl and, like it, is
   // built once and never torn down on a phase change (see the comment by
   // its declaration) — only hidden, so "Back to trim" doesn't leave it

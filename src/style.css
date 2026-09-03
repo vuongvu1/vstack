@@ -155,6 +155,19 @@ body {
    here cannot move `.out`'s existing children: they are already
    width/height: 100% block elements under overflow: hidden. */
 .out { aspect-ratio: 9 / 16; height: 100%; position: relative; }
+
+/* The output slot is 9:16 because that is what every export used to be. A
+   long-form stack is 16:9, and squeezing it into the vertical box letterboxes
+   it into a thin strip with most of the card empty. Toggled by render() on
+   the phase AND the mode, not set once — the same slot holds the framing
+   canvas, which is always vertical.
+
+   ONLY `aspect-ratio` is overridden. `.out` keeps `height: 100%`, and `.out`
+   sits in `.stage`'s `auto` column — so the width is derived from a definite
+   height through the ratio, exactly the way the 9:16 case already works.
+   Setting `width: 100%` here instead makes the auto track's size depend on
+   the item's size which depends on the track: circular, and it collapses. */
+.out.is-wide { aspect-ratio: 16 / 9; }
 .out > canvas,
 .out > video { width: 100%; height: 100%; display: block; }
 
