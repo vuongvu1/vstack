@@ -6,12 +6,34 @@ import { DEFAULT_LAYOUT_ID, cellsOf, layoutById, ratioOf, resolveLayout } from "
 import { isValidSegments, totalDuration } from "./segments.ts";
 import type { Segment } from "./segments.ts";
 
-export type Phase = "idle" | "trimming" | "framing" | "preview";
+export type Phase = "idle" | "trimming" | "framing" | "stacking" | "preview";
+
+/** One uploaded long-form part.
+ *
+ *  `id` is the UUID `/api/upload` minted — the only thing the server will
+ *  accept back. `name` is the local filename, kept purely so the panel has
+ *  something readable to show, and deliberately never sent anywhere. */
+export type UploadPart = { id: string; name: string; duration: number };
 
 export type AppState = {
   phase: Phase;
   error: string;
   busy: string;
+  /** Which journey this session is on. Set once on the way out of `idle`
+   *  and never again — the two paths do not meet until `preview`, which is
+   *  the only phase that branches on it.
+   *
+   *  NOT persisted, for the same reason `outName` is not: it describes a
+   *  session's work rather than a property of a video. Defaulting to
+   *  "short" is also what makes every record written before this field
+   *  existed restore onto the journey it was made for. */
+  mode: "short" | "long";
+  /** Uploaded long-form parts, in render order. Empty on the short path.
+   *
+   *  NOT persisted: a reload loses the ordering, which is the accepted cost
+   *  of not storing a list of paths the user may have swept from
+   *  `media/uploads/` by hand. The files themselves survive. */
+  parts: UploadPart[];
   // The URL field's live text, kept here (not just in the DOM) so a
   // busy-triggered render that rebuilds the idle bar doesn't lose what the
   // user typed. Never persisted — save()/restore() don't touch it.
@@ -95,6 +117,8 @@ const initial: AppState = {
   phase: "idle",
   error: "",
   busy: "",
+  mode: "short",
+  parts: [],
   url: "",
   videoId: "",
   title: "",

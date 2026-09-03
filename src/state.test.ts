@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { MAX_CUSTOM, isValidCustom } from "./custom.ts";
 import { DEFAULT_LAYOUT_ID } from "./layout.ts";
 import { MAX_SEGMENTS } from "./segments.ts";
-import { keptLength, restore, save, saveVoice, savedTitle, savedVoice, setState } from "./state.ts";
+import { getState, keptLength, restore, save, saveVoice, savedTitle, savedVoice, setState } from "./state.ts";
 
 /** vitest's config runs this file under Node, which has no `localStorage`
  *  global. `state.ts` is pure logic over whatever object sits at
@@ -738,5 +738,40 @@ describe("keptLength", () => {
         clipEnd: 4,
       }),
     ).toBe(0);
+  });
+});
+
+describe("the long-form fields", () => {
+  it("starts on the short journey with no parts", () => {
+    expect(getState().mode).toBe("short");
+    expect(getState().parts).toEqual([]);
+  });
+
+  // Mutation test, mirroring the one that pins `voice`'s exclusion. Neither
+  // field belongs in a per-video record: `mode` describes a session's work
+  // the way `outName` does, and `parts` would point at files the user may
+  // have swept by hand between sessions.
+  it("persists neither field", () => {
+    setState({
+      videoId: "abcdefghijk",
+      phase: "trimming",
+      mode: "long",
+      parts: [{ id: "f81d4fae-7dec-41d0-a765-00a0c91e6bf6", name: "a.mp4", duration: 2 }],
+    });
+    save();
+    const raw = localStorage.getItem("vstack:abcdefghijk");
+    expect(raw).not.toBeNull();
+    const record = JSON.parse(raw ?? "{}") as Record<string, unknown>;
+    expect(record).not.toHaveProperty("mode");
+    expect(record).not.toHaveProperty("parts");
+  });
+
+  // The long journey has no videoId at all, so save() returns early — the
+  // exclusion above is belt AND braces, and this is the braces.
+  it("writes nothing at all on the long journey", () => {
+    localStorage.clear();
+    setState({ videoId: "", mode: "long", phase: "stacking", parts: [] });
+    save();
+    expect(localStorage.length).toBe(0);
   });
 });
