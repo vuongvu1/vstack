@@ -1974,6 +1974,14 @@ function renderTryVoice(
  *  so this is never stale. */
 let stackBtn: HTMLButtonElement | null = null;
 
+/** The row a drag started on, or -1. Module-scoped rather than read back out
+ *  of `dataTransfer` because a `dragover` handler is forbidden from reading
+ *  the payload — the spec only exposes it on `drop` — and the target needs
+ *  the source index to know whether to accept at all. The transfer still
+ *  carries the index as `text/plain`: Firefox refuses to start a drag whose
+ *  `dataTransfer` is empty. */
+let dragFrom = -1;
+
 /** The left column during `stacking`: the uploaded parts, in render order. */
 function renderStackPanel(): Node[] {
   const s = getState();
@@ -2002,10 +2010,11 @@ function renderStackPanel(): Node[] {
   };
 
   const rows = s.parts.map((part, i) => {
-    // ponytail: reorder is buttons, not drag-and-drop. Two array splices
-    // against a pointer-capture state machine with drop targets and
-    // autoscroll — and these are keyboard-reachable for free. Upgrade to
-    // dragging the day the list routinely runs past a screenful.
+    // The buttons stay beside the drag: they are the keyboard path, and
+    // native drag-and-drop has none.
+    // ponytail: the HTML5 drag API, so there is no autoscroll when the list
+    // runs past the panel and no drop indicator beyond the dragged row going
+    // translucent. Reach for pointer events the day either one bites.
     const up = el("button", {
       textContent: "↑",
       title: "Move earlier",
@@ -2032,9 +2041,10 @@ function renderStackPanel(): Node[] {
     // media/uploads so re-adding it costs nothing.
     remove.onclick = () => setState({ parts: getState().parts.filter((p) => p.id !== part.id) });
 
-    return el(
+    const row = el(
       "div",
-      { className: "stack-row" },
+      { className: "stack-row", draggable: !locked },
+      el("span", { className: "stack-grip", textContent: "⠿", ariaHidden: "true" }),
       el("span", { className: "stack-index", textContent: String(i + 1) }),
       el("span", { className: "stack-name", title: part.name, textContent: part.name }),
       el("span", { className: "stack-dur", textContent: clock(part.duration) }),
@@ -2042,6 +2052,35 @@ function renderStackPanel(): Node[] {
       down,
       remove,
     );
+
+    row.ondragstart = (e) => {
+      dragFrom = i;
+      e.dataTransfer?.setData("text/plain", String(i));
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      row.classList.add("is-dragging");
+    };
+    // Fires on the source even when the drop lands elsewhere or is cancelled,
+    // so this is the one place that has to clear the drag — `ondrop` alone
+    // would leave `dragFrom` set after an escape or a drop outside the panel.
+    row.ondragend = () => {
+      dragFrom = -1;
+      row.classList.remove("is-dragging");
+    };
+    // preventDefault is what marks a node as a drop target at all; without it
+    // `drop` never fires. Skipping the row being dragged keeps the cursor
+    // reading "no" over its own origin.
+    row.ondragover = (e) => {
+      if (dragFrom === -1 || dragFrom === i) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    };
+    row.ondrop = (e) => {
+      e.preventDefault();
+      if (dragFrom !== -1 && dragFrom !== i) reorder(dragFrom, i);
+      dragFrom = -1;
+    };
+
+    return row;
   });
 
   return [el("h2", { className: "publish-heading", textContent: "Parts" }), ...rows];

@@ -793,7 +793,7 @@ own part, and the leg ordering is mutation-tested the way `concatClips`'
 already is. A silent second part covers the `anullsrc` stand-in, and a 16:9
 part covers an upload that is not vertical. `server/youtube.test.ts` gains
 the `shorts` flag's four cases. The upload route, the stacking panel and
-the reorder buttons have no tests, like the rest of the network and DOM
+the reorder controls (drag and `↑`/`↓` alike) have no tests, like the rest of the network and DOM
 surface.
 
 DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by design — vitest runs `environment: "node"` here and those behaviours are verified by hand.

@@ -337,13 +337,22 @@ YouTube iframe's ancestor discards its browsing context and reloads the
 player), and `hidden` alone is not enough, so the panel is covered by
 `style.css`'s existing `.source > [hidden] { display: none; }`.
 
-It renders a numbered list, one row per uploaded file: index, display name,
-duration, then `↑`, `↓`, `✕`.
+It renders a numbered list, one row per uploaded file: a grip, index, display
+name, duration, then `↑`, `↓`, `✕`.
 
-`ponytail:` reorder is `↑`/`↓` buttons, not drag-and-drop. Two array
-splices against a pointer-capture state machine with drop targets and
-autoscroll, and the buttons are keyboard-reachable for free. Upgrade to
-dragging if the list routinely runs past a screenful.
+Rows reorder two ways, and both are load-bearing. A row is `draggable` and
+drops onto any other row through the HTML5 drag API; the `↑`/`↓` buttons stay
+beside it because native drag-and-drop has no keyboard path at all. Both ends
+call the same `reorder(from, to)` — two array splices against live state.
+
+`ponytail:` the HTML5 drag API rather than pointer events, so there is no
+autoscroll when the list runs past the panel and no drop indicator beyond the
+dragged row going translucent. Reach for pointer capture the day either one
+bites. The source index lives in a module-scoped `dragFrom` rather than being
+read back out of `dataTransfer`, because the spec only exposes the payload on
+`drop` and a `dragover` handler has to know the source to decide whether to
+accept at all; the transfer still carries it as `text/plain`, since Firefox
+refuses to start a drag whose `dataTransfer` is empty.
 
 ### The bar
 
@@ -463,7 +472,6 @@ Named so they are not mistaken for oversights:
 - **A long-form title card of its own.** The output starts on the first
   part's card.
 - **Per-part trimming, transitions, crossfades, chapter markers.**
-- **Drag-and-drop reordering.** See the `ponytail:` note above.
 - **Upload progress.** See the `ponytail:` note above.
 - **Eviction of `media/uploads/`.** Consistent with `media/` and
   `OUT_DIR`, both of which the user sweeps by hand.
