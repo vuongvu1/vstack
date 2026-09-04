@@ -13,7 +13,12 @@
 >    length, so `/api/stack` probes it and `stackWide` spends the number as an
 >    input `-t` per part. The **title cards stay** — the compilation still
 >    reads as chapters.
-> 2. **`/api/stack` takes a required `thumb`.** The *Thumbnail* section below
+> 2. **Parts dip to black between each other.** *Out of scope* below lists
+>    "transitions"; a 0.3s `fade`/`afade` on each leg either side of a
+>    boundary now covers it. It rides the legs `concat` already joins, so the
+>    output's duration is unchanged — a crossfade (`xfade`) is the thing that
+>    stays out of scope, and `FADE`'s own comment says why.
+> 3. **`/api/stack` takes a required `thumb`.** The *Thumbnail* section below
 >    describes the output's own first frame being published; that is now the
 >    fallback. The user picks a picture on the stacking screen, the browser
 >    stretches it to 1280x720, and the server saves it beside the output.
@@ -513,7 +518,10 @@ Named so they are not mistaken for oversights:
   A title card has no such fixed length.)
 - **A long-form title card of its own.** The output starts on the first
   part's card.
-- **Per-part trimming, transitions, crossfades, chapter markers.**
+- **Per-part trimming, crossfades, chapter markers.** (A dip-to-black
+  transition arrived in the 2026-09-04 amendment; a *crossfade* is still
+  out — see `FADE`'s comment in `server/longform.ts` for the three costs
+  that keep it there.)
 - **Upload progress.** See the `ponytail:` note above.
 - **Eviction of `media/uploads/`.** Consistent with `media/` and
   `OUT_DIR`, both of which the user sweeps by hand.

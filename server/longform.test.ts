@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { probeFile } from "./ffmpeg.ts";
-import { MIN_KEPT, keptSeconds, stackWide } from "./longform.ts";
+import { FADE, MIN_KEPT, keptSeconds, stackWide } from "./longform.ts";
 
 const run = promisify(execFile);
 
@@ -69,6 +69,16 @@ async function pixelAt(path: string, t: number, x: number, y: number, width = 19
   const i = (y * width + x) * 3;
   return { r: buf[i] ?? 0, g: buf[i + 1] ?? 0, b: buf[i + 2] ?? 0 };
 }
+
+describe("FADE", () => {
+  // The tests above hardcode the [1.7, 2.3] window this constant produces on
+  // a pair of 2s parts. Retuning FADE moves that window, so this is the
+  // assertion that tells you which tests to re-check rather than leaving
+  // them to fail obscurely.
+  it("is the 0.3s the boundary samples assume", () => {
+    expect(FADE).toBe(0.3);
+  });
+});
 
 describe("keptSeconds", () => {
   it("leaves the last part whole", () => {
@@ -207,6 +217,73 @@ describe("stackWide", () => {
     const probed = await probeFile(out);
     expect(probed.seconds).toBeGreaterThan(1.8);
     expect(probed.seconds).toBeLessThan(2.2);
+  }, 120_000);
+
+  // The transition. Both parts are 2s, so the boundary sits at t=2 with a
+  // 0.3s fade-out before it and a 0.3s fade-in after. The seam is near black
+  // and both parts keep full colour outside the window — dropping either
+  // fade leaves that seam at full saturation.
+  it("dips to black between parts and only between them", async () => {
+    const out = join(dir, "faded.mp4");
+    await stackWide([red, red], out);
+
+    // Duration is untouched: a dip costs no screen time, which is what keeps
+    // `outName`'s duration and the render in agreement.
+    const probed = await probeFile(out);
+    expect(probed.seconds).toBeGreaterThan(3.8);
+    expect(probed.seconds).toBeLessThan(4.2);
+
+    // The seam. Sampled just inside part one's tail rather than exactly at
+    // t=2, which lands on the first frame of part two — the fade-in's own
+    // st=0, also black, but for the other part's reason.
+    const seam = await pixelAt(out, 1.97, 960, 540);
+    expect(seam.r).toBeLessThan(60);
+    expect(seam.g).toBeLessThan(60);
+    expect(seam.b).toBeLessThan(60);
+
+    // Well inside each part, outside the [1.7, 2.3] window: full colour.
+    for (const t of [1.0, 3.0]) {
+      const mid = await pixelAt(out, t, 960, 540);
+      expect(mid.r).toBeGreaterThan(150);
+    }
+
+    // NOT at the ends. The compilation opens on a title card and closes on
+    // the bundled outro, both of which already start and end deliberately —
+    // so fading them would be fading something that needs no help.
+    const head = await pixelAt(out, 0.05, 960, 540);
+    expect(head.r).toBeGreaterThan(150);
+    const tail = await pixelAt(out, 3.9, 960, 540);
+    expect(tail.r).toBeGreaterThan(150);
+  }, 120_000);
+
+  // A part shorter than two fades would otherwise have its fade-in overlap
+  // its fade-out, which reads as a part that never reaches full brightness
+  // rather than as a transition. `seconds / 3` is the clamp.
+  //
+  // The short part goes in the MIDDLE, and that placement is the whole test:
+  // only a part with a neighbour on BOTH sides gets both fades, so a brief
+  // part placed first has its fade-in suppressed by the `i > 0` guard and
+  // can never overlap anything. Found by mutation testing — the first
+  // version of this test put it first and passed with the clamp removed.
+  it("shrinks the fade rather than overlapping it on a very short middle part", async () => {
+    const brief = join(dir, "brief.mp4");
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i", "color=c=red:s=1080x1920:d=0.3:r=30",
+      "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+      "-y", brief,
+    ]);
+
+    const out = join(dir, "brief-stack.mp4");
+    await stackWide([blue, brief, blue], out);
+
+    // The brief part occupies [2.0, 2.3]. Clamped, its fades are 0.1s, so
+    // 2.15 sits between them at full colour. Unclamped they would both span
+    // the whole 0.3s and this sample would be at roughly a quarter
+    // brightness — the two multiply.
+    const peak = await pixelAt(out, 2.15, 960, 540);
+    expect(peak.r).toBeGreaterThan(150);
   }, 120_000);
 
   it("refuses an empty part list", async () => {

@@ -81,7 +81,7 @@ server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
                    firstFrame,
                    reportCache
 server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
-server/longform.ts WIDE, MIN_KEPT/keptSeconds, stackWide (the long
+server/longform.ts WIDE, FADE, MIN_KEPT/keptSeconds, stackWide (the long
                    journey's one ffmpeg pass)
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
                    starterDuration, checkStarter, installedVoices,
@@ -495,6 +495,30 @@ than coming back at zero seconds, which ffmpeg reads as "no frames" and
 `concat` reads as a missing leg. `tail` defaults to 0, the identity, so every
 existing caller and test is exact.
 
+**The transition is a dip on each leg, NOT a crossfade across the seam —
+which is what keeps the output's duration unchanged.** `fade`/`afade` ride
+the legs `concat` already joins, so `keptSeconds`, `/api/stack`'s `total`
+and `outName` all stay exact and the filename cannot come to disagree with
+the file. `xfade` + `acrossfade` would be the crossfade, and it costs three
+things this does not: a pairwise chain rather than a per-leg filter, an
+`offset=` per step that is the running total minus `k * d` (so every part's
+duration feeds every later offset), and an output `(N-1) * d` SHORTER,
+which both `stackWide` and the route would have to agree on. Named in a
+`ponytail:` comment as the upgrade path.
+
+Two details of the dip are load-bearing and both are silent. It is applied
+only BETWEEN parts — `i > 0` fades in, `i < N-1` fades out — because the
+compilation opens on a title card and closes on the bundled outro, and
+fading either is fading something that already starts and ends
+deliberately. And `d` is `min(FADE, seconds / 3)`, because on a part
+shorter than `2 * FADE` an unclamped fade-in and fade-out overlap and
+*multiply*: a 0.3s part read at quarter brightness through its whole
+length rather than reaching full colour. The test for that clamp only
+works with the short part in the MIDDLE — a brief part placed first has
+its fade-in suppressed by the `i > 0` guard and can never overlap
+anything, so the first version of that test passed with the clamp removed
+(found by mutation testing, not by review).
+
 **The picked thumbnail is `<name>.thumb.jpg`, NEVER `<name>.jpg`.**
 `applyThumbnail` prefers the sidecar over the render's own first frame, and
 `stillPath`'s `<name>.jpg` is where a *short* export writes its **vertical**
@@ -831,7 +855,20 @@ The HTTP calls, `open -R`, the preview bar and the auth script have no tests,
 like the rest of the network and DOM surface. The out-name tests in
 `server/ffmpeg.test.ts` are the traversal guard and get the same exhaustive
 treatment `videoIdFrom` does.
-`server/longform.test.ts` covers `keptSeconds` exhaustively — the last part
+`server/longform.test.ts` covers the dip between parts — the seam sampled
+just inside the outgoing part's tail is near black, samples well inside
+each part keep full colour, and the head and tail of the whole output do
+NOT (the assertion that fails if the `i > 0` / `i < N-1` guards are
+dropped) — plus the `min(FADE, seconds / 3)` clamp, with the short part in
+the middle so both fades actually apply. All three mutation-tested:
+dropping the fades, fading the ends too, and removing the clamp each fail
+exactly one of those. `FADE` has an assertion of its own, because both
+boundary samples hardcode the [1.7, 2.3] window it produces on a pair of
+2s parts — retuning it should point at the tests to re-check rather than
+failing them obscurely. The audio fade has no test (it is verified by hand:
+-24.1 dB mid-part against -38.4 dB at the seam on a real render), like the
+rest of the audio surface outside `server/starter.test.ts`. It also covers
+`keptSeconds` exhaustively — the last part
 whole, the tail off every other, `tail` of 0 as the identity, and the
 `MIN_KEPT` floor at both sides of its boundary (6s keeps whole, 6.04s cuts) —
 plus two real renders for the strip: a two-part stack whose duration is a

@@ -30,6 +30,26 @@ const BLUR_SIGMA = 12;
 const BG_W = 480;
 const BG_H = 270;
 
+/** How long each dip to black takes, at both ends of a boundary — so a
+ *  transition costs 2 * FADE of screen time and a beat the eye reads as a
+ *  chapter break.
+ *
+ *  Spent as `fade`/`afade` on the legs `concat` already joins, which is why
+ *  the output's duration is UNCHANGED: `keptSeconds`, `/api/stack`'s `total`
+ *  and `outName` all stay exact, and the name cannot come to disagree with
+ *  the file it names.
+ *
+ *  ponytail: a dip, not a crossfade. `xfade` + `acrossfade` would dissolve
+ *  the parts into each other instead, and costs three things this does not:
+ *  the chain is pairwise rather than per-leg, each step's `offset=` is the
+ *  running total minus k * d (so every part's duration feeds every later
+ *  offset), and the output comes out `(N-1) * d` SHORTER — which both
+ *  `stackWide` and the route's `total` would have to agree on or the
+ *  filename stops describing the file. Worth it only if the dissolve
+ *  actually looks better here, which on unrelated clips (one part's body
+ *  melting into the next part's title card) is not obvious. */
+export const FADE = 0.3;
+
 const FPS = 30;
 const RATE = 44100;
 /** The same crf `exportClip` uses. Unlike `concatClips` this is not an
@@ -127,6 +147,23 @@ export async function stackWide(
     // `-t` at all, so for a silent part this is the only thing that stops
     // its stand-in leg running past the video it stands in for.
     const seconds = kept[i] ?? 0;
+    // The transition. Clamped so a pathologically short part cannot have its
+    // fade-in overlap its fade-out, which reads as a part that never reaches
+    // full brightness rather than as a transition. At any real length this
+    // is a flat FADE.
+    const d = Math.min(FADE, seconds / 3);
+    // Only BETWEEN parts. The compilation opens on the first part's title
+    // card and closes on the bundled outro, both of which already start and
+    // end deliberately — fading them would be fading something that needs no
+    // help. Declared after `setpts=PTS-STARTPTS` in the chain below so `st=`
+    // is measured from this part's own zero rather than from its source
+    // timestamps.
+    const vFade =
+      (i > 0 ? `fade=t=in:st=0:d=${d},` : "") +
+      (i < paths.length - 1 ? `fade=t=out:st=${seconds - d}:d=${d},` : "");
+    const aFade =
+      (i > 0 ? `afade=t=in:st=0:d=${d},` : "") +
+      (i < paths.length - 1 ? `afade=t=out:st=${seconds - d}:d=${d},` : "");
     legs.push(
       `[${i}:v]split=2[bg${i}][fg${i}]`,
       `[bg${i}]scale=${BG_W}:${BG_H}:force_original_aspect_ratio=increase,` +
@@ -142,14 +179,14 @@ export async function stackWide(
       // floor(x/2)*2 forces both axes even; W/w are only known to ffmpeg, so
       // this stays an expression rather than a TypeScript computation.
       `[bgz${i}][fgz${i}]overlay=floor((W-w)/4)*2:floor((H-h)/4)*2,fps=${FPS},` +
-        `setpts=PTS-STARTPTS,format=yuv420p[v${i}]`,
+        `setpts=PTS-STARTPTS,${vFade}format=yuv420p[v${i}]`,
     );
     // A silent part's leg is cut out of the shared anullsrc instead, trimmed
     // to this part's own length so the two streams stay in step.
     const audioSrc = hasAudio ? `${i}:a` : `${silenceIndex}:a`;
     legs.push(
       `[${audioSrc}]atrim=0:${seconds},asetpts=PTS-STARTPTS,aresample=${RATE},` +
-        `aformat=sample_fmts=fltp:channel_layouts=stereo[a${i}]`,
+        `${aFade}aformat=sample_fmts=fltp:channel_layouts=stereo[a${i}]`,
     );
     labels.push(`[v${i}][a${i}]`);
   });
