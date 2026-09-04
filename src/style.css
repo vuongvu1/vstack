@@ -162,14 +162,40 @@ body {
    the phase AND the mode, not set once — the same slot holds the framing
    canvas, which is always vertical.
 
-   ONLY `aspect-ratio` is overridden. `.out` keeps `height: 100%`, and `.out`
-   sits in `.stage`'s `auto` column — so the width is derived from a definite
-   height through the ratio, exactly the way the 9:16 case already works.
-   Setting `width: 100%` here instead makes the auto track's size depend on
-   the item's size which depends on the track: circular, and it collapses. */
-.out.is-wide { aspect-ratio: 16 / 9; }
+   The sizing runs the OPPOSITE way round from the 9:16 case, and the stage
+   rule above is what makes that possible. A full-height card at 16:9 is
+   `stageHeight * 16/9` wide — more than half the stage on any ordinary
+   window — so `.stage`'s `1fr` left column collapsed to min-content and the
+   publish panel had no room to edit anything in. With an even split the
+   track is definite, so the height can come from the width instead. Note
+   `width: 100%` is only legal here BECAUSE the track is `1fr`: in the
+   `auto` track the 9:16 case sits in, it would make the track's size depend
+   on the item's size which depends on the track — circular, and it
+   collapses.
+
+   `max-height` is the backstop for the one window shape the split does not
+   cover: half of an ultrawide stage can still be taller than the stage is
+   high. When it binds, `width: 100%` holds and the ratio gives, which is
+   why the video below is `contain` rather than filling — scoped to
+   `.is-wide` only, since the framing canvas must keep filling its box (its
+   `.boxes` overlay is placed against the canvas's rendered rect, and a
+   letterboxed canvas would put every floating piece over the wrong pixels).
+
+   `:has()` rather than a class render() toggles: `.is-wide` already carries
+   the signal, and a second flag would be a second thing to keep in sync
+   with the phase AND the mode. */
+.stage:has(.out.is-wide) { grid-template-columns: 1fr 1fr; }
+.out.is-wide {
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  /* Beats `.out`'s own `height: 100%` on specificity, whatever the order. */
+  height: auto;
+  max-height: 100%;
+  align-self: start;
+}
 .out > canvas,
 .out > video { width: 100%; height: 100%; display: block; }
+.out.is-wide > video { object-fit: contain; }
 
 /* Author-origin `display: block` on the media children above beats the UA's
    `[hidden] { display: none }` (user-agent origin), no matter how the two

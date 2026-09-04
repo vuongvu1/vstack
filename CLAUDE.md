@@ -1004,6 +1004,26 @@ so the shape is toggled by `render()` on the phase AND the mode
 (`.out.is-wide`), never set once. Without it a 16:9 output is squeezed into
 a thin strip with most of the card empty, which reads as a broken render.
 
+**The wide slot sizes the OPPOSITE way round from the tall one, and the
+stage's column split is what makes that legal.** A 9:16 `.out` takes
+`height: 100%` in `.stage`'s `auto` track and derives its width through the
+ratio; a 16:9 one doing the same is `stageHeight * 16/9` wide — measured at
+996px against a 1168px stage, which starved the publish panel beside it to
+156px. `.stage:has(.out.is-wide)` switches to `1fr 1fr` and `.out.is-wide`
+takes `width: 100%` with `height: auto`, so the height comes from a definite
+track instead. `width: 100%` is only legal *because* the track is `1fr`: in
+the `auto` track the tall case sits in it makes the track's size depend on
+the item's size which depends on the track — circular, and it collapses.
+`:has()` rather than a class `render()` toggles, since `.is-wide` already
+carries the signal and a second flag is a second thing to keep in sync with
+two state fields. `max-height: 100%` plus `object-fit: contain` covers the
+one shape the split does not: half of an ultrawide stage can still be taller
+than the stage is high, and when the cap binds `width: 100%` holds and the
+ratio gives. The `contain` is scoped to `.is-wide` only — the framing canvas
+must keep filling its box, because `.boxes` is placed against its rendered
+rect and a letterboxed canvas puts every floating piece over the wrong
+pixels.
+
 **`media/uploads/` grows without eviction and nothing lists it.**
 Deliberate: re-rendering a stack after a title fix must not mean
 re-uploading a gigabyte. `listClips` cannot reach it — it walks per-video
