@@ -441,6 +441,20 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   font-weight: 500;
   white-space: nowrap;
 }
+/* The picked long-form thumbnail, beside its picker in the stacking bar.
+   Sized off --control-height so it lines up with the picker and the badge
+   rather than setting its own metric, and deliberately WITHOUT a `display`
+   of its own: the UA's `[hidden] { display: none }` is what hides it before
+   a picture is picked, and any author-origin display here would beat that
+   the way `.source > [hidden]` already has to work around. */
+.thumb-chip {
+  height: var(--control-height);
+  width: auto;
+  border-radius: var(--radius-1);
+  border: 1px solid var(--slate-a5);
+  /* It is already exactly 16:9, so this only guards a future shape change. */
+  object-fit: cover;
+}
 .badge-warn { background: var(--amber-a3); color: var(--amber-11); }
 .badge-info { background: var(--blue-a3); color: var(--blue-11); }
 /* Titles are arbitrary-length; `inline-block` (not the base `inline-flex`)

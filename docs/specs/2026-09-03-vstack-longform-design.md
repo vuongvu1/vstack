@@ -2,6 +2,26 @@
 
 2026-09-03
 
+> **Amended 2026-09-04.** Two decisions below were reversed after the feature
+> shipped, both at the user's request. Everything else in this document is
+> still accurate.
+>
+> 1. **The outro is stripped from every part but the last.** "Stripping the
+>    per-part title cards and outros" is listed under *Out of scope* and as
+>    settled decision 2; the outro half of that no longer holds. It needed no
+>    trimming UI in the end: `end_video.mp4` is a bundled asset of known
+>    length, so `/api/stack` probes it and `stackWide` spends the number as an
+>    input `-t` per part. The **title cards stay** — the compilation still
+>    reads as chapters.
+> 2. **`/api/stack` takes a required `thumb`.** The *Thumbnail* section below
+>    describes the output's own first frame being published; that is now the
+>    fallback. The user picks a picture on the stacking screen, the browser
+>    stretches it to 1280x720, and the server saves it beside the output.
+>
+> See CLAUDE.md's invariants for the details that are easy to get wrong:
+> `keptSeconds`/`MIN_KEPT`, the `-t`-before-`-i` ordering, and why the sidecar
+> is `<name>.thumb.jpg` rather than `stillPath`'s `<name>.jpg`.
+
 Supersedes nothing. It adds a **second way through the app**, parallel to
 the one every prior spec describes, and reuses the last phase of it.
 
@@ -37,8 +57,10 @@ constraints, not as open questions:
    wants to stack videos vstack never made, not only its own exports.
 2. **Parts are concatenated as-is.** Each finished short already carries a
    title card at the front and the bundled outro at the back; those stay.
+   (Reversed for the outro on 2026-09-04 — see the amendment above.)
    The long video reads as a compilation with chapter-like intros between
-   segments. Nothing is stripped, nothing is detected.
+   segments. Nothing is *detected* — the outro strip that arrived later is a
+   probe of a bundled asset's length, not scene analysis.
 3. **The flow ends in a real publish**, not just a file on disk — the
    existing preview phase, with its metadata panel and Publish button.
 4. **Output is 1920×1080.** Every input is 1080×1920 and that is YouTube's
@@ -484,9 +506,11 @@ same reason.
 
 Named so they are not mistaken for oversights:
 
-- **Stripping the per-part title cards and outros.** Settled: the
-  compilation keeps them. Doing it would need per-file in/out points, which
-  is a trimming UI this feature deliberately does not have.
+- **Stripping the per-part title cards.** Settled: the compilation keeps
+  them, so it reads as chapters. (The *outros* are stripped as of the
+  2026-09-04 amendment above — that turned out to need no trimming UI,
+  because the outro is a bundled asset whose length can simply be probed.
+  A title card has no such fixed length.)
 - **A long-form title card of its own.** The output starts on the first
   part's card.
 - **Per-part trimming, transitions, crossfades, chapter markers.**

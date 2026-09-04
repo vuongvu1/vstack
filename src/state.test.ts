@@ -747,16 +747,19 @@ describe("the long-form fields", () => {
     expect(getState().parts).toEqual([]);
   });
 
-  // Mutation test, mirroring the one that pins `voice`'s exclusion. Neither
-  // field belongs in a per-video record: `mode` describes a session's work
-  // the way `outName` does, and `parts` would point at files the user may
-  // have swept by hand between sessions.
+  // Mutation test, mirroring the one that pins `voice`'s exclusion. None of
+  // these belong in a per-video record: `mode` describes a session's work the
+  // way `outName` does, `parts` would point at files the user may have swept
+  // by hand between sessions, and `thumb` is a base64 JPEG that describes
+  // one stack and would eat the storage budget.
   it("persists neither field", () => {
     setState({
       videoId: "abcdefghijk",
       phase: "trimming",
       mode: "long",
       parts: [{ id: "f81d4fae-7dec-41d0-a765-00a0c91e6bf6", name: "a.mp4", duration: 2 }],
+      thumb: "/9j/4AAQSkZJRg==",
+      thumbName: "cover.png",
     });
     save();
     const raw = localStorage.getItem("vstack:abcdefghijk");
@@ -764,6 +767,11 @@ describe("the long-form fields", () => {
     const record = JSON.parse(raw ?? "{}") as Record<string, unknown>;
     expect(record).not.toHaveProperty("mode");
     expect(record).not.toHaveProperty("parts");
+    // `thumb` is a base64 JPEG — a few hundred KB. Persisted it would blow
+    // the ~5 MB localStorage budget after a handful of videos AND describe a
+    // stack the record has nothing to do with.
+    expect(record).not.toHaveProperty("thumb");
+    expect(record).not.toHaveProperty("thumbName");
   });
 
   // The long journey has no videoId at all, so save() returns early — the

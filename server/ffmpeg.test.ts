@@ -26,6 +26,7 @@ import {
   removeExport,
   segmentDigest,
   stillPath,
+  thumbPath,
   UPLOADS_DIR,
   uploadPath,
 } from "./ffmpeg.ts";
@@ -222,17 +223,29 @@ describe("isUploadId", () => {
 // process.env at module load, and a name-taking helper would have to be
 // stubbed before the import.
 describe("removeExport", () => {
-  it("takes the still with the video", async () => {
+  it("takes the still and the picked thumbnail with the video", async () => {
     const dir = await mkdtemp(join(tmpdir(), "vstack-rm-"));
     const video = join(dir, "clip-0000-0030.mp4");
     await writeFile(video, "video");
     await writeFile(stillPath(video), "still");
+    await writeFile(thumbPath(video), "thumb");
 
     await removeExport(video);
 
     await expect(stat(video)).rejects.toThrow();
     await expect(stat(stillPath(video))).rejects.toThrow();
+    await expect(stat(thumbPath(video))).rejects.toThrow();
     await rm(dir, { recursive: true, force: true });
+  });
+
+  // The two sidecars must not collide: a SHORT export writes a vertical
+  // 1080x1920 frame at stillPath, and `applyThumbnail` prefers thumbPath —
+  // so if these were the same name every short would publish its own
+  // pillarboxed still as a 16:9 thumbnail.
+  it("names the picked thumbnail differently from the still", () => {
+    const video = "/tmp/clip-0000-0030.mp4";
+    expect(thumbPath(video)).not.toBe(stillPath(video));
+    expect(thumbPath(video)).toBe("/tmp/clip-0000-0030.thumb.jpg");
   });
 
   it("is a no-op on a render whose still never extracted", async () => {

@@ -127,7 +127,16 @@ export type StackResult = { name: string; url: string; size: number };
 /** Renders the uploaded parts, in the order given, into one horizontal
  *  video. `ids` are the UUIDs `upload` returned — never paths, and never
  *  the local filenames, which the server has no idea about. */
-export async function stack(body: { ids: string[]; title: string }): Promise<StackResult> {
+export async function stack(body: {
+  ids: string[];
+  title: string;
+  /** The thumbnail as bare base64 JPEG, already 1280x720 — see
+   *  `renderThumb`. Required: the server saves it beside the output and
+   *  `/api/publish` sends it instead of the render's own first frame.
+   *  Rendered here for the same reason `titlePng` is: the server writes the
+   *  bytes and never has to understand an image format. */
+  thumb: string;
+}): Promise<StackResult> {
   return (await post("/api/stack", body)).json() as Promise<StackResult>;
 }
 

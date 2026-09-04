@@ -37,6 +37,33 @@ const RATE = 44100;
  *  keep headroom for. */
 const CRF = "20";
 
+/** The shortest a stripped part is allowed to come back as.
+ *
+ *  A part shorter than the cut would land at zero or negative seconds, which
+ *  ffmpeg reads as "no frames" and `concat` reads as a missing leg — so the
+ *  whole render fails on one odd upload. Anything under this floor keeps its
+ *  full length instead: an upload this app did not produce has no outro to
+ *  strip, and guessing that it does is how a stack silently loses a second
+ *  of real content off every part. */
+export const MIN_KEPT = 1;
+
+/** How much of a part survives the outro strip.
+ *
+ *  `tail` is the bundled outro's own probed length, passed in by the caller
+ *  rather than read here: `END_PATH` lives in `starter.ts`, which is this
+ *  module's SIBLING, and importing across that line would put a cycle-shaped
+ *  edge into a layering that is deliberately acyclic. The caller already
+ *  imports both.
+ *
+ *  The last part keeps its outro — it is the video's own ending — so
+ *  `isLast` is what decides, never the index. `tail` of 0 makes this the
+ *  identity, which is what every caller that predates the strip passes. */
+export function keptSeconds(seconds: number, isLast: boolean, tail: number): number {
+  if (isLast || tail <= 0) return seconds;
+  const kept = seconds - tail;
+  return kept < MIN_KEPT ? seconds : kept;
+}
+
 /** Letterboxes each part onto a blurred copy of itself and concatenates the
  *  lot into one 1920x1080 file, in ONE encode.
  *
@@ -55,16 +82,37 @@ const CRF = "20";
  *
  *  A part with no audio gets a leg cut from a shared `anullsrc` input,
  *  appended LAST so the real parts' input indices never move — the same
- *  positional rule `concatClips` follows. */
-export async function stackWide(paths: string[], out: string): Promise<string> {
+ *  positional rule `concatClips` follows.
+ *
+ *  `tail` is how many seconds every part BUT THE LAST gives up off its end —
+ *  the bundled outro, so a compilation plays one ending rather than one per
+ *  part. It arrives as an input `-t` on each part rather than as a `trim`
+ *  filter, so the demuxer stops early and nothing past the cut is decoded at
+ *  all. Defaults to 0, which is the identity and what every existing caller
+ *  gets. */
+export async function stackWide(
+  paths: string[],
+  out: string,
+  tail = 0,
+): Promise<string> {
   if (paths.length === 0) throw new Error("stackWide needs at least one part.");
 
   const probed = await Promise.all(paths.map((p) => probeFile(p)));
   const anySilent = probed.some((p) => !p.hasAudio);
   const silenceIndex = paths.length;
+  const kept = probed.map((p, i) =>
+    keptSeconds(p?.seconds ?? 0, i === paths.length - 1, tail),
+  );
 
   const inputs: string[] = [];
-  for (const path of paths) inputs.push("-i", path);
+  paths.forEach((path, i) => {
+    // Declared BEFORE the -i it belongs to: ffmpeg attaches an option to the
+    // NEXT -i, so the other order would make this an option on the following
+    // part and cut the wrong file. Same lesson as the mask input in
+    // `exportClip`.
+    if ((kept[i] ?? 0) < (probed[i]?.seconds ?? 0)) inputs.push("-t", String(kept[i]));
+    inputs.push("-i", path);
+  });
   if (anySilent) {
     inputs.push("-f", "lavfi", "-i", `anullsrc=r=${RATE}:cl=stereo`);
   }
@@ -74,7 +122,11 @@ export async function stackWide(paths: string[], out: string): Promise<string> {
   paths.forEach((_, i) => {
     const p = probed[i];
     const hasAudio = p?.hasAudio === true;
-    const seconds = p?.seconds ?? 0;
+    // The KEPT length, not the file's. A sounded part is already cut by its
+    // input `-t` and this is a no-op on it; the shared `anullsrc` carries no
+    // `-t` at all, so for a silent part this is the only thing that stops
+    // its stand-in leg running past the video it stands in for.
+    const seconds = kept[i] ?? 0;
     legs.push(
       `[${i}:v]split=2[bg${i}][fg${i}]`,
       `[bg${i}]scale=${BG_W}:${BG_H}:force_original_aspect_ratio=increase,` +

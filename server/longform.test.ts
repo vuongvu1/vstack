@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { probeFile } from "./ffmpeg.ts";
-import { stackWide } from "./longform.ts";
+import { MIN_KEPT, keptSeconds, stackWide } from "./longform.ts";
 
 const run = promisify(execFile);
 
@@ -69,6 +69,38 @@ async function pixelAt(path: string, t: number, x: number, y: number, width = 19
   const i = (y * width + x) * 3;
   return { r: buf[i] ?? 0, g: buf[i + 1] ?? 0, b: buf[i + 2] ?? 0 };
 }
+
+describe("keptSeconds", () => {
+  it("leaves the last part whole", () => {
+    expect(keptSeconds(30, true, 5.04)).toBe(30);
+  });
+
+  it("takes the tail off every other part", () => {
+    expect(keptSeconds(30, false, 5.04)).toBeCloseTo(24.96, 5);
+  });
+
+  it("is a no-op at tail 0, which is what every existing caller passes", () => {
+    expect(keptSeconds(30, false, 0)).toBe(30);
+    expect(keptSeconds(30, true, 0)).toBe(30);
+  });
+
+  // The guard. An upload this app did not produce has no outro to strip, and
+  // a part shorter than the cut would come back at zero or negative seconds
+  // — which ffmpeg reads as "no frames" and the concat reads as a missing
+  // leg. Keeping it whole is the only answer that renders.
+  it("keeps a part too short to survive the cut", () => {
+    expect(keptSeconds(5, false, 5.04)).toBe(5);
+    expect(keptSeconds(1, false, 5.04)).toBe(1);
+    expect(keptSeconds(0, false, 5.04)).toBe(0);
+  });
+
+  it("floors at MIN_KEPT rather than at zero", () => {
+    // 6 - 5.04 = 0.96, under the floor: whole part.
+    expect(keptSeconds(6, false, 5.04)).toBe(6);
+    // 6.04 - 5.04 = 1.0, exactly the floor: cut.
+    expect(keptSeconds(6.04, false, 5.04)).toBeCloseTo(MIN_KEPT, 5);
+  });
+});
 
 describe("stackWide", () => {
   it("widens two vertical parts onto their own blurred backgrounds, in order", async () => {
@@ -152,6 +184,29 @@ describe("stackWide", () => {
     expect(probed.hasAudio).toBe(true);
     expect(probed.seconds).toBeGreaterThan(3.5);
     expect(probed.seconds).toBeLessThan(4.5);
+  }, 120_000);
+
+  // The outro strip. Both parts are 2s; a 0.8s tail leaves 1.2 + 2 = 3.2.
+  // The two failure modes this pins are both a whole tail away: not
+  // stripping at all is 4.0, and stripping the LAST part too is 2.4.
+  it("takes the tail off every part but the last", async () => {
+    const out = join(dir, "stripped.mp4");
+    await stackWide([red, red], out, 0.8);
+
+    const probed = await probeFile(out);
+    expect(probed.seconds).toBeGreaterThan(3.0);
+    expect(probed.seconds).toBeLessThan(3.4);
+  }, 120_000);
+
+  // A single part is the last part, so there is nothing to strip — the tail
+  // must not shorten a one-part stack.
+  it("leaves a lone part whole however big the tail", async () => {
+    const out = join(dir, "lone.mp4");
+    await stackWide([red], out, 0.8);
+
+    const probed = await probeFile(out);
+    expect(probed.seconds).toBeGreaterThan(1.8);
+    expect(probed.seconds).toBeLessThan(2.2);
   }, 120_000);
 
   it("refuses an empty part list", async () => {

@@ -38,7 +38,10 @@ which supersedes nothing and instead adds a SECOND journey through the app:
 uploaded vertical mp4s letterboxed onto blurred copies of themselves,
 concatenated into one 1920x1080 video, and published through the same
 preview phase. Everything every other spec describes is the *short* journey
-and is unchanged by it. No spec covers the speech engine: every one of them
+and is unchanged by it. Two of that doc's own decisions have since been
+reversed and it carries an amendment saying so: outro stripping is no longer
+out of scope (every part but the last gives up the bundled `end_video.mp4`),
+and `/api/stack`'s body takes a required `thumb` on top of `ids` + `title`. No spec covers the speech engine: every one of them
 describes macOS `say` and its `Linh` voice, which this codebase no longer
 uses at all (see "the voice" below).
 `docs/plans/2026-08-20-vstack.md` is the historical build plan and carries
@@ -70,14 +73,16 @@ and the only remaining macOS dependency is `afplay` in `pnpm voices` and
 ```
 server/errors.ts   HttpError (status + message), toolError (stderr tail)
 server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
-                   outName/outPath, isOutName, stillPath/removeExport,
+                   outName/outPath, isOutName, stillPath/thumbPath/
+                   removeExport,
                    UPLOADS_DIR/uploadPath, isUploadId,
                    probeFile, ConcatPart/
                    concatClips, buildFilter, assertBoxes, exportClip,
                    firstFrame,
                    reportCache
 server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
-server/longform.ts WIDE, stackWide (the long journey's one ffmpeg pass)
+server/longform.ts WIDE, MIN_KEPT/keptSeconds, stackWide (the long
+                   journey's one ffmpeg pass)
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
                    starterDuration, checkStarter, installedVoices,
                    knownVoices, synthesize, speak, prependStarter (the title
@@ -106,6 +111,7 @@ src/custom.ts      CustomBox, MAX_CUSTOM/MIN_OUT_SIDE, outRatio, clampOut/
                    defaultCustom
 src/frame.ts       GUTTER/CORNER_RADIUS, windowOf/windowsOf, ringOf, maskRgba
 src/starter.ts     TITLE_FONT, renderTitleArt (title → transparent PNG)
+src/thumb.ts       THUMB, renderThumb (any picture → 1280x720 JPEG, stretched)
 src/state.ts       AppState, setState/setQuiet, save/restore
 src/api.ts         9 fetch wrappers
 src/format.ts      mmss / clock / slugify (shared client + server)
@@ -472,6 +478,48 @@ today's `OUT_NAME` regex already accepts — which is the entire reason
 `/out/`, `/api/reveal` and `/api/publish` needed no edits for this feature.
 Do not widen `OUT_NAME` for long form; there is nothing to widen it for.
 
+**Every long-form part but the last gives up the bundled outro, and the
+cut is probed rather than hardcoded.** A vstack short is starter + body +
+`end_video.mp4`, so a compilation of N of them plays N endings. `/api/stack`
+probes `END_PATH` for the tail and passes it into `stackWide`, which spends
+it as an input `-t` on each part — declared BEFORE that part's `-i`, the same
+lesson `exportClip`'s mask input carries, since ffmpeg attaches an option to
+the *next* `-i` and the other order would cut the following file. `keptSeconds`
+is the one rule both sides compute from: the route needs it too, because
+`outName` carries the duration and a name that disagreed with the render would
+send `/out/` looking for a file nobody wrote. The tail is *not* imported into
+`longform.ts` — `END_PATH` lives in `starter.ts`, which is its sibling, and
+the caller already has both. `MIN_KEPT` is why an upload this app did not
+produce survives: a part shorter than the cut keeps its full length rather
+than coming back at zero seconds, which ffmpeg reads as "no frames" and
+`concat` reads as a missing leg. `tail` defaults to 0, the identity, so every
+existing caller and test is exact.
+
+**The picked thumbnail is `<name>.thumb.jpg`, NEVER `<name>.jpg`.**
+`applyThumbnail` prefers the sidecar over the render's own first frame, and
+`stillPath`'s `<name>.jpg` is where a *short* export writes its **vertical**
+1080x1920 still for Studio's Shorts slot. One name for both would make every
+short publish that vertical still as its 16:9 thumbnail — pillarboxed to a
+32%-wide strip with black either side, which at tile size reads as a black
+picture, the exact bug `firstFrame`'s crop already exists to prevent. A
+distinct name is also what lets `applyThumbnail` decide on the file's
+presence rather than on a mode flag, so it stays as blind to the two
+journeys as `serveOut` and `isOutName` are. `removeExport` sweeps both.
+
+**The thumbnail is stretched in the browser, and it is the third image this
+client rasterises for a server that cannot.** `renderThumb` draws the picked
+file into a 1280x720 canvas across the whole destination rect — distorted to
+fill, never cropped or letterboxed, because the user picked the picture
+knowing the shape it has to become and a crop would silently discard whatever
+they put at the edges. Doing it client-side buys more than it does for
+`titlePng`: `createImageBitmap` decodes every format the browser can display
+(jpeg, png, webp, avif, gif), which is wider than a scale filter would have
+to be told about, and the output is exactly 1280x720 so nothing server-side
+has to check a dimension. `jpeg()` in `server/index.ts` still checks the
+signature — three bytes, `FF D8 FF`, because the fourth varies by encoder —
+since those bytes are handed to `thumbnails.set` later, and a non-JPEG fails
+there long after the render that would have to be repeated.
+
 **`stackWide` blurs at 480x270 and stretches back up, never at full
 resolution.** A 1080x1920 source scaled to *cover* 1920x1080 is 1920x3413,
 and `gblur` over that costs roughly fifty times what it costs at 480x270 —
@@ -783,8 +831,16 @@ The HTTP calls, `open -R`, the preview bar and the auth script have no tests,
 like the rest of the network and DOM surface. The out-name tests in
 `server/ffmpeg.test.ts` are the traversal guard and get the same exhaustive
 treatment `videoIdFrom` does.
-`server/longform.test.ts` shells out to real ffmpeg and asserts output
-pixels, the same posture `server/ffmpeg.test.ts` holds: the output is
+`server/longform.test.ts` covers `keptSeconds` exhaustively — the last part
+whole, the tail off every other, `tail` of 0 as the identity, and the
+`MIN_KEPT` floor at both sides of its boundary (6s keeps whole, 6.04s cuts) —
+plus two real renders for the strip: a two-part stack whose duration is a
+whole tail from both failure modes (4.0s unstripped, 2.4s if the last part is
+stripped too), and a one-part stack that must not shrink however big the tail.
+Mutation-tested both ways: dropping `isLast` fails three tests, ignoring
+`tail` in the route's own call fails the two-part one. It also shells out to
+real ffmpeg and asserts output pixels, the same posture
+`server/ffmpeg.test.ts` holds: the output is
 1920x1080, a centre sample in each half carries that part's own colour, and
 a left-edge sample is NOT black — which is the assertion that fails if the
 blur leg is dropped and the graph pillarboxes instead. The two parts are
@@ -794,7 +850,13 @@ already is. A silent second part covers the `anullsrc` stand-in, and a 16:9
 part covers an upload that is not vertical. `server/youtube.test.ts` gains
 the `shorts` flag's four cases. The upload route, the stacking panel and
 the reorder controls (drag and the four arrow buttons alike) have no tests, like the rest of the network and DOM
-surface.
+surface. `server/ffmpeg.test.ts` pins `thumbPath` against `stillPath` —
+that `removeExport` takes both, and that the two names differ at all, which
+is the assertion that fails if anyone ever "simplifies" them into one.
+`src/thumb.ts` is DOM-driven and untested like `src/starter.ts`; it was
+verified in a real browser (a 300x900 source's top band landing across the
+top 80px of a 1280x720 chip, teal edge to edge, so stretched rather than
+cropped) and through a real render.
 
 DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by design — vitest runs `environment: "node"` here and those behaviours are verified by hand.
 

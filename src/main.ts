@@ -36,6 +36,7 @@ import { startPreview } from "./preview.ts";
 import { MAX_SEGMENTS, isValidSegments, normalize } from "./segments.ts";
 import type { Segment } from "./segments.ts";
 import { renderTitleArt } from "./starter.ts";
+import { renderThumb } from "./thumb.ts";
 import type { AppState } from "./state.ts";
 import {
   getState,
@@ -1337,17 +1338,36 @@ async function doUpload(files: File[]): Promise<void> {
   });
 }
 
+/** Stretches the picked picture to 1280x720 and holds it in state.
+ *
+ *  Notifying, not quiet: `Render \u2192` is gated on the thumbnail and this is
+ *  not a keystroke path, so a normal render is exactly what should flip the
+ *  button. Under `guard` for the busy string alone — `createImageBitmap` on
+ *  a 40-megapixel photo is not instant, and without it the picker looks like
+ *  it did nothing.
+ *
+ *  Replaces rather than accumulates: there is one thumbnail. */
+async function doPickThumb(file: File): Promise<void> {
+  await guard("Reading the picture\u2026", async () => {
+    setState({ thumb: await renderThumb(file), thumbName: file.name });
+  });
+}
+
 /** Renders the stack and moves to the preview phase. The file lands in
  *  `out/` server-side under a name today's `isOutName` already accepts, so
  *  preview, Reveal and Publish all work on it unchanged. */
 async function doStack(): Promise<void> {
   const s = getState();
-  // Both checks the Render button is disabled on, repeated here rather than
-  // trusting it — the title reaches the button through a quiet update.
+  // All three checks the Render button is disabled on, repeated here rather
+  // than trusting it — the title reaches the button through a quiet update.
   const title = s.starterTitle.trim();
-  if (title === "" || s.parts.length === 0) return;
+  if (title === "" || s.parts.length === 0 || s.thumb === "") return;
   await guard("Rendering… (a 5-minute stack takes ~1-2 min)", async () => {
-    const out = await api.stack({ ids: s.parts.map((p) => p.id), title });
+    const out = await api.stack({
+      ids: s.parts.map((p) => p.id),
+      title,
+      thumb: s.thumb,
+    });
     setState({
       phase: "preview",
       outName: out.name,
@@ -2153,6 +2173,23 @@ function renderStacking(): Node[] {
     if (files.length > 0) void doUpload(files);
   };
 
+  // Any picture format the browser can decode, not just mp4's own siblings:
+  // `renderThumb` hands the decode to `createImageBitmap`, so accept="image/*"
+  // is honest about what actually works.
+  const thumbPicker = el("input", {
+    type: "file",
+    accept: "image/*",
+    disabled: busy,
+  });
+  thumbPicker.onchange = () => {
+    const file = thumbPicker.files?.[0];
+    // Cleared for the same reason the parts picker clears itself: picking the
+    // same file twice in a row has to fire a second change event, which it
+    // will not do while `value` still holds that name.
+    thumbPicker.value = "";
+    if (file) void doPickThumb(file);
+  };
+
   const title = el("input", {
     type: "text",
     placeholder: "Title (names the file)",
@@ -2166,6 +2203,8 @@ function renderStacking(): Node[] {
   // must not throw away files already sent. `parts` is deliberately absent
   // from the clear below for exactly that reason — leave it alone, or the
   // next "Long form →" makes the user re-upload a gigabyte to fix a typo.
+  // `thumb`/`thumbName` ride along with it under the same rule: the picture
+  // describes the stack, and the stack survives.
   //
   // Everything else session-scoped from this render DOES get cleared. This
   // is the first route back to `idle` this app has ever had, and `outName`
@@ -2199,7 +2238,8 @@ function renderStacking(): Node[] {
   const go = el("button", {
     className: "btn-solid",
     textContent: "Render →",
-    disabled: busy || s.parts.length === 0 || s.starterTitle.trim() === "",
+    disabled:
+      busy || s.parts.length === 0 || s.starterTitle.trim() === "" || s.thumb === "",
   });
   go.onclick = () => void doStack();
   stackBtn = go;
@@ -2216,7 +2256,10 @@ function renderStacking(): Node[] {
     if (stackBtn) {
       const live = getState();
       stackBtn.disabled =
-        title.value.trim() === "" || live.parts.length === 0 || Boolean(live.busy);
+        title.value.trim() === "" ||
+        live.parts.length === 0 ||
+        live.thumb === "" ||
+        Boolean(live.busy);
     }
   };
 
@@ -2230,6 +2273,27 @@ function renderStacking(): Node[] {
         textContent: `${s.parts.length} part${s.parts.length === 1 ? "" : "s"}`,
       }),
       el("span", { className: "badge", textContent: clock(total) }),
+    ),
+    el(
+      "div",
+      { className: "bar-row" },
+      thumbPicker,
+      // The picture itself, not just its name: the point of a required
+      // thumbnail is that the user sees what they picked, and the chip is
+      // rendered from the SAME 1280x720 base64 the server will store — so a
+      // stretch that ruined the picture is visible here rather than in
+      // Studio. `hidden` rather than absent, so the row's width does not
+      // jump the moment one is picked.
+      el("img", {
+        className: "thumb-chip",
+        src: s.thumb === "" ? "" : `data:image/jpeg;base64,${s.thumb}`,
+        alt: s.thumbName,
+        hidden: s.thumb === "",
+      }),
+      el("span", {
+        className: "badge",
+        textContent: s.thumb === "" ? "thumbnail required" : "thumbnail 1280×720",
+      }),
     ),
     el("div", { className: "bar-row" }, title, el("div", { className: "bar-end" }, back, go)),
   ];

@@ -37,11 +37,19 @@ import {
   removeExport,
   reportCache,
   stillPath,
+  thumbPath,
   uploadPath,
 } from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
-import { stackWide } from "./longform.ts";
-import { VOICE, checkStarter, knownVoices, prependStarter, speak } from "./starter.ts";
+import { keptSeconds, stackWide } from "./longform.ts";
+import {
+  END_PATH,
+  VOICE,
+  checkStarter,
+  knownVoices,
+  prependStarter,
+  speak,
+} from "./starter.ts";
 import {
   buildSnippet,
   checkYouTube,
@@ -163,9 +171,47 @@ export function png(v: unknown, name: string): Buffer {
   return buf;
 }
 
-/** Publishes the export's own first frame as the video's thumbnail — which
- *  for a vstack output is the starter screen, blurred background and title
- *  already composited, so there is nothing to render.
+/** The first three bytes of every JPEG: SOI plus the first marker's prefix.
+ *  Only three, because the fourth byte varies by encoder (`0xe0` for JFIF,
+ *  `0xe1` for Exif, `0xdb` for a bare quantisation table). */
+const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
+/** A 1280x720 JPEG at quality 0.92 is a few hundred KB. Two orders of
+ *  magnitude of headroom, and — like `PNG_MAX` — it exists only so a bad
+ *  request cannot be a memory-sized one. */
+const JPEG_MAX = 8 << 20;
+
+/** The long-form thumbnail, stretched to 1280x720 in the browser (see
+ *  `renderThumb`) and arriving as bare base64 for the same reason the title
+ *  art does: the client is the only side of this app that can decode an
+ *  arbitrary picture format.
+ *
+ *  The signature is checked rather than trusted even though these bytes are
+ *  only ever written to disk, not parsed here — they are handed to YouTube's
+ *  `thumbnails.set` later, and a file that is not a JPEG fails there, long
+ *  after the render that would have to be repeated. */
+function jpeg(v: unknown, name: string): Buffer {
+  const b64 = str(v, name);
+  if (b64.length > JPEG_MAX) throw new HttpError(400, `${name} is too large.`);
+  // Buffer.from(..., "base64") never throws — it stops at the first invalid
+  // character — so the signature is what rejects a non-JPEG body.
+  const buf = Buffer.from(b64, "base64");
+  if (!buf.subarray(0, 3).equals(JPEG_MAGIC)) {
+    throw new HttpError(400, `${name} is not a JPEG.`);
+  }
+  return buf;
+}
+
+/** Publishes a thumbnail for a video that is already up.
+ *
+ *  Two sources, and the sidecar wins. `thumbPath` is the picture the user
+ *  picked on the stacking screen, already 1280x720; with no sidecar this
+ *  falls back to the render's own first frame, which for a short is the
+ *  starter screen with its blurred background and title already composited,
+ *  so there is nothing to render.
+ *
+ *  Note what decides: the file's presence, never the journey. `thumbPath`
+ *  is a name only `/api/stack` writes, so this needs no mode flag and stays
+ *  as blind to the two journeys as `serveOut` and `isOutName` are.
  *
  *  Best-effort by design, and the return value says which: by the time this
  *  runs the video is uploaded and visible in Studio, so a thumbnail refusal
@@ -173,11 +219,17 @@ export function png(v: unknown, name: string): Buffer {
  *  403 on a channel that was never phone-verified, which blocks custom
  *  thumbnails account-wide.
  *
- *  The JPEG goes to a temp dir, never OUT_DIR: everything in there is
- *  servable under a name the client can ask for, and nothing sweeps it. */
+ *  The fallback JPEG goes to a temp dir, never OUT_DIR: everything in there
+ *  is servable under a name the client can ask for, and nothing sweeps it. */
 async function applyThumbnail(video: string, videoId: string): Promise<boolean> {
+  const picked = thumbPath(video);
   const dir = await mkdtemp(join(tmpdir(), "vstack-thumb-"));
   try {
+    if (existsSync(picked)) {
+      await setThumbnail(videoId, picked);
+      console.warn(`vstack: set the picked picture as ${videoId}'s thumbnail`);
+      return true;
+    }
     await setThumbnail(videoId, await firstFrame(video, join(dir, "thumb.jpg"), "wide"));
     console.warn(`vstack: set the starter screen as ${videoId}'s thumbnail`);
     return true;
@@ -659,6 +711,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.url === "/api/stack") {
     const raw = await json<Record<string, unknown>>(req);
     const title = readTitle(raw.title, "title");
+    // Required, unlike the short journey's thumbnail (which is the export's
+    // own first frame and needs no picking). A 16:9 compilation opens on
+    // whichever part happens to be first, so leaving this to a fallback
+    // would publish a frame nobody chose.
+    const thumb = jpeg(raw.thumb, "thumb");
     const ids = raw.ids;
     if (!Array.isArray(ids) || ids.length === 0) {
       return send(res, 400, { error: "ids must be a non-empty array." });
@@ -674,11 +731,24 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
 
     const probed = await Promise.all(paths.map((p) => probeFile(p)));
+    // Every part but the last gives up the bundled outro, so a compilation
+    // plays one ending rather than one per part. Probed here rather than
+    // hardcoded — swap `end_video.mp4` and the cut follows it — and probed
+    // in the route rather than inside `stackWide`, which sits BESIDE
+    // `starter.ts` and must not import from it.
+    const tail = (await probeFile(END_PATH)).seconds;
     // Ceiled, so the name is stable and integral the way every other name
     // this app writes is. NOT segments.ts's `totalDuration`, which sums
     // source-timeline segments and has nothing to do with this path despite
-    // the matching shape.
-    const total = Math.ceil(probed.reduce((sum, p) => sum + p.seconds, 0));
+    // the matching shape. Over the KEPT lengths, not the files' own: the
+    // name carries the duration, so the two have to be computed from the
+    // same rule `stackWide` renders by.
+    const total = Math.ceil(
+      probed.reduce(
+        (sum, p, i) => sum + keptSeconds(p.seconds, i === probed.length - 1, tail),
+        0,
+      ),
+    );
 
     await mkdir(OUT_DIR, { recursive: true });
     // Marks of 0 and the total: `outName` emits `<slug>-0000-<mmss>.mp4`,
@@ -691,10 +761,20 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
     inFlight.add(partial);
     try {
-      await stackWide(paths, partial);
+      await stackWide(paths, partial, tail);
       await rename(partial, out);
+      // After the rename, like `saveStill`: a sidecar must never sit beside
+      // a name the render did not reach. Best-effort for the same reason —
+      // the video is the product, and `applyThumbnail` falls back to the
+      // first frame if this is not there, which beats failing a render that
+      // already succeeded.
+      await writeFile(thumbPath(out), thumb).catch((err: unknown) => {
+        console.warn(`vstack: could not save the thumbnail beside ${name}:`, err);
+      });
       // No `.jpg` still beside it, unlike an export: that file exists for
       // Studio's *Shorts* thumbnail slot, and a 16:9 video has no such slot.
+      // The `.thumb.jpg` written above is a different file for a different
+      // job — see `thumbPath`.
       //
       // ponytail: no `prev` sweep either. A long-form name varies in both
       // the title AND the total, so a title edit strands a file and so does

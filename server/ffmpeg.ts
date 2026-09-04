@@ -122,6 +122,21 @@ export function stillPath(video: string): string {
   return video.replace(/\.mp4$/, ".jpg");
 }
 
+/** The 1280x720 thumbnail the user picked for a long-form render, saved
+ *  beside the output so it survives a reload and is still there when the
+ *  publish happens.
+ *
+ *  Deliberately NOT `stillPath`. A short export already writes a *vertical*
+ *  1080x1920 frame at `<name>.jpg` for Studio's Shorts slot, and
+ *  `applyThumbnail` prefers this file over the export's own first frame —
+ *  so sharing one name would make every short publish its own pillarboxed
+ *  still as a 16:9 thumbnail, which at tile size reads as a black picture.
+ *  A distinct name is what lets `applyThumbnail` stay mode-blind with no
+ *  flag to pass it. */
+export function thumbPath(video: string): string {
+  return video.replace(/\.mp4$/, ".thumb.jpg");
+}
+
 /** Deletes a finished export and its still.
  *
  *  A re-export after a mark or title edit lands under a *different* name —
@@ -133,11 +148,13 @@ export function stillPath(video: string): string {
  *
  *  Takes a path rather than a name so it needs no OUT_DIR of its own — the
  *  caller has already put a validated name through `outPath`. `force` makes
- *  a missing file a no-op, which is the normal case for the still: it is
- *  best-effort on the way in too. */
+ *  a missing file a no-op, which is the normal case for both sidecars: the
+ *  still is best-effort on the way in too, and `thumbPath` only exists for
+ *  a long-form render. */
 export async function removeExport(path: string): Promise<void> {
   await rm(path, { force: true });
   await rm(stillPath(path), { force: true });
+  await rm(thumbPath(path), { force: true });
 }
 
 /** Anchored to what `slugify` (emits dash-separated alphanumeric groups,

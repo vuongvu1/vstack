@@ -34,6 +34,22 @@ export type AppState = {
    *  of not storing a list of paths the user may have swept from
    *  `media/uploads/` by hand. The files themselves survive. */
   parts: UploadPart[];
+  /** The long-form thumbnail, already stretched to 1280x720 JPEG by
+   *  `renderThumb`, as bare base64. `""` until the user picks a picture, and
+   *  `Render \u2192` is gated on it the same way it is gated on the title.
+   *
+   *  NOT persisted, for the same reason `parts` is not: it describes this
+   *  session's stack. Once a render lands, the server has written it beside
+   *  the output, so nothing downstream needs this copy \u2014 which is why a
+   *  reload on `preview` still publishes the right picture.
+   *
+   *  Kept as base64 rather than as the `File`: it is what crosses the wire,
+   *  it is what the bar's preview chip shows, and re-encoding it on every
+   *  render would mean holding the original decode alive for no reason. */
+  thumb: string;
+  /** The picked picture's local filename, for display only \u2014 never sent.
+   *  Same rule `UploadPart.name` follows. */
+  thumbName: string;
   // The URL field's live text, kept here (not just in the DOM) so a
   // busy-triggered render that rebuilds the idle bar doesn't lose what the
   // user typed. Never persisted — save()/restore() don't touch it.
@@ -119,6 +135,8 @@ const initial: AppState = {
   busy: "",
   mode: "short",
   parts: [],
+  thumb: "",
+  thumbName: "",
   url: "",
   videoId: "",
   title: "",
