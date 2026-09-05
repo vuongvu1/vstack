@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { probeFile } from "./ffmpeg.ts";
-import { FADE, MIN_KEPT, keptSeconds, stackWide } from "./longform.ts";
+import { END_PATH } from "./starter.ts";
+import { FADE, MIN_KEPT, detectTrim, keptRange, stackWide } from "./longform.ts";
 
 const run = promisify(execFile);
 
@@ -13,6 +14,15 @@ let dir = "";
 let red = "";
 let blue = "";
 let wide = "";
+/** A realistic vstack short: a static starter screen, a moving body, and
+ *  the real bundled outro. */
+let full = "";
+/** The same, minus the outro — an "old short", made before that asset
+ *  existed. This is the fixture the tail detector has to say no to. */
+let headless = "";
+/** Neither: a raw upload that never went through this app. */
+let raw = "";
+let outroSeconds = 0;
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "vstack-long-"));
@@ -49,7 +59,78 @@ beforeAll(async () => {
     "-c:v", "libx264", "-pix_fmt", "yuv420p",
     "-y", wide,
   ]);
-});
+
+  // A vstack short is starter + body + outro. The starter screen is ONE
+  // composited frame repeated, which is what `freezedetect` isolates; the
+  // body has to move, or the head scan would run straight through it.
+  const starter = join(dir, "starter.mp4");
+  await run("ffmpeg", [
+    "-v", "error",
+    "-f", "lavfi", "-i", "color=c=navy:s=1080x1920:d=1.8:r=30",
+    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+    "-t", "1.8",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+    "-y", starter,
+  ]);
+  const body = join(dir, "body.mp4");
+  await run("ffmpeg", [
+    "-v", "error",
+    "-f", "lavfi", "-i", "testsrc2=s=1080x1920:d=6:r=30",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+    "-y", body,
+  ]);
+
+  // Concatenated the way `prependStarter` does it, so the fixtures carry the
+  // same normalisation a real export's legs get.
+  const join3 = async (out: string, parts: string[]) => {
+    const n = parts.length;
+    const v = parts.map((_, i) => `[${i}:v]fps=30,setsar=1[v${i}]`).join(";");
+    const a = parts.map((_, i) => `[${i}:a]aresample=44100[a${i}]`).join(";");
+    const labels = parts.map((_, i) => `[v${i}][a${i}]`).join("");
+    await run("ffmpeg", [
+      "-v", "error",
+      ...parts.flatMap((p) => ["-i", p]),
+      "-filter_complex", `${v};${a};${labels}concat=n=${n}:v=1:a=1[v][o]`,
+      "-map", "[v]", "-map", "[o]",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+      "-y", out,
+    ]);
+  };
+
+  full = join(dir, "full-short.mp4");
+  await join3(full, [starter, body, END_PATH]);
+
+  headless = join(dir, "old-short.mp4");
+  await join3(headless, [starter, body]);
+
+  // Faint noise on the still, then motion. This is the fixture that proves
+  // `-60dB` isolates a SYNTHESISED still rather than merely a static-looking
+  // one: a `color=` source emits bit-identical frames, which no camera ever
+  // does, and at -60dB real footage does not freeze at all.
+  const noisy = join(dir, "noisy-still.mp4");
+  await run("ffmpeg", [
+    "-v", "error",
+    // The noise is part of the lavfi graph, not a -vf on the output: with two
+    // inputs an output filter needs an explicit -map, and this reads as what
+    // it is — a noisy source rather than a clean one that got dirtied.
+    "-f", "lavfi", "-i", "color=c=maroon:s=1080x1920:d=3:r=30,noise=alls=6:allf=t",
+    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+    "-t", "3",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20",
+    "-c:a", "aac",
+    "-y", noisy,
+  ]);
+  raw = join(dir, "raw-upload.mp4");
+  await join3(raw, [noisy, body]);
+
+  outroSeconds = (await probeFile(END_PATH)).seconds;
+  // Explicit timeout: these fixtures are seven real encodes, two of them
+  // concatenating the bundled outro, and vitest's default hook timeout is
+  // 10s. It passes in isolation and times out in the full suite, where the
+  // files run in parallel and compete for CPU — so the default is not a
+  // budget this setup can rely on.
+}, 180_000);
 
 afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
@@ -80,36 +161,101 @@ describe("FADE", () => {
   });
 });
 
-describe("keptSeconds", () => {
-  it("leaves the last part whole", () => {
-    expect(keptSeconds(30, true, 5.04)).toBe(30);
+describe("keptRange", () => {
+  const none = { head: 0, tail: 0 };
+
+  it("is the identity with nothing detected", () => {
+    expect(keptRange(30, none, false)).toEqual({ ss: 0, dur: 30 });
+    expect(keptRange(30, none, true)).toEqual({ ss: 0, dur: 30 });
   });
 
-  it("takes the tail off every other part", () => {
-    expect(keptSeconds(30, false, 5.04)).toBeCloseTo(24.96, 5);
+  // The starter goes from EVERY part, including the first and the last. A
+  // part's title card announces that part, and the compilation's own title
+  // is in the publish panel with a thumbnail the user picked — so no card is
+  // doing a job any more, and part one's would mislabel the whole video.
+  it("takes the head off every part, the last one included", () => {
+    expect(keptRange(30, { head: 1.8, tail: 0 }, false)).toEqual({ ss: 1.8, dur: 28.2 });
+    expect(keptRange(30, { head: 1.8, tail: 0 }, true)).toEqual({ ss: 1.8, dur: 28.2 });
   });
 
-  it("is a no-op at tail 0, which is what every existing caller passes", () => {
-    expect(keptSeconds(30, false, 0)).toBe(30);
-    expect(keptSeconds(30, true, 0)).toBe(30);
+  // The outro is the other way round: the last part keeps it, because it is
+  // the finished video's own ending.
+  it("takes the tail off every part but the last", () => {
+    expect(keptRange(30, { head: 0, tail: 5.04 }, false)).toEqual({ ss: 0, dur: 24.96 });
+    expect(keptRange(30, { head: 0, tail: 5.04 }, true)).toEqual({ ss: 0, dur: 30 });
   });
 
-  // The guard. An upload this app did not produce has no outro to strip, and
-  // a part shorter than the cut would come back at zero or negative seconds
-  // — which ffmpeg reads as "no frames" and the concat reads as a missing
-  // leg. Keeping it whole is the only answer that renders.
-  it("keeps a part too short to survive the cut", () => {
-    expect(keptSeconds(5, false, 5.04)).toBe(5);
-    expect(keptSeconds(1, false, 5.04)).toBe(1);
-    expect(keptSeconds(0, false, 5.04)).toBe(0);
+  it("takes both off a middle part", () => {
+    const r = keptRange(30, { head: 1.8, tail: 5.04 }, false);
+    expect(r.ss).toBeCloseTo(1.8, 5);
+    expect(r.dur).toBeCloseTo(23.16, 5);
+  });
+
+  it("takes only the head off the last part", () => {
+    const r = keptRange(30, { head: 1.8, tail: 5.04 }, true);
+    expect(r.ss).toBeCloseTo(1.8, 5);
+    expect(r.dur).toBeCloseTo(28.2, 5);
+  });
+
+  // The backstop. Detection means we now only cut what was actually found,
+  // so this is far less likely to fire than it was when the tail was
+  // assumed — but a part that IS almost entirely starter and outro would
+  // still come back at zero or negative seconds, which ffmpeg reads as "no
+  // frames" and `concat` reads as a missing leg.
+  it("keeps a part whole rather than cutting it below MIN_KEPT", () => {
+    expect(keptRange(6, { head: 1.8, tail: 5.04 }, false)).toEqual({ ss: 0, dur: 6 });
+    expect(keptRange(2, { head: 1.8, tail: 0 }, false)).toEqual({ ss: 0, dur: 2 });
   });
 
   it("floors at MIN_KEPT rather than at zero", () => {
-    // 6 - 5.04 = 0.96, under the floor: whole part.
-    expect(keptSeconds(6, false, 5.04)).toBe(6);
-    // 6.04 - 5.04 = 1.0, exactly the floor: cut.
-    expect(keptSeconds(6.04, false, 5.04)).toBeCloseTo(MIN_KEPT, 5);
+    // 7.8 - 1.8 - 5.04 = 0.96, under the floor: whole part.
+    expect(keptRange(7.8, { head: 1.8, tail: 5.04 }, false)).toEqual({ ss: 0, dur: 7.8 });
+    // 7.84 - 1.8 - 5.04 = 1.0, exactly the floor: cut.
+    const r = keptRange(7.84, { head: 1.8, tail: 5.04 }, false);
+    expect(r.dur).toBeCloseTo(MIN_KEPT, 5);
   });
+});
+
+describe("detectTrim", () => {
+  // The whole point of detecting rather than assuming: this is what a real
+  // vstack short looks like, and both ends are found.
+  it("finds the starter and the outro on a vstack short", async () => {
+    const { seconds } = await probeFile(full);
+    const trim = await detectTrim(full, seconds, END_PATH, outroSeconds);
+    expect(trim.head).toBeCloseTo(1.8, 1);
+    expect(trim.tail).toBeCloseTo(outroSeconds, 5);
+  }, 120_000);
+
+  // THE REGRESSION. A short made before the outro asset existed has no
+  // outro, and the previous rule stripped one anyway — 5.04s of real
+  // content off the end of every part but the last, silently. The head is
+  // still found, because that short does have a starter.
+  it("finds no outro on an old short that never had one", async () => {
+    const { seconds } = await probeFile(headless);
+    const trim = await detectTrim(headless, seconds, END_PATH, outroSeconds);
+    expect(trim.head).toBeCloseTo(1.8, 1);
+    expect(trim.tail).toBe(0);
+  }, 120_000);
+
+  // A file this app never touched. Neither end is cut — and the head is 0
+  // even though the part opens on three seconds of a locked-off shot,
+  // because at -60dB real footage does not freeze. That is the assertion
+  // that fails if the threshold is loosened to -40dB.
+  it("finds neither end on a raw upload that opens on a static shot", async () => {
+    const { seconds } = await probeFile(raw);
+    const trim = await detectTrim(raw, seconds, END_PATH, outroSeconds);
+    expect(trim.head).toBe(0);
+    expect(trim.tail).toBe(0);
+  }, 120_000);
+
+  // The outro asset alone is all outro and no starter. Nothing here should
+  // be confused by a part whose entire length is the thing being matched —
+  // `keptRange`'s MIN_KEPT is what stops it rendering to nothing.
+  it("matches the outro asset against itself", async () => {
+    const trim = await detectTrim(END_PATH, outroSeconds, END_PATH, outroSeconds);
+    expect(trim.tail).toBeCloseTo(outroSeconds, 5);
+    expect(keptRange(outroSeconds, trim, false)).toEqual({ ss: 0, dur: outroSeconds });
+  }, 120_000);
 });
 
 describe("stackWide", () => {
@@ -201,22 +347,67 @@ describe("stackWide", () => {
   // stripping at all is 4.0, and stripping the LAST part too is 2.4.
   it("takes the tail off every part but the last", async () => {
     const out = join(dir, "stripped.mp4");
-    await stackWide([red, red], out, 0.8);
+    const t = { head: 0, tail: 0.8 };
+    await stackWide([red, red], out, [t, t]);
 
     const probed = await probeFile(out);
     expect(probed.seconds).toBeGreaterThan(3.0);
     expect(probed.seconds).toBeLessThan(3.4);
   }, 120_000);
 
-  // A single part is the last part, so there is nothing to strip — the tail
-  // must not shorten a one-part stack.
-  it("leaves a lone part whole however big the tail", async () => {
+  // A single part is the last part, so its outro stays — the tail must not
+  // shorten a one-part stack.
+  it("leaves a lone part's outro alone however big the tail", async () => {
     const out = join(dir, "lone.mp4");
-    await stackWide([red], out, 0.8);
+    await stackWide([red], out, [{ head: 0, tail: 0.8 }]);
 
     const probed = await probeFile(out);
     expect(probed.seconds).toBeGreaterThan(1.8);
     expect(probed.seconds).toBeLessThan(2.2);
+  }, 120_000);
+
+  // The head strip, end to end. Each part is a 1s navy "starter" followed
+  // by 2s of its own colour, and `head: 1` should leave only the colour —
+  // so t=0 is the FIRST part's colour rather than navy. Sampling at t=0.05
+  // works because part one has no fade-in (the `i > 0` guard).
+  it("cuts the head off every part, so the output opens on the body", async () => {
+    const cap = async (colour: string) => {
+      const p = join(dir, `cap-${colour}.mp4`);
+      await run("ffmpeg", [
+        "-v", "error",
+        "-f", "lavfi", "-i", "color=c=navy:s=1080x1920:d=1:r=30",
+        "-f", "lavfi", "-i", `color=c=${colour}:s=1080x1920:d=2:r=30`,
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+        "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+        "-map", "[v]", "-map", "2:a",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+        "-y", p,
+      ]);
+      return p;
+    };
+    const one = await cap("red");
+    const two = await cap("lime");
+
+    const out = join(dir, "headless-stack.mp4");
+    const t = { head: 1, tail: 0 };
+    await stackWide([one, two], out, [t, t]);
+
+    // 3s each, 1s of head off both: 2 + 2 = 4.
+    const probed = await probeFile(out);
+    expect(probed.seconds).toBeGreaterThan(3.8);
+    expect(probed.seconds).toBeLessThan(4.2);
+
+    // Navy is (0, 0, 128). Red here instead is the whole assertion: without
+    // the `-ss` the output would open on the starter screen.
+    const head = await pixelAt(out, 0.05, 960, 540);
+    expect(head.r).toBeGreaterThan(150);
+    expect(head.b).toBeLessThan(80);
+
+    // And the SECOND part's head is cut too — at t=2.05 (just past the
+    // boundary and its fade) the frame is lime, not navy.
+    const later = await pixelAt(out, 2.6, 960, 540);
+    expect(later.g).toBeGreaterThan(150);
+    expect(later.b).toBeLessThan(90);
   }, 120_000);
 
   // The transition. Both parts are 2s, so the boundary sits at t=2 with a

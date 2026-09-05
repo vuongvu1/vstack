@@ -2,17 +2,22 @@
 
 2026-09-03
 
-> **Amended 2026-09-04.** Two decisions below were reversed after the feature
-> shipped, both at the user's request. Everything else in this document is
-> still accurate.
+> **Amended 2026-09-04, extended 2026-09-05.** Three decisions below were
+> reversed after the feature shipped, all at the user's request. Everything
+> else in this document is still accurate.
 >
-> 1. **The outro is stripped from every part but the last.** "Stripping the
+> 1. **Both the starter card and the outro are stripped.** "Stripping the
 >    per-part title cards and outros" is listed under *Out of scope* and as
->    settled decision 2; the outro half of that no longer holds. It needed no
->    trimming UI in the end: `end_video.mp4` is a bundled asset of known
->    length, so `/api/stack` probes it and `stackWide` spends the number as an
->    input `-t` per part. The **title cards stay** — the compilation still
->    reads as chapters.
+>    settled decision 2; neither half holds any more. It needed no trimming
+>    UI, because both ends are *detected*: the starter screen is a single
+>    repeated frame (`freezedetect` at -60dB, which real footage never
+>    triggers) and the outro is a bundled asset that can be compared frame
+>    for frame. The starter goes from **every** part; the outro from every
+>    part **but the last**, which keeps the video's own ending.
+>
+>    Detecting rather than assuming is the load-bearing part. Assuming the
+>    outro cost every short made before that asset existed 5.04s of real
+>    content, silently.
 > 2. **Parts dip to black between each other.** *Out of scope* below lists
 >    "transitions"; a 0.5s `fade`/`afade` on each leg either side of a
 >    boundary now covers it. It rides the legs `concat` already joins, so the
@@ -62,10 +67,8 @@ constraints, not as open questions:
    wants to stack videos vstack never made, not only its own exports.
 2. **Parts are concatenated as-is.** Each finished short already carries a
    title card at the front and the bundled outro at the back; those stay.
-   (Reversed for the outro on 2026-09-04 — see the amendment above.)
-   The long video reads as a compilation with chapter-like intros between
-   segments. Nothing is *detected* — the outro strip that arrived later is a
-   probe of a bundled asset's length, not scene analysis.
+   (Reversed for BOTH ends — see the amendment above. The compilation no
+   longer carries per-part intros or endings, beyond the last part's outro.)
 3. **The flow ends in a real publish**, not just a file on disk — the
    existing preview phase, with its metadata panel and Publish button.
 4. **Output is 1920×1080.** Every input is 1080×1920 and that is YouTube's
@@ -511,17 +514,18 @@ same reason.
 
 Named so they are not mistaken for oversights:
 
-- **Stripping the per-part title cards.** Settled: the compilation keeps
-  them, so it reads as chapters. (The *outros* are stripped as of the
-  2026-09-04 amendment above — that turned out to need no trimming UI,
-  because the outro is a bundled asset whose length can simply be probed.
-  A title card has no such fixed length.)
+- ~~**Stripping the per-part title cards.**~~ Both this and the outro are
+  stripped as of the amendment above. A title card has no fixed length, so
+  it is found rather than measured — it is the one repeated frame the part
+  opens on, which `freezedetect` isolates and real footage never imitates.
 - **A long-form title card of its own.** The output starts on the first
   part's card.
 - **Per-part trimming, crossfades, chapter markers.** (A dip-to-black
   transition arrived in the 2026-09-04 amendment; a *crossfade* is still
   out — see `FADE`'s comment in `server/longform.ts` for the three costs
-  that keep it there.)
+  that keep it there. Stripping each part's starter and outro is not
+  "per-part trimming" in the sense meant here: it is detected per part, with
+  no UI and no in/out points for the user to set.)
 - **Upload progress.** See the `ponytail:` note above.
 - **Eviction of `media/uploads/`.** Consistent with `media/` and
   `OUT_DIR`, both of which the user sweeps by hand.

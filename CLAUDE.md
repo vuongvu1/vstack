@@ -81,8 +81,8 @@ server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
                    firstFrame,
                    reportCache
 server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
-server/longform.ts WIDE, FADE, MIN_KEPT/keptSeconds, stackWide (the long
-                   journey's one ffmpeg pass)
+server/longform.ts WIDE, FADE, Trim/MIN_KEPT/detectTrim/keptRange,
+                   stackWide (the long journey's one ffmpeg pass)
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
                    starterDuration, checkStarter, installedVoices,
                    knownVoices, synthesize, speak, prependStarter (the title
@@ -478,26 +478,66 @@ today's `OUT_NAME` regex already accepts — which is the entire reason
 `/out/`, `/api/reveal` and `/api/publish` needed no edits for this feature.
 Do not widen `OUT_NAME` for long form; there is nothing to widen it for.
 
-**Every long-form part but the last gives up the bundled outro, and the
-cut is probed rather than hardcoded.** A vstack short is starter + body +
-`end_video.mp4`, so a compilation of N of them plays N endings. `/api/stack`
-probes `END_PATH` for the tail and passes it into `stackWide`, which spends
-it as an input `-t` on each part — declared BEFORE that part's `-i`, the same
-lesson `exportClip`'s mask input carries, since ffmpeg attaches an option to
-the *next* `-i` and the other order would cut the following file. `keptSeconds`
-is the one rule both sides compute from: the route needs it too, because
-`outName` carries the duration and a name that disagreed with the render would
-send `/out/` looking for a file nobody wrote. The tail is *not* imported into
-`longform.ts` — `END_PATH` lives in `starter.ts`, which is its sibling, and
-the caller already has both. `MIN_KEPT` is why an upload this app did not
-produce survives: a part shorter than the cut keeps its full length rather
-than coming back at zero seconds, which ffmpeg reads as "no frames" and
-`concat` reads as a missing leg. `tail` defaults to 0, the identity, so every
-existing caller and test is exact.
+**A long-form part's furniture is DETECTED, never assumed — and that is a
+bug fix, not a refinement.** A vstack short is starter + body +
+`end_video.mp4`, so a compilation of N of them plays N title cards and N
+endings. The first version of this took the outro off every part but the
+last *unconditionally*, which is wrong for every short made before that
+asset existed: an old 40s short silently lost 5.04s of real content, and
+`MIN_KEPT` only rescued parts shorter than the cut. `detectTrim` measures
+both ends instead, so a part is only cut where the thing being cut is
+actually there.
+
+The two detectors work on completely different signals:
+
+- **The head** is `freezedetect` from t=0, and `FREEZE_DB = -60dB` is the
+  load-bearing constant. The starter screen is ONE composited frame
+  repeated, so its frames are bit-identical; real footage never is, not
+  even a locked-off tripod shot. Measured: a maroon still with
+  `noise=alls=6` does NOT freeze at -60dB or -50dB and DOES at -40dB, while
+  a real starter freezes at all three. Loosen it and a part that merely
+  opens on a quiet shot loses that shot — `server/longform.test.ts`
+  mutation-tests exactly that (-40dB reports a 3s starter on the raw-upload
+  fixture). Only a freeze starting within `HEAD_SLOP` of zero counts: the
+  starter *is* the first frame, so a freeze further in is a still inside the
+  body. `MAX_HEAD` is a sanity bound on top, not the defence.
+- **The tail** compares three greyscale thumbnails across the part's last
+  `outroSeconds` against the same three of the asset. Measured on real
+  renders: a short carrying the outro scores 1.1 and one without scores
+  87.6, so `OUTRO_MATCH = 12` sits an order of magnitude clear of both.
+
+`keptRange` then spends them, and the two ends follow OPPOSITE rules. The
+**head goes from every part, the first and the last included** — a part's
+title card announces that part, and the compilation's own title is in the
+publish panel beside a thumbnail the user picked, so no card is doing a job
+any more and part one's would mislabel the whole video. The **tail stays on
+the last part**, because that outro is the finished video's own ending.
+Both directions are mutation-tested.
+
+They reach ffmpeg as input `-ss` and `-t`, declared BEFORE that part's `-i`
+— the same lesson `exportClip`'s mask input carries, since ffmpeg attaches
+an option to the *next* `-i` and the other order would trim the following
+file. `-ss` before `-i` is also what makes `-t` a duration measured from
+the seek point, which is what `keptRange` returns.
+
+`keptRange` is the one rule both sides compute from: the route needs it too,
+because `outName` carries the duration and a name that disagreed with the
+render would send `/out/` looking for a file nobody wrote. The asset's path
+and length are *not* imported into `longform.ts` — `END_PATH` lives in
+`starter.ts`, which is its sibling, and the caller already has both.
+`MIN_KEPT` survives as a backstop for a part that is almost entirely
+furniture. `trims` defaults to empty, the identity, so every caller that
+predates trimming is exact.
+
+The detection is invisible in the output, so `/api/stack` logs each part's
+head and tail — otherwise a render coming out shorter than the files that
+went into it has no explanation. `ponytail:` it re-detects on every render
+(~0.6s per part, nothing beside the encode) rather than caching on path +
+mtime.
 
 **The transition is a dip on each leg, NOT a crossfade across the seam —
 which is what keeps the output's duration unchanged.** `fade`/`afade` ride
-the legs `concat` already joins, so `keptSeconds`, `/api/stack`'s `total`
+the legs `concat` already joins, so `keptRange`, `/api/stack`'s `total`
 and `outName` all stay exact and the filename cannot come to disagree with
 the file. `xfade` + `acrossfade` would be the crossfade, and it costs three
 things this does not: a pairwise chain rather than a per-leg filter, an
@@ -870,14 +910,21 @@ boundary samples hardcode the [1.5, 2.5] window it produces on a pair of
 failing them obscurely. The audio fade has no test (it is verified by hand:
 -24.1 dB mid-part against -38.4 dB at the seam on a real render), like the
 rest of the audio surface outside `server/starter.test.ts`. It also covers
-`keptSeconds` exhaustively — the last part
-whole, the tail off every other, `tail` of 0 as the identity, and the
-`MIN_KEPT` floor at both sides of its boundary (6s keeps whole, 6.04s cuts) —
-plus two real renders for the strip: a two-part stack whose duration is a
-whole tail from both failure modes (4.0s unstripped, 2.4s if the last part is
-stripped too), and a one-part stack that must not shrink however big the tail.
-Mutation-tested both ways: dropping `isLast` fails three tests, ignoring
-`tail` in the route's own call fails the two-part one. It also shells out to
+`keptRange` exhaustively — the identity, the head off every part INCLUDING
+the last, the tail off every part EXCEPT the last, both off a middle part,
+and the `MIN_KEPT` floor at either side of its boundary — and `detectTrim`
+against four real files built in `beforeAll` from a static starter, a moving
+body and the real `END_PATH`: a full vstack short (both ends found), an old
+short with no outro (head found, tail 0 — THE regression), a raw upload that
+opens on a noisy locked-off shot (neither found, which is what fails at
+-40dB), and the outro asset against itself. Four mutations are pinned:
+assuming the outro, loosening the freeze threshold, keeping the last part's
+starter, and dropping the last part's outro. Two real renders cover the
+strips end to end — a two-part stack a whole tail clear of both failure
+modes, and a head strip asserting the output opens on the BODY's colour
+rather than on the navy starter. `beforeAll` carries an explicit 180s
+timeout: seven real encodes pass in isolation and exceed vitest's default
+10s hook budget in the full suite, where the files compete for CPU. It also shells out to
 real ffmpeg and asserts output pixels, the same posture
 `server/ffmpeg.test.ts` holds: the output is
 1920x1080, a centre sample in each half carries that part's own colour, and

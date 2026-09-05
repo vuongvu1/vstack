@@ -41,7 +41,8 @@ import {
   uploadPath,
 } from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
-import { keptSeconds, stackWide } from "./longform.ts";
+import type { Trim } from "./longform.ts";
+import { detectTrim, keptRange, stackWide } from "./longform.ts";
 import {
   END_PATH,
   VOICE,
@@ -731,12 +732,28 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
 
     const probed = await Promise.all(paths.map((p) => probeFile(p)));
-    // Every part but the last gives up the bundled outro, so a compilation
-    // plays one ending rather than one per part. Probed here rather than
-    // hardcoded — swap `end_video.mp4` and the cut follows it — and probed
-    // in the route rather than inside `stackWide`, which sits BESIDE
-    // `starter.ts` and must not import from it.
-    const tail = (await probeFile(END_PATH)).seconds;
+    // Each part gives up its starter screen, and every part but the last its
+    // outro — but only where those are actually THERE. `detectTrim` measures
+    // both rather than assuming them, which is what stops an old short made
+    // before `end_video.mp4` existed losing five seconds of real content.
+    // The asset's path and length are passed in because `longform.ts` sits
+    // BESIDE `starter.ts` and must not import from it.
+    const outroSeconds = (await probeFile(END_PATH)).seconds;
+    // Sequential, not Promise.all: each detection spawns ffmpeg, and twenty
+    // concurrent decodes would thrash for no gain against an encode that is
+    // about to take minutes anyway.
+    const trims: Trim[] = [];
+    for (const [i, path] of paths.entries()) {
+      const trim = await detectTrim(path, probed[i]?.seconds ?? 0, END_PATH, outroSeconds);
+      // Logged because it is the only way to see WHY a render came out
+      // shorter than the files that went into it — the detection is
+      // otherwise invisible.
+      console.warn(
+        `vstack: part ${i + 1} trims head=${trim.head.toFixed(2)}s ` +
+          `tail=${trim.tail.toFixed(2)}s`,
+      );
+      trims.push(trim);
+    }
     // Ceiled, so the name is stable and integral the way every other name
     // this app writes is. NOT segments.ts's `totalDuration`, which sums
     // source-timeline segments and has nothing to do with this path despite
@@ -745,7 +762,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // same rule `stackWide` renders by.
     const total = Math.ceil(
       probed.reduce(
-        (sum, p, i) => sum + keptSeconds(p.seconds, i === probed.length - 1, tail),
+        (sum, p, i) =>
+          sum +
+          keptRange(p.seconds, trims[i] ?? { head: 0, tail: 0 }, i === probed.length - 1).dur,
         0,
       ),
     );
@@ -761,7 +780,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
     inFlight.add(partial);
     try {
-      await stackWide(paths, partial, tail);
+      await stackWide(paths, partial, trims);
       await rename(partial, out);
       // After the rename, like `saveStill`: a sidecar must never sit beside
       // a name the render did not reach. Best-effort for the same reason —
