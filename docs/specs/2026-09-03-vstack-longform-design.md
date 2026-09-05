@@ -18,11 +18,16 @@
 >    Detecting rather than assuming is the load-bearing part. Assuming the
 >    outro cost every short made before that asset existed 5.04s of real
 >    content, silently.
-> 2. **Parts dip to black between each other.** *Out of scope* below lists
+> 2. **Parts dip to black between each other, with a swell over the cut.** *Out of scope* below lists
 >    "transitions"; a 0.5s `fade`/`afade` on each leg either side of a
 >    boundary now covers it. It rides the legs `concat` already joins, so the
 >    output's duration is unchanged — a crossfade (`xfade`) is the thing that
 >    stays out of scope, and `FADE`'s own comment says why.
+>
+>    `long-form-transition-sound.mp3` is mixed over the finished concat at
+>    each cut, placed by the swell's peak rather than its start. That is a
+>    fifth bundled asset, and `checkLongform` is its boot check —
+>    `checkStarter` owns the other four.
 > 3. **`/api/stack` takes a required `thumb`.** The *Thumbnail* section below
 >    describes the output's own first frame being published; that is now the
 >    fallback. The user picks a picture on the stacking screen, the browser

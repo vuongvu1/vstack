@@ -62,8 +62,10 @@ pnpm youtube-auth  # one-off OAuth setup for publishing (see server/youtube.ts)
 ```
 
 Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH, the speech venv from
-`pnpm tts-setup`, and all four bundled assets in `server/assets/`. The server checks
-all of it at boot and exits with an install hint if any is missing. Nothing
+`pnpm tts-setup`, and all five bundled assets in `server/assets/`. The server checks
+all of it at boot and exits with an install hint if any is missing —
+`checkStarter` owns the short journey's four, `checkLongform` the long
+journey's one. Nothing
 here needs macOS `say` any more — the starter screen's voice is VieNeu-TTS,
 and the only remaining macOS dependency is `afplay` in `pnpm voices` and
 `open -R` in `/api/reveal`.
@@ -81,7 +83,8 @@ server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
                    firstFrame,
                    reportCache
 server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
-server/longform.ts WIDE, FADE, Trim/MIN_KEPT/detectTrim/keptRange,
+server/longform.ts WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK,
+                   checkLongform, Trim/MIN_KEPT/detectTrim/keptRange,
                    stackWide (the long journey's one ffmpeg pass)
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
                    starterDuration, checkStarter, installedVoices,
@@ -94,7 +97,9 @@ scripts/audition.ts  `pnpm voices` — speaks a title in each preset voice
 server/assets/     starter-music.mp3 (the bed), before-video-start-sound.mp3
                    (the cue before the cut), start-title-sound.mp3 (the hit
                    at t=0, and the app's own phase-advance chime),
-                   end_video.mp4 (the outro, concatenated after the clip)
+                   end_video.mp4 (the outro, concatenated after the clip),
+                   long-form-transition-sound.mp3 (the swell over each cut —
+                   the LONG journey's asset, owned by longform.ts)
 server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
                    buildSnippet, accessToken, uploadVideo, publishProgress,
                    setThumbnail
@@ -561,6 +566,44 @@ its fade-in suppressed by the `i > 0` guard and can never overlap
 anything, so the first version of that test passed with the clamp removed
 (found by mutation testing, not by review).
 
+**The transition swell is mixed over the FINISHED concat, never into a
+part's own leg.** Two reasons and either alone settles it: a leg is
+`afade`d to silence at precisely the moment the sound has to be heard, and
+`concat` would cut the sound dead at the boundary it exists to span. So
+`concat` produces `[amain]`, each cut's absolute time is the running sum of
+the kept lengths, and one `asplit` of a single input feeds an `adelay` per
+boundary into an `amix`.
+
+Three details of that mix are load-bearing:
+
+- **`normalize=0`.** `amix` divides every input by the count by default, so
+  a two-part render would come out at half volume purely for carrying one
+  swell. Measured either way: the bodies sit at -24.1 dB mean with the mix
+  in place, unchanged.
+- **`duration=first`.** The asset is 2.61s long with only its first ~1.6s
+  audible, so a swell delayed onto the last boundary can outrun the
+  programme — and `longest` would then extend the render past the duration
+  `outName` has already committed to. Only reproducible with parts shorter
+  than the asset's tail, which is why that test uses 1.2s parts; at 2s it
+  passes with the bug in place.
+- **The sound is placed by its PEAK, not its start.** The asset opens on
+  roughly 0.6s of near-silence and peaks at `TRANSITION_PEAK` (1.2s), so
+  `adelay` gets `boundary - TRANSITION_PEAK`. A delay of `boundary` puts
+  the swell a full second *after* the cut, over footage that has already
+  faded back up. Clamped at zero, because `adelay` cannot take a negative
+  offset and a first part shorter than the lead-in would ask for one.
+
+**The transition sound's input index is the conditional one, and the
+silence stand-in's is not.** `silenceIndex` keeps the exact `paths.length`
+it has always had and the swell is appended *after* it
+(`paths.length + (anySilent ? 1 : 0)`), so the input arithmetic that
+already works for silent parts is byte-identical and only the new index
+moves. Putting the swell first would have shifted the stand-in — the
+failure `server/starter.test.ts` documents as breaking silent clips only.
+The input is declared **only when `paths.length > 1`**: a one-part stack
+has no boundary, and an input its graph never references is an ffmpeg
+error rather than a no-op.
+
 **The picked thumbnail is `<name>.thumb.jpg`, NEVER `<name>.jpg`.**
 `applyThumbnail` prefers the sidecar over the render's own first frame, and
 `stillPath`'s `<name>.jpg` is where a *short* export writes its **vertical**
@@ -907,9 +950,16 @@ dropping the fades, fading the ends too, and removing the clamp each fail
 exactly one of those. `FADE` has an assertion of its own, because both
 boundary samples hardcode the [1.5, 2.5] window it produces on a pair of
 2s parts — retuning it should point at the tests to re-check rather than
-failing them obscurely. The audio fade has no test (it is verified by hand:
--24.1 dB mid-part against -38.4 dB at the seam on a real render), like the
-rest of the audio surface outside `server/starter.test.ts`. It also covers
+failing them obscurely. The audio fade has no test of its own (it is verified by hand:
+-24.1 dB mid-part against -38.4 dB at the seam on a real render). The
+transition swell DOES have one, and it asserts on **peak** rather than
+mean: a swell is a transient, so its mean over any window wide enough to
+hold it is dominated by the programme either side. A 0.2s window over the
+cut moves from -35.0 dB peak without the sound to -22.1 with it — and
+-22.1 is the asset's *own* peak, which is what proves the placement lands
+on the boundary rather than a second late. Four mutations are pinned:
+dropping the sound, `normalize=1`, `duration=longest`, and delaying by the
+boundary instead of `boundary - TRANSITION_PEAK`. It also covers
 `keptRange` exhaustively — the identity, the head off every part INCLUDING
 the last, the tail off every part EXCEPT the last, both off a middle part,
 and the `MIN_KEPT` floor at either side of its boundary — and `detectTrim`

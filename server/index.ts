@@ -42,7 +42,7 @@ import {
 } from "./ffmpeg.ts";
 import { ensureMask } from "./mask.ts";
 import type { Trim } from "./longform.ts";
-import { detectTrim, keptRange, stackWide } from "./longform.ts";
+import { checkLongform, detectTrim, keptRange, stackWide } from "./longform.ts";
 import {
   END_PATH,
   VOICE,
@@ -909,6 +909,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
 await checkBinaries();
 await checkStarter();
+// The long journey's own bundled asset. Hard, like checkStarter's four: a
+// missing file fails a render that costs minutes of encoding to reach.
+await checkLongform();
 // Soft, unlike the two above: no Google credentials means Publish does not
 // work, not that vstack refuses to boot.
 checkYouTube();

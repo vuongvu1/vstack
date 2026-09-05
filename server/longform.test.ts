@@ -6,7 +6,16 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { probeFile } from "./ffmpeg.ts";
 import { END_PATH } from "./starter.ts";
-import { FADE, MIN_KEPT, detectTrim, keptRange, stackWide } from "./longform.ts";
+import {
+  FADE,
+  MIN_KEPT,
+  TRANSITION_PATH,
+  TRANSITION_PEAK,
+  checkLongform,
+  detectTrim,
+  keptRange,
+  stackWide,
+} from "./longform.ts";
 
 const run = promisify(execFile);
 
@@ -151,6 +160,25 @@ async function pixelAt(path: string, t: number, x: number, y: number, width = 19
   return { r: buf[i] ?? 0, g: buf[i + 1] ?? 0, b: buf[i + 2] ?? 0 };
 }
 
+/** Mean and peak volume in dB over a window, the same measurement
+ *  `server/starter.test.ts` uses to check one audio layer at a time. -91 dB
+ *  is ffmpeg's floor for digital silence.
+ *
+ *  `max` matters as much as `mean` here: a transition swell is a transient,
+ *  so its mean over any window wide enough to contain it is dominated by the
+ *  programme either side. Measured on a two-part render, the swell moves the
+ *  0.2s window over the cut by 12.9 dB of PEAK and 4.4 dB of mean. */
+async function loudness(path: string, t: number, dur: number) {
+  const { stderr } = await run(
+    "ffmpeg",
+    ["-hide_banner", "-ss", String(t), "-t", String(dur), "-i", path,
+     "-map", "0:a", "-af", "volumedetect", "-f", "null", "-"],
+  );
+  const mean = /mean_volume: (-?[0-9.]+) dB/.exec(stderr);
+  const max = /max_volume: (-?[0-9.]+) dB/.exec(stderr);
+  return { mean: mean ? Number(mean[1]) : -91, max: max ? Number(max[1]) : -91 };
+}
+
 describe("FADE", () => {
   // The tests below hardcode the [1.5, 2.5] window this constant produces on
   // a pair of 2s parts. Retuning FADE moves that window, so this is the
@@ -255,6 +283,102 @@ describe("detectTrim", () => {
     const trim = await detectTrim(END_PATH, outroSeconds, END_PATH, outroSeconds);
     expect(trim.tail).toBeCloseTo(outroSeconds, 5);
     expect(keptRange(outroSeconds, trim, false)).toEqual({ ss: 0, dur: outroSeconds });
+  }, 120_000);
+});
+
+describe("the transition sound", () => {
+  it("is bundled where the render expects it", async () => {
+    await expect(checkLongform()).resolves.toBeUndefined();
+    // NOT probeFile: that demands a video stream and this asset is audio
+    // only, so it throws "ffprobe found no video stream".
+    const { stdout } = await run("ffprobe", [
+      "-v", "error", "-select_streams", "a",
+      "-show_entries", "stream=codec_type", "-of", "csv=p=0", TRANSITION_PATH,
+    ]);
+    expect(stdout.trim()).toBe("audio");
+  });
+
+  // The sound is mixed over the finished concat at absolute times, NOT into
+  // a part's own leg — a leg is faded out at exactly the moment the sound
+  // needs to be heard, and `concat` would cut it at the boundary anyway.
+  //
+  // Two 2s parts, so the only boundary is t=2 and the dip spans [1.5, 2.5].
+  // Without the sound that window is the quietest part of the render (both
+  // legs are faded to silence through it); with the sound it is the LOUDEST.
+  it("fills the dip that the fades leave silent", async () => {
+    const out = join(dir, "whoosh.mp4");
+    await stackWide([red, red], out);
+
+    // A 0.2s window straddling the cut. The fades span [1.5, 2.5], so the
+    // programme is at its quietest here and the swell has the window almost
+    // to itself. Measured: peak -35.0 dB without the sound against -22.1
+    // with it, and -22.1 is the asset's OWN peak — which is what proves the
+    // swell is placed by TRANSITION_PEAK and lands dead on the boundary
+    // rather than a second late.
+    const cut = await loudness(out, 1.9, 0.2);
+    expect(cut.max).toBeGreaterThan(-28);
+
+    // And the parts keep their own level: `amix` defaults to dividing every
+    // input by the count, which would halve the whole render's volume just
+    // for carrying one swell. Measured -24.1 dB mean either way, so
+    // `normalize=0` is what this pins.
+    const body = await loudness(out, 0.4, 0.5);
+    expect(body.mean).toBeGreaterThan(-27);
+    expect(body.max).toBeGreaterThan(-24);
+  }, 120_000);
+
+  // `amix` defaults to `duration=longest`, and a sound delayed to land on
+  // the last boundary can outrun the programme — the asset is 2.6s and only
+  // its first 1.6s is audible, so the tail would silently extend the render
+  // past the duration `outName` already committed to.
+  it("does not extend the output past the parts' own length", async () => {
+    // SHORT parts, and that is the whole point of this test. The asset is
+    // 2.61s long; with two 2s parts the swell lands at 0.8s and finishes at
+    // 3.41s, comfortably inside the 4s render, so `duration=longest` would
+    // pass unnoticed. Two 1.2s parts put the boundary at 1.2s, the swell
+    // starts at 0 (the delay clamps) and runs to 2.61s against a 2.4s
+    // programme — so `longest` extends the render past the duration
+    // `outName` has already committed to, and `first` does not.
+    const brief = join(dir, "brief-part.mp4");
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i", "color=c=red:s=1080x1920:d=1.2:r=30",
+      "-f", "lavfi", "-i", "sine=frequency=440:duration=1.2",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+      "-y", brief,
+    ]);
+
+    const out = join(dir, "whoosh-len.mp4");
+    await stackWide([brief, brief], out);
+
+    const probed = await probeFile(out);
+    expect(probed.seconds).toBeGreaterThan(2.3);
+    // 2.4s programme against a 2.61s swell: this is the assertion that
+    // fails at `duration=longest`.
+    expect(probed.seconds).toBeLessThan(2.55);
+  }, 120_000);
+
+  // A one-part stack has no boundary, so no sound input is appended at all.
+  // This is the branch that fails if the graph references an input it never
+  // declared.
+  it("adds no sound to a stack with no boundary", async () => {
+    const out = join(dir, "whoosh-lone.mp4");
+    await stackWide([red], out);
+
+    const probed = await probeFile(out);
+    expect(probed.hasAudio).toBe(true);
+    expect(probed.seconds).toBeGreaterThan(1.8);
+    expect(probed.seconds).toBeLessThan(2.2);
+  }, 120_000);
+
+  // The asset opens on roughly 0.6s of near-silence and peaks at
+  // TRANSITION_PEAK, so it is placed by its PEAK rather than its start — a
+  // delay of `boundary` would land the swell a whole second after the cut.
+  // This pins the constant the placement arithmetic depends on.
+  it("peaks where TRANSITION_PEAK says it does", async () => {
+    const atPeak = await loudness(TRANSITION_PATH, TRANSITION_PEAK - 0.15, 0.3);
+    const atStart = await loudness(TRANSITION_PATH, 0, 0.3);
+    expect(atPeak.mean).toBeGreaterThan(atStart.mean + 20);
   }, 120_000);
 });
 

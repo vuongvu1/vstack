@@ -6,6 +6,8 @@
  *  `probeFile`, and nothing else. */
 
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { toolError } from "./errors.ts";
 import { probeFile } from "./ffmpeg.ts";
@@ -49,6 +51,33 @@ const BG_H = 270;
  *  actually looks better here, which on unrelated clips (one part's body
  *  melting into the next part's title card) is not obvious. */
 export const FADE = 0.5;
+
+/** The swell played across each cut.
+ *
+ *  Resolved here rather than imported from `starter.ts`, which owns the four
+ *  assets the SHORT journey uses: that module is this one's sibling, and a
+ *  path is not a dependency — the same reasoning that has `starter.ts` and
+ *  `youtube.ts` each re-deriving `~/.vstack/` instead of importing it. */
+const asset = (name: string) => fileURLToPath(new URL(`assets/${name}`, import.meta.url));
+export const TRANSITION_PATH = asset("long-form-transition-sound.mp3");
+
+/** Where the swell peaks inside the asset, in seconds.
+ *
+ *  The file is 2.6s long and opens on roughly 0.6s of near-silence: measured
+ *  by 0.1s buckets it climbs from -56 dB at 0.5s to -22 dB here, then decays
+ *  back under -49 dB by 1.6s. So its audible body is about [0.6, 1.6] — a
+ *  one-second sound with a long silent lead-in, which is almost exactly the
+ *  `2 * FADE` dip it has to fill.
+ *
+ *  This is why the sound is placed by its PEAK rather than by its start. A
+ *  delay of `boundary` would put the swell a full second AFTER the cut, over
+ *  footage that has already faded back up. */
+export const TRANSITION_PEAK = 1.2;
+
+/** How loud the swell sits under the programme. The asset peaks at -22 dB on
+ *  its own, and the fades leave the boundary near-silent, so at 1.0 it has
+ *  the window to itself without ducking anything. The one knob. */
+const TRANSITION_GAIN = 1.0;
 
 const FPS = 30;
 const RATE = 44100;
@@ -260,6 +289,18 @@ export function keptRange(
   return { ss: head, dur };
 }
 
+/** Boot check for the one asset the long journey bundles.
+ *
+ *  Hard, like `checkStarter`'s: a missing file fails the render, and a render
+ *  is minutes of encoding to discover it. `starter.ts` checks its own four
+ *  the same way — this module owns this one. */
+export async function checkLongform(): Promise<void> {
+  if (!existsSync(TRANSITION_PATH)) {
+    console.error(`vstack: bundled asset missing at ${TRANSITION_PATH}.`);
+    process.exit(1);
+  }
+}
+
 /** Letterboxes each part onto a blurred copy of itself and concatenates the
  *  lot into one 1920x1080 file, in ONE encode.
  *
@@ -296,6 +337,13 @@ export async function stackWide(
   const probed = await Promise.all(paths.map((p) => probeFile(p)));
   const anySilent = probed.some((p) => !p.hasAudio);
   const silenceIndex = paths.length;
+  // One sound, reused at every boundary via `asplit`. Appended AFTER the
+  // silence stand-in on purpose: `silenceIndex` keeps the exact value it has
+  // always had, so the conditional-input arithmetic that already works for
+  // silent parts is untouched and only the NEW index is the conditional one.
+  // Putting this first would have moved the stand-in, which is the failure
+  // `server/starter.test.ts` documents as breaking silent clips only.
+  const soundIndex = paths.length + (anySilent ? 1 : 0);
   const ranges = probed.map((p, i) =>
     keptRange(p?.seconds ?? 0, trims[i] ?? { head: 0, tail: 0 }, i === paths.length - 1),
   );
@@ -316,6 +364,10 @@ export async function stackWide(
   if (anySilent) {
     inputs.push("-f", "lavfi", "-i", `anullsrc=r=${RATE}:cl=stereo`);
   }
+  // Only when there is a cut to play it over. A one-part stack declaring an
+  // input its graph never references is an ffmpeg error, not a no-op.
+  const hasBoundary = paths.length > 1;
+  if (hasBoundary) inputs.push("-i", TRANSITION_PATH);
 
   const legs: string[] = [];
   const labels: string[] = [];
@@ -370,7 +422,50 @@ export async function stackWide(
     );
     labels.push(`[v${i}][a${i}]`);
   });
-  legs.push(`${labels.join("")}concat=n=${paths.length}:v=1:a=1[v][a]`);
+  legs.push(`${labels.join("")}concat=n=${paths.length}:v=1:a=1[v][amain]`);
+
+  // Where each cut lands on the finished timeline — the running sum of the
+  // kept lengths, which is exactly what `concat` produces.
+  const boundaries: number[] = [];
+  let elapsed = 0;
+  for (let i = 0; i < kept.length - 1; i++) {
+    elapsed += kept[i] ?? 0;
+    boundaries.push(elapsed);
+  }
+
+  if (boundaries.length === 0) {
+    legs.push(`[amain]anull[a]`);
+  } else {
+    // Mixed over the FINISHED concat, never into a part's own leg. Two
+    // reasons, and either alone is enough: a leg is `afade`d to silence at
+    // precisely the moment this has to be heard, and `concat` would cut the
+    // sound dead at the boundary it is supposed to span.
+    const taps = boundaries.map((_, k) => `[ts${k}]`).join("");
+    legs.push(`[${soundIndex}:a]asplit=${boundaries.length}${taps}`);
+    boundaries.forEach((at, k) => {
+      // Placed by the swell's PEAK, not its start — see TRANSITION_PEAK.
+      // Clamped at zero because `adelay` cannot take a negative offset, and
+      // a first part shorter than the lead-in would ask for one; the swell
+      // then simply peaks early rather than failing the render.
+      const delay = Math.max(0, Math.round((at - TRANSITION_PEAK) * 1000));
+      legs.push(
+        `[ts${k}]adelay=${delay}:all=1,volume=${TRANSITION_GAIN},` +
+          `aresample=${RATE},aformat=sample_fmts=fltp:channel_layouts=stereo[tsd${k}]`,
+      );
+    });
+    const delayed = boundaries.map((_, k) => `[tsd${k}]`).join("");
+    // `normalize=0` keeps the programme at its own level — amix's default
+    // divides every input by the count, so two parts would halve the whole
+    // render's volume just for carrying one swell. `duration=first` keeps
+    // the programme's length: the asset is 2.6s with only its first 1.6s
+    // audible, so a sound delayed onto the last boundary can outrun the
+    // parts, and `longest` would silently extend the render past the
+    // duration `outName` already committed to.
+    legs.push(
+      `[amain]${delayed}amix=inputs=${boundaries.length + 1}:` +
+        `normalize=0:duration=first[a]`,
+    );
+  }
 
   try {
     await run(
