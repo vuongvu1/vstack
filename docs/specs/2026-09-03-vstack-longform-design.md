@@ -14,7 +14,7 @@
 >    input `-t` per part. The **title cards stay** — the compilation still
 >    reads as chapters.
 > 2. **Parts dip to black between each other.** *Out of scope* below lists
->    "transitions"; a 0.3s `fade`/`afade` on each leg either side of a
+>    "transitions"; a 0.5s `fade`/`afade` on each leg either side of a
 >    boundary now covers it. It rides the legs `concat` already joins, so the
 >    output's duration is unchanged — a crossfade (`xfade`) is the thing that
 >    stays out of scope, and `FADE`'s own comment says why.

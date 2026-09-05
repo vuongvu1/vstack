@@ -48,7 +48,7 @@ const BG_H = 270;
  *  filename stops describing the file. Worth it only if the dissolve
  *  actually looks better here, which on unrelated clips (one part's body
  *  melting into the next part's title card) is not obvious. */
-export const FADE = 0.3;
+export const FADE = 0.5;
 
 const FPS = 30;
 const RATE = 44100;

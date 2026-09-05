@@ -512,8 +512,10 @@ compilation opens on a title card and closes on the bundled outro, and
 fading either is fading something that already starts and ends
 deliberately. And `d` is `min(FADE, seconds / 3)`, because on a part
 shorter than `2 * FADE` an unclamped fade-in and fade-out overlap and
-*multiply*: a 0.3s part read at quarter brightness through its whole
-length rather than reaching full colour. The test for that clamp only
+*multiply* to roughly quarter brightness; once the part is shorter than
+`FADE` itself the fade-out's `st` goes negative and ffmpeg refuses the
+graph outright. Same defect, two symptoms — which is why the test asserts
+on the colour rather than on either failure mode. The test for that clamp only
 works with the short part in the MIDDLE — a brief part placed first has
 its fade-in suppressed by the `i > 0` guard and can never overlap
 anything, so the first version of that test passed with the clamp removed
@@ -863,7 +865,7 @@ dropped) — plus the `min(FADE, seconds / 3)` clamp, with the short part in
 the middle so both fades actually apply. All three mutation-tested:
 dropping the fades, fading the ends too, and removing the clamp each fail
 exactly one of those. `FADE` has an assertion of its own, because both
-boundary samples hardcode the [1.7, 2.3] window it produces on a pair of
+boundary samples hardcode the [1.5, 2.5] window it produces on a pair of
 2s parts — retuning it should point at the tests to re-check rather than
 failing them obscurely. The audio fade has no test (it is verified by hand:
 -24.1 dB mid-part against -38.4 dB at the seam on a real render), like the

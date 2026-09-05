@@ -71,12 +71,12 @@ async function pixelAt(path: string, t: number, x: number, y: number, width = 19
 }
 
 describe("FADE", () => {
-  // The tests above hardcode the [1.7, 2.3] window this constant produces on
+  // The tests below hardcode the [1.5, 2.5] window this constant produces on
   // a pair of 2s parts. Retuning FADE moves that window, so this is the
   // assertion that tells you which tests to re-check rather than leaving
   // them to fail obscurely.
-  it("is the 0.3s the boundary samples assume", () => {
-    expect(FADE).toBe(0.3);
+  it("is the 0.5s the boundary samples assume", () => {
+    expect(FADE).toBe(0.5);
   });
 });
 
@@ -220,7 +220,7 @@ describe("stackWide", () => {
   }, 120_000);
 
   // The transition. Both parts are 2s, so the boundary sits at t=2 with a
-  // 0.3s fade-out before it and a 0.3s fade-in after. The seam is near black
+  // 0.5s fade-out before it and a 0.5s fade-in after. The seam is near black
   // and both parts keep full colour outside the window — dropping either
   // fade leaves that seam at full saturation.
   it("dips to black between parts and only between them", async () => {
@@ -241,7 +241,7 @@ describe("stackWide", () => {
     expect(seam.g).toBeLessThan(60);
     expect(seam.b).toBeLessThan(60);
 
-    // Well inside each part, outside the [1.7, 2.3] window: full colour.
+    // Well inside each part, outside the [1.5, 2.5] window: full colour.
     for (const t of [1.0, 3.0]) {
       const mid = await pixelAt(out, t, 960, 540);
       expect(mid.r).toBeGreaterThan(150);
@@ -279,9 +279,15 @@ describe("stackWide", () => {
     await stackWide([blue, brief, blue], out);
 
     // The brief part occupies [2.0, 2.3]. Clamped, its fades are 0.1s, so
-    // 2.15 sits between them at full colour. Unclamped they would both span
-    // the whole 0.3s and this sample would be at roughly a quarter
-    // brightness — the two multiply.
+    // 2.15 sits between them at full colour.
+    //
+    // Unclamped, this test fails LOUDLY rather than darkly at today's FADE:
+    // a 0.5s fade over a 0.3s part puts the fade-out's `st` at -0.2 and
+    // ffmpeg refuses the graph outright (`Error: ffmpeg failed:`). Below
+    // `2 * FADE` it would instead fail on the pixel, the two ramps
+    // multiplying to roughly quarter brightness. Both are the same defect —
+    // a part too short for its own transition — so this assertion is
+    // deliberately on the colour, which catches it at either FADE.
     const peak = await pixelAt(out, 2.15, 960, 540);
     expect(peak.r).toBeGreaterThan(150);
   }, 120_000);
