@@ -109,7 +109,7 @@ server/index.ts    12 routes (11 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
-                   totalDuration
+                   totalDuration, keepRanges
 src/layout.ts      nine layout presets, cellsOf, ratioOf, defaultBoxes
 src/custom.ts      CustomBox, MAX_CUSTOM/MIN_OUT_SIDE, outRatio, clampOut/
                    moveOut/resizeOut, resnapCrop, isValidOut/isValidCustom,
@@ -416,6 +416,24 @@ agree, and `src/waveform.test.ts` mutation-tests that identity along with
 the stitch case — dropping `span` back out of the mapping fails both stitch
 tests and neither single-range one, which is why the single-range test alone
 could never have caught this.
+
+**A framing cut is a hole in the clip, and `keepRanges` is the one rule
+both sides spend it with.** The framing strip drops red regions inside
+`[clipStart, clipEnd]` (`state.cuts`, `+ Cut`, capped at `MAX_CUTS`), and
+`/api/export` carries them as an optional `cuts`. `keepRanges(start, end,
+cuts)` in `src/segments.ts` subtracts them; the client sizes the kept badge
+with it and the server builds the render's legs with it. Two copies of that
+subtraction is how a badge comes to disagree with the file it names. With
+cuts the route runs `concatClips` first — the *same* stitch `/api/window`
+uses, given the cached clip once per kept range — and `exportClip` then runs
+on that from `0`; with no cuts nothing is stitched and the path is
+byte-identical to the one every export took before the field existed. Cuts
+are window-scoped and unpersisted, for the reason `clipStart`/`clipEnd`
+are.
+
+The framing `<video>` **skips** a cut (`ontimeupdate` seeks to its end), and
+`keptLength` subtracts them. Both are load-bearing rather than polish: they
+are what keeps the next invariant's promise while framing gains holes.
 
 **The framing phase must never learn that segments exist.** The cut is
 baked into the cached clip by `/api/window` — `fetchWindow` fetches each
@@ -754,7 +772,7 @@ mask cached before this feature shipped keeps hitting, and editing a custom's
 **`/api/export` takes window bounds plus an optional 8-hex `digest`, still
 never a path.** Its body is `videoId` + window/mark bounds + `layoutId` +
 `boxes` + `customs` + `starterTitle` + `voiceTitle` + `titlePng` + `voice` +
-`digest` + `prev`. The
+`digest` + `cuts` + `prev`. The
 server reconstructs the cache filename itself, so there is no client-supplied
 path to validate for traversal — except a stitch's filename carries a third
 component, `segmentDigest`'s hash of the segment bounds, that window bounds
@@ -900,7 +918,7 @@ single-user tool; not something to fix here.
 
 ## Testing posture
 
-`geometry.ts`, `layout.ts`, `custom.ts` and `segments.ts` are the modules with exhaustive coverage, deliberately — their bugs are silent. `src/custom.test.ts` covers `clampOut`/`moveOut`/`resizeOut`'s even-snapping, `resizeOut`'s `MIN_OUT_SIDE` floor and frame bounds from every anchor corner, `clampOut`'s and `resnapCrop`'s idempotence under a repeated re-snap (`resnapCrop`'s also keeping the ratio exact), and `isValidOut`/`isValidCustom` against everything `clampOut`/`defaultCustom` can emit and everything illegal. `src/segments.test.ts` covers `normalize` (idempotent, sorts, clamps, drops empties, merges overlaps), `isValidSegments` against everything `normalize` emits and everything illegal (empty, over `MAX_SEGMENTS`, unsorted, overlapping, `end <= start`, out of bounds, non-finite, non-array, `null`), and `totalDuration` against a known set. `layout.test.ts` asserts the nine presets tile 1080×1920 exactly, that only the three documented cell shapes occur, and that `defaultBoxes` returns per-cell-valid boxes: a mis-tiled layout survives preview and only shows up as a seam in an exported clip. `server/ffmpeg.test.ts` shells out to real ffmpeg and asserts output pixels; it is the only thing proving the preview/export agreement from the ffmpeg side — now including the border, via white pixels in the seam and at a corner cut's diagonal against the source's colour just inside a piece, now including a real export with one floating piece straddling a cell seam, asserting the piece's own colour survives the seam, the ring around it is white, and the stack's colour resumes just past the ring, and a second with TWO overlapping pieces cropped from different colour bands, which is the only end-to-end proof that the mask's walk is z-aware (the upper piece's nub and the upper half of its ring both land over the lower piece's window and read as that piece's own colour if it is not) — and now a real two-range `concatClips`, asserting the output's duration is the parts' sum and that a frame sampled from each half carries that part's own colour cropped from a different colour band, with the leg ordering mutation-tested (reversing the concat's input order fails the second sample), plus a part with no audio stood in with `anullsrc`, plus a non-square-SAR part, since a SAR mismatch is the failure `concat` is most likely to hit and it fails opaquely (`Nothing was written into output file`) rather than picking a side. `frame.test.ts` covers the window insets (every internal seam and frame margin
+`geometry.ts`, `layout.ts`, `custom.ts` and `segments.ts` are the modules with exhaustive coverage, deliberately — their bugs are silent. `src/custom.test.ts` covers `clampOut`/`moveOut`/`resizeOut`'s even-snapping, `resizeOut`'s `MIN_OUT_SIDE` floor and frame bounds from every anchor corner, `clampOut`'s and `resnapCrop`'s idempotence under a repeated re-snap (`resnapCrop`'s also keeping the ratio exact), and `isValidOut`/`isValidCustom` against everything `clampOut`/`defaultCustom` can emit and everything illegal. `src/segments.test.ts` covers `normalize` (idempotent, sorts, clamps, drops empties, merges overlaps), `isValidSegments` against everything `normalize` emits and everything illegal (empty, over `MAX_SEGMENTS`, unsorted, overlapping, `end <= start`, out of bounds, non-finite, non-array, `null`), `totalDuration` against a known set, and `keepRanges` against the identity, a middle hole, cuts flush to and overhanging either bound, a cut covering the range, cuts wholly outside it, several cuts, and back-to-back cuts (no zero-length keep — an empty leg is an ffmpeg error). `layout.test.ts` asserts the nine presets tile 1080×1920 exactly, that only the three documented cell shapes occur, and that `defaultBoxes` returns per-cell-valid boxes: a mis-tiled layout survives preview and only shows up as a seam in an exported clip. `server/ffmpeg.test.ts` shells out to real ffmpeg and asserts output pixels; it is the only thing proving the preview/export agreement from the ffmpeg side — now including the border, via white pixels in the seam and at a corner cut's diagonal against the source's colour just inside a piece, now including a real export with one floating piece straddling a cell seam, asserting the piece's own colour survives the seam, the ring around it is white, and the stack's colour resumes just past the ring, and a second with TWO overlapping pieces cropped from different colour bands, which is the only end-to-end proof that the mask's walk is z-aware (the upper piece's nub and the upper half of its ring both land over the lower piece's window and read as that piece's own colour if it is not) — and now a real two-range `concatClips`, asserting the output's duration is the parts' sum and that a frame sampled from each half carries that part's own colour cropped from a different colour band, with the leg ordering mutation-tested (reversing the concat's input order fails the second sample), plus a part with no audio stood in with `anullsrc`, plus a non-square-SAR part, since a SAR mismatch is the failure `concat` is most likely to hit and it fails opaquely (`Nothing was written into output file`) rather than picking a side. `frame.test.ts` covers the window insets (every internal seam and frame margin
 exactly one gutter, adjacency decided on the *cells* because every pair of
 windows has a positive gap) and the mask's alpha, including the assertion that
 a window's square corner is opaque — the one that fails if `CORNER_RADIUS`

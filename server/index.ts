@@ -19,7 +19,8 @@ import type { Rect } from "../src/geometry.ts";
 import { layoutById } from "../src/layout.ts";
 import type { CustomBox } from "../src/custom.ts";
 import { MAX_PARTS, UPLOAD_MAX_BYTES } from "../src/defaults.ts";
-import { MAX_SEGMENTS, isValidSegments } from "../src/segments.ts";
+import { MAX_SEGMENTS, isValidSegments, keepRanges, totalDuration } from "../src/segments.ts";
+import type { Segment } from "../src/segments.ts";
 import { HttpError } from "./errors.ts";
 import {
   OUT_DIR,
@@ -27,6 +28,7 @@ import {
   assertBoxes,
   assertCustoms,
   clipPath,
+  concatClips,
   exportClip,
   firstFrame,
   isOutName,
@@ -495,6 +497,28 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return send(res, 400, { error: "start/end must be within the fetched window." });
     }
 
+    // The framing strip's red middle drops, in the same coordinate system as
+    // start/end. Absent means none, so a body from a client that predates
+    // this field still exports through the untouched path below. The shared
+    // validator does the shape, the count, the ordering and the
+    // non-overlap — the same one `/api/window` runs on the segments — and
+    // the range check below is what keeps a drop inside the cut it edits.
+    const cutsRaw = raw.cuts ?? [];
+    if (!Array.isArray(cutsRaw) || (cutsRaw.length > 0 && !isValidSegments(cutsRaw, windowEnd))) {
+      return send(res, 400, { error: "Bad cuts." });
+    }
+    const cuts = cutsRaw as Segment[];
+    if (cuts.some((c) => c.start < start || c.end > end)) {
+      return send(res, 400, { error: "cuts must be within start/end." });
+    }
+    // What is left once the drops are taken out. Empty means the drops cover
+    // the whole cut, which is a 400 rather than an ffmpeg graph with no legs
+    // in it.
+    const keeps = keepRanges(start, end, cuts);
+    if (keeps.length === 0) {
+      return send(res, 400, { error: "cuts must leave something to export." });
+    }
+
     // A table lookup, so nothing from the request body is ever interpolated
     // into the filter graph — the same posture as taking window bounds
     // instead of a file path.
@@ -561,10 +585,33 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     inFlight.add(partial);
     try {
       await writeFile(art, titlePng);
+      // With drops, one extra pass before the composite: the kept ranges are
+      // stitched back into one continuous file, and the composite then runs
+      // on that from 0. `concatClips` is the stitch `/api/window` already
+      // uses — a drop list is exactly that operation with the same path in
+      // every leg — so the SAR/fps/audio normalisation and the silent-part
+      // stand-in come for free, already proven against real pixels.
+      //
+      // Without drops nothing is stitched and nothing is re-encoded: the
+      // path below is byte-identical to the one every export took before
+      // this field existed.
+      const composed =
+        cuts.length === 0
+          ? input
+          : await concatClips(
+              keeps.map((k) => ({
+                path: input,
+                start: k.start - windowStart,
+                end: k.end - windowStart,
+              })),
+              join(dir, "body-cut.mp4"),
+            );
       await exportClip({
-        input,
-        start: start - windowStart,
-        duration: end - start,
+        input: composed,
+        // The stitch starts at its own 0 and is already exactly the kept
+        // length; an uncut clip is still seeked into.
+        start: cuts.length === 0 ? start - windowStart : 0,
+        duration: totalDuration(keeps),
         layout,
         boxes,
         customs,
