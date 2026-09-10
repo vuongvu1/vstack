@@ -79,3 +79,29 @@ export function isValidSegments(segs: unknown, duration: number): segs is Segmen
 export function totalDuration(segs: Segment[]): number {
   return segs.reduce((sum, s) => sum + (s.end - s.start), 0);
 }
+
+/** What is left of `[start, end]` after the cuts are taken out of it.
+ *
+ *  The one rule both sides of a framing cut compute from: the client sizes
+ *  the kept badge with it, the server builds the export's concat legs with
+ *  it. Two copies of this subtraction is how a badge comes to disagree with
+ *  the file it names.
+ *
+ *  Assumes `cuts` is sorted and disjoint, which is what `normalize` emits
+ *  and what `isValidSegments` accepts — the same pairing `/api/window`
+ *  already relies on. Cuts outside the range are ignored, a cut overhanging
+ *  a bound is clipped to it, and a gap of zero length is dropped rather
+ *  than returned: an empty leg is an ffmpeg error, not a no-op. */
+export function keepRanges(start: number, end: number, cuts: Segment[]): Segment[] {
+  const keeps: Segment[] = [];
+  let at = start;
+  for (const cut of cuts) {
+    if (cut.end <= at) continue;
+    if (cut.start >= end) break;
+    if (cut.start > at) keeps.push({ start: at, end: Math.min(cut.start, end) });
+    at = Math.max(at, cut.end);
+    if (at >= end) return keeps;
+  }
+  if (end > at) keeps.push({ start: at, end });
+  return keeps;
+}

@@ -3,7 +3,7 @@ import type { CustomBox } from "./custom.ts";
 import { isValidBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
 import { DEFAULT_LAYOUT_ID, cellsOf, layoutById, ratioOf, resolveLayout } from "./layout.ts";
-import { isValidSegments, totalDuration } from "./segments.ts";
+import { isValidSegments, keepRanges, totalDuration } from "./segments.ts";
 import type { Segment } from "./segments.ts";
 
 export type Phase = "idle" | "trimming" | "framing" | "stacking" | "preview";
@@ -88,6 +88,16 @@ export type AppState = {
    *  they are `0` and the clip's probed duration. `doExport` sends these. */
   clipStart: number;
   clipEnd: number;
+  /** Holes inside `[clipStart, clipEnd]`, in that same coordinate system,
+   *  painted red on the framing strip and dropped by the export. Sorted and
+   *  disjoint — every write goes through `normalize`. Not persisted, for the
+   *  reason `clipStart`/`clipEnd` are not: they belong to a fetched window.
+   *
+   *  NOT `segments`. Those are source-timeline ranges `/api/window` fetches
+   *  and stitches *before* framing sees a file; these are clip-timeline
+   *  holes applied at export, on a file that is already one continuous
+   *  thing however it was assembled. */
+  cuts: Segment[];
   /** A stitch's segment digest, `""` for an ordinary clip. `/api/export`
    *  needs it to rebuild the cache path. Not persisted — it belongs to a
    *  fetched window, like `clipUrl`. */
@@ -147,6 +157,7 @@ const initial: AppState = {
   segments: [{ start: 0, end: 0 }],
   clipStart: 0,
   clipEnd: 0,
+  cuts: [],
   clipDigest: "",
   clipUrl: "",
   windowStart: 0,
@@ -423,9 +434,9 @@ export function restore(videoId: string, source: Size | null): Partial<AppState>
  *  sum of its parts — which is precisely why reading the wrong one is
  *  silent rather than loud. */
 export function keptLength(
-  s: Pick<AppState, "phase" | "segments" | "clipStart" | "clipEnd">,
+  s: Pick<AppState, "phase" | "segments" | "clipStart" | "clipEnd" | "cuts">,
 ): number {
   return s.phase === "framing"
-    ? Math.max(0, s.clipEnd - s.clipStart)
+    ? totalDuration(keepRanges(s.clipStart, Math.max(s.clipStart, s.clipEnd), s.cuts))
     : totalDuration(s.segments);
 }

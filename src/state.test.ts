@@ -699,6 +699,7 @@ describe("keptLength", () => {
         segments: [{ start: 10, end: 20 }, { start: 50, end: 65 }],
         clipStart: 0,
         clipEnd: 0,
+        cuts: [],
       }),
     ).toBe(25);
   });
@@ -712,6 +713,7 @@ describe("keptLength", () => {
         segments: [{ start: 10, end: 20 }, { start: 50, end: 65 }],
         clipStart: 3,
         clipEnd: 15,
+        cuts: [],
       }),
     ).toBe(12);
   });
@@ -725,8 +727,21 @@ describe("keptLength", () => {
         segments: [{ start: 10, end: 40 }],
         clipStart: 10,
         clipEnd: 40,
+        cuts: [],
       }),
     ).toBe(30);
+  });
+
+  it("subtracts the framing cuts, so a dropped middle part is not counted", () => {
+    expect(
+      keptLength({
+        phase: "framing",
+        segments: [{ start: 10, end: 40 }],
+        clipStart: 10,
+        clipEnd: 40,
+        cuts: [{ start: 15, end: 20 }, { start: 30, end: 32 }],
+      }),
+    ).toBe(23);
   });
 
   it("never reports a negative length", () => {
@@ -736,6 +751,7 @@ describe("keptLength", () => {
         segments: [{ start: 0, end: 5 }],
         clipStart: 9,
         clipEnd: 4,
+        cuts: [],
       }),
     ).toBe(0);
   });

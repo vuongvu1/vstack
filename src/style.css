@@ -854,3 +854,39 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   color: var(--grass-11);
   font-weight: 700;
 }
+
+/* A dropped middle part: red across the strip, and the export skips it. Red
+   is already this app's exclusion colour, and the band sits *over* the
+   waveform so the audio underneath stays readable — a solid fill would hide
+   the phrase the cut is being aimed at. `pointer-events:none` so the band
+   itself never eats the strip's click-to-seek; its two handles and its ×
+   are separate nodes that do. */
+.wave-drop {
+  position: absolute;
+  inset-block: 0;
+  background: var(--red-a7);
+  pointer-events: none;
+}
+
+.wave-handle.is-drop {
+  background: var(--red-9);
+}
+
+/* Drop this cut. Sized off the strip rather than the button recipe: it sits
+   on 48px of waveform, and a 32px control there would cover the thing it
+   describes. */
+.wave-x {
+  position: absolute;
+  top: 50%;
+  translate: -50% -50%;
+  min-width: 0;
+  height: 18px;
+  padding: 0 5px;
+  line-height: 1;
+  font-size: 13px;
+  border: 0;
+  border-radius: var(--radius-1);
+  background: var(--red-9);
+  color: #fff;
+  cursor: pointer;
+}

@@ -179,6 +179,8 @@ async function load(url: string): Promise<void> {
         windowEnd: win.windowEnd,
         clipStart: win.clipStart,
         clipEnd: win.clipEnd,
+        // A fresh window, so any framing cuts belong to the previous one.
+        cuts: [],
         clipDigest: win.digest,
         source,
         layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
@@ -745,6 +747,7 @@ async function openWindow(): Promise<void> {
       windowEnd: w.windowEnd,
       clipStart: w.clipStart,
       clipEnd: w.clipEnd,
+      cuts: [],
       clipDigest: w.digest,
       source,
       layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
@@ -848,6 +851,7 @@ function openClip(c: api.CachedClip): void {
     windowEnd: c.windowEnd,
     clipStart: cut?.start ?? c.clipStart,
     clipEnd: cut?.end ?? c.clipEnd,
+    cuts: [],
     clipDigest: c.digest,
     source,
     layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
@@ -914,6 +918,12 @@ const WAVE_GAIN = 3;
  *  400 rather than a short clip. One second is also the shortest trim worth
  *  making. */
 const MIN_CLIP_S = 1;
+
+/** How many holes the framing strip will take, and how long a fresh one is.
+ *  The cap bounds the export's concat graph and the untrusted-input surface
+ *  the way `MAX_SEGMENTS` and `MAX_CUSTOM` do — not a measured limit. */
+const MAX_CUTS = 4;
+const CUT_S = 2;
 
 /** Whether Play covers the marked cut only, rather than the whole fetched
  *  window. Module-scoped like `wavePeaks` below and for the same reason —
@@ -1271,6 +1281,9 @@ async function doExport(): Promise<void> {
       // a single segment these ARE the marks, so this request is unchanged.
       start: s.clipStart,
       end: s.clipEnd,
+      // The red regions on the framing strip. Clip time too, and already
+      // normalised — every write goes through `normalize`.
+      cuts: s.cuts,
       digest: s.clipDigest,
       starterTitle,
       // Sent raw, blank included: the server resolves blank to `starterTitle`,
@@ -1578,6 +1591,26 @@ function renderFraming(): Node[] {
   const head = el("div", { className: "strip-head" });
   wave.append(canvas, cutL, cutR, handleL, handleR, head);
 
+  // The dropped middle parts, red. One band, two handles and a × per cut,
+  // built off this render's snapshot because the *count* only ever changes
+  // through `setState` — a drag moves an existing cut's bounds through
+  // `setQuiet` and repositions it by hand in `place()`, exactly as the two
+  // outer handles do.
+  const drops = s.cuts.map((_, i) => {
+    const band = el("div", { className: "wave-drop", title: "Dropped from the export" });
+    const dl = el("div", { className: "wave-handle is-drop", title: "Drag to move this drop's start" });
+    const dr = el("div", { className: "wave-handle is-drop", title: "Drag to move this drop's end" });
+    const kill = el("button", { className: "wave-x", textContent: "×", title: "Keep this part after all" });
+    kill.onclick = (e) => {
+      e.stopPropagation();
+      // Live state: a drag before this click wrote the neighbouring cuts
+      // through `setQuiet`, so `s.cuts` is the array as of the last render.
+      setState({ cuts: getState().cuts.filter((_, j) => j !== i) });
+    };
+    wave.append(band, dl, dr, kill);
+    return { band, dl, dr, kill };
+  });
+
   /** Repositions everything the drag moves. Called directly rather than
    *  through a render because the drag writes with `setQuiet`, which by
    *  design reaches no render — the same reason the output overlay has to
@@ -1590,6 +1623,15 @@ function renderFraming(): Node[] {
     cutR.style.right = "0";
     handleL.style.left = pctOf(cur.clipStart);
     handleR.style.left = pctOf(cur.clipEnd);
+    drops.forEach((d, i) => {
+      const cut = cur.cuts[i];
+      if (cut === undefined) return;
+      d.band.style.left = pctOf(cut.start);
+      d.band.style.width = `${(100 * (cut.end - cut.start)) / span}%`;
+      d.dl.style.left = pctOf(cut.start);
+      d.dr.style.left = pctOf(cut.end);
+      d.kill.style.left = pctOf((cut.start + cut.end) / 2);
+    });
   };
   place();
 
@@ -1616,6 +1658,16 @@ function renderFraming(): Node[] {
       if (playCutOnly && !v.paused && v.currentTime >= getState().clipEnd - s.windowStart) {
         v.pause();
       }
+      // Skip a dropped part rather than play it. This is what keeps the
+      // segments design's promise while framing gains holes: the export
+      // drops this footage, so watching it here would be exactly the
+      // preview/export divergence the promise exists to prevent. ~4Hz means
+      // up to a quarter second of it plays before the seek lands — the same
+      // slop the cut-only stop above accepts, for the same reason.
+      const hole = getState().cuts.find(
+        (c) => v.currentTime >= c.start - s.windowStart && v.currentTime < c.end - s.windowStart,
+      );
+      if (hole !== undefined) v.currentTime = Math.min(span, hole.end - s.windowStart);
     };
     // The element may already be playing by the time a re-render builds
     // these: neither event fires again.
@@ -1680,6 +1732,50 @@ function renderFraming(): Node[] {
   };
   handleL.onpointerdown = dragHandle("start");
   handleR.onpointerdown = dragHandle("end");
+
+  /** One drop's edge. Bounded by the kept range on the outside and by its
+   *  own other edge (less `MIN_CLIP_S`) on the inside. Overlapping a
+   *  neighbouring drop is legal and merges on pointer-up — `normalize` is
+   *  what a cut tool does with that gesture, and it is the same call the
+   *  trimming strip's marks already make. */
+  const dragDrop = (i: number, which: "start" | "end") => (down: PointerEvent) => {
+    down.preventDefault();
+    down.stopPropagation();
+    const box = wave.getBoundingClientRect();
+    const target = down.target as HTMLElement;
+    target.setPointerCapture(down.pointerId);
+    const move = (e: PointerEvent) => {
+      const cur = getState();
+      const cut = cur.cuts[i];
+      if (cut === undefined) return;
+      const raw = s.windowStart + (span * (e.clientX - box.left)) / Math.max(1, box.width);
+      const t = Math.min(cur.clipEnd, Math.max(cur.clipStart, raw));
+      const moved =
+        which === "start"
+          ? { start: Math.min(t, cut.end - MIN_CLIP_S), end: cut.end }
+          : { start: cut.start, end: Math.max(t, cut.start + MIN_CLIP_S) };
+      setQuiet({ cuts: cur.cuts.map((c, j) => (j === i ? moved : c)) });
+      place();
+    };
+    const up = () => {
+      target.releasePointerCapture(down.pointerId);
+      target.onpointermove = null;
+      target.onpointerup = null;
+      // One notifying update at the end — the kept badge, the over-length
+      // warning and Export's gate all catch up in a single render — and the
+      // one place a drag's overlaps are merged away.
+      setState({ cuts: normalize(getState().cuts, s.windowEnd) });
+    };
+    target.onpointermove = move;
+    target.onpointerup = up;
+  };
+  drops.forEach((d, i) => {
+    d.dl.onpointerdown = dragDrop(i, "start");
+    d.dr.onpointerdown = dragDrop(i, "end");
+    // Without this a click that ends on a handle bubbles to the strip and
+    // seeks the video to wherever the drag finished.
+    d.dl.onclick = d.dr.onclick = (e) => e.stopPropagation();
+  });
   // Without this a click that ends on a handle bubbles to the strip and
   // seeks the video to wherever the drag finished.
   handleL.onclick = handleR.onclick = (e) => e.stopPropagation();
@@ -1690,6 +1786,23 @@ function renderFraming(): Node[] {
   waveResize?.disconnect();
   waveResize = new ResizeObserver(() => drawWave(canvas, span));
   waveResize.observe(wave);
+
+  const addCut = el("button", {
+    textContent: "+ Cut",
+    title: "Drop the part of the clip under the playhead out of the export",
+    disabled: Boolean(s.busy) || s.cuts.length >= MAX_CUTS,
+  });
+  addCut.onclick = () => {
+    // Live state, never `s`: every strip drag writes through `setQuiet`, so
+    // building from `s.cuts` would revert whichever drop was dragged last —
+    // the same trap `+ Box` documents right below.
+    const cur = getState();
+    const at = videoEl === null ? cur.clipStart : cur.windowStart + videoEl.currentTime;
+    const start = Math.min(Math.max(cur.clipStart, at), Math.max(cur.clipStart, cur.clipEnd - CUT_S));
+    setState({
+      cuts: normalize([...cur.cuts, { start, end: Math.min(start + CUT_S, cur.clipEnd) }], cur.windowEnd),
+    });
+  };
 
   const addBox = el("button", {
     textContent: "+ Box",
@@ -1813,9 +1926,13 @@ function renderFraming(): Node[] {
           // there, so a clock reading means something. A stitch's are its own
           // timeline, where an absolute time would be a lie — that branch
           // shows a *length* instead, and `keptLength` is already the cut's.
+          //
+          // A drop makes the span and the kept length two different numbers,
+          // so the badge stops being able to say only one of them.
           textContent:
             s.segments.length === 1
-              ? `${clock(s.clipStart)} → ${clock(s.clipEnd)}`
+              ? `${clock(s.clipStart)} → ${clock(s.clipEnd)}` +
+                (s.cuts.length === 0 ? "" : ` · ${clock(keptLength(s))} kept`)
               : `${s.segments.length} parts · ${clock(keptLength(s))}`,
         }),
         el("span", {
@@ -1830,7 +1947,7 @@ function renderFraming(): Node[] {
           : el("span"),
       ),
     ),
-    el("div", { className: "bar-row" }, transport, wave),
+    el("div", { className: "bar-row" }, transport, wave, addCut),
     el(
       "div",
       { className: "bar-row" },

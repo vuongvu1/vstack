@@ -177,6 +177,10 @@ export async function exportClip(body: {
   windowEnd: number;
   start: number;
   end: number;
+  /** Holes to drop from inside `[start, end]`, in the same coordinate
+   *  system, sorted and disjoint. Empty for an uncut export, which is the
+   *  request every caller sent before this field existed. */
+  cuts: Segment[];
   /** A stitch's segment digest, `""` for an ordinary clip. The server
    *  rebuilds the cache path from window bounds plus this — it is 8 hex
    *  characters, never a path. */
