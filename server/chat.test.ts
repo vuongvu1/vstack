@@ -134,8 +134,8 @@ describe("peaks", () => {
 
   it("ranks a real spike above a dead-tail bin with a tiny baseline", () => {
     // Busy stretch (baseline 9) with a 40-message spike, and a dead stretch
-    // (baseline 1) with a 9-message bin. `count / base` scores the dead one
-    // 9.0 and the real one 4.4 — the exact inversion measured on the spike.
+    // (baseline 1) with a 10-message bin. `count / base` scores the dead one
+    // 10.0 and the real one 5.4 — the exact inversion measured on the spike.
     const msgs = [
       ...flat(0, 1200, 1),
       ...burst(600, 9),

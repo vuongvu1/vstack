@@ -8,7 +8,7 @@ import { HttpError, toolError } from "./errors.ts";
 import { MEDIA_DIR } from "./ffmpeg.ts";
 
 const run = promisify(execFile);
-const BIG = 64 << 20; // an 11-hour stream's chat is ~20 MB
+const BIG = 64 << 20; // caps yt-dlp's own console output, not the subtitle file it writes to disk
 
 /** A message out of a livestream's chat replay, at its offset in the VOD's
  *  own timeline. `text` carries emoji shortcuts verbatim — a channel's

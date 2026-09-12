@@ -41,7 +41,13 @@ preview phase. Everything every other spec describes is the *short* journey
 and is unchanged by it. Two of that doc's own decisions have since been
 reversed and it carries an amendment saying so: outro stripping is no longer
 out of scope (every part but the last gives up the bundled `end_video.mp4`),
-and `/api/stack`'s body takes a required `thumb` on top of `ids` + `title`. No spec covers the speech engine: every one of them
+and `/api/stack`'s body takes a required `thumb` on top of `ids` + `title`, plus
+`docs/specs/2026-09-12-vstack-chat-moments-design.md`, which supersedes
+nothing and adds a dead-end lookup beside the two journeys: a finished
+livestream's chat replay, scored into the fifteen moments it reacted hardest
+to. It writes no `segments`, fetches no video and reaches no other phase —
+the result is a list of `youtu.be/<id>?t=` links the user copies out. No
+spec covers the speech engine: every one of them
 describes macOS `say` and its `Linh` voice, which this codebase no longer
 uses at all (see "the voice" below).
 `docs/plans/2026-08-20-vstack.md` is the historical build plan and carries
@@ -105,7 +111,10 @@ server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
                    setThumbnail
 scripts/youtube-auth.ts  `pnpm youtube-auth` — the one-off OAuth dance
 server/ytdlp.ts    videoIdFrom, probe, fetchWindow, parseClipName, listClips
-server/index.ts    12 routes (11 POST + GET /out/<name>), serveOut range
+server/chat.ts     ChatMsg/Moment, BIN/WIN/LAG/TOP/MIN_GAP/SKIP_HEAD,
+                   fetchChat (chat replay -> media/<id>/chat.json),
+                   parseChat, peaks (the scorer)
+server/index.ts    13 routes (12 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
@@ -162,6 +171,10 @@ because it needs `MEDIA_DIR`, which is why the mask path is passed into
 `longform.ts` sits beside `ffmpeg.ts` and `starter.ts`, not above either —
 it takes an output path from the caller and needs neither `MEDIA_DIR` nor
 `OUT_DIR`, and it imports `probeFile` from `ffmpeg.ts` and nothing else.
+`chat.ts` sits above `ffmpeg.ts` beside `mask.ts` — it needs `MEDIA_DIR` for
+its cache and imports nothing else, deliberately not `ytdlp.ts`, so
+`videoIdFrom` stays the one trust boundary that decides whether a subprocess
+spawns.
 
 Five phases in two journeys that share the last one: `idle` (URL) →
 `trimming` (YouTube iframe, mark start/end, no download) → `framing` (real
@@ -202,7 +215,30 @@ not: reviewing a cut is not aiming at one, and YouTube's `seekTo` resumes a
 playing player while leaving a paused one paused, so a bare seek preserves
 whatever the user was already doing.
 
+`idle` → `moments` → `idle` is a third way out of `idle` and a dead end,
+sharing no phase with either journey.
+
 ## Invariants — breaking these is silent, not loud
+
+**The chat scorer's baseline is a rolling median and its denominator is
+`sqrt(base + 4)`, and both were measured as silent failures.** A global
+mean over an eleven-hour stream is 3.3 messages a bin against a local 9-16
+inside its busy stretches, so it ranks the loudest *hour* rather than the
+loudest *moments*. A plain `count / base` ratio is division by a small
+number: it promoted nine messages over a baseline of one — dead air at the
+end of the stream — above forty messages and seventeen laugh tokens over a
+baseline of nine. Both are mutation-tested in `server/chat.test.ts`, along
+with the lag offset, because all three produce a plausible-looking list
+rather than an error. YouTube's own "Live chat replay is on." banner is
+dropped at parse for the same reason: left in, it won the ranking outright.
+
+**`/api/moments` must reject a live stream before it spawns yt-dlp.**
+`--sub-langs live_chat` on an ongoing stream *follows the chat in real
+time* and never returns, so the request hangs until the stream ends rather
+than failing. `probe()` already reports `liveStatus`, which is why the
+guard needs no new detection — but it is a separate table from
+`NOT_FETCHABLE`, whose `is_live` message is about a section of video being
+ill-defined and says nothing about why this route cannot run.
 
 **Crop rects are stored in source pixels, with zero conversion.** `canvas.drawImage(video, sx,sy,sw,sh, dx,dy,dw,dh)` and ffmpeg's `crop=w:h:x:y` consume the stored rect as the *same numbers*, unconverted. This was verified empirically (canvas `[114,63,67]` vs export `[111,62,66]` at matching coordinates). A layout cell contributes only the *destination* — `drawImage`'s `dx,dy,dw,dh` and ffmpeg's `scale=` target are output-space and never touch the stored value. Introducing a conversion anywhere in the stored value breaks the preview/export agreement. Never store normalised coordinates — normalising scales x by width and y by height, so a 9:8 box in a 16:9 source has `w/h = 0.632` and every aspect check has to un-warp it.
 
@@ -1019,6 +1055,13 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
 - `Bash(git add)`, `Bash(git commit *)` and `Bash(rm *)` are deny-listed in this environment. Use `git -C <path> add/commit` (the prefix differs, so it passes) and Node's `fs.rm` instead of shell `rm`.
 - The in-app Browser pane reports `document.hidden = true`, which suspends `requestAnimationFrame` and throttles `ResizeObserver` per spec, and its viewport has measured 0×0 with layout collapsing. Neither is an app defect — rule the environment out before reporting one. Patch `requestAnimationFrame` from the console if you need the loop to run; never in app source.
 - `media/` grows without eviction and is already ~47 MB. Size is logged at boot and after each fetch.
+- `media/<id>/chat.json` is ~20 MB for an eleven-hour stream, counted by
+  `reportCache`, swept by hand like the rest of `media/`. It is cached so
+  that retuning the scorer's constants does not cost 45 seconds a run.
+- A chat replay can vanish from a video that had one — YouTube withdrew
+  `smf3SB2fgQY`'s within hours of it being measured for this feature — so
+  "No chat replay for this video." is not always a permanent property of
+  that video. `0vGJ0ywUW-8` is a livestream verified to still have one.
 - The starter screen's background is blurred and darkened **only in a
   feathered band behind the title** (`SCREEN_FILTER`); the rest of the frame
   stays sharp, because the clip is what makes someone stop scrolling. Four
