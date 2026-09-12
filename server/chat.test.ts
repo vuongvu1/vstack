@@ -62,4 +62,17 @@ describe("parseChat", () => {
     ].join("\n");
     expect(parseChat(jsonl).map((m) => m.text)).toEqual(["ok"]);
   });
+
+  it("skips lines with wrong-typed fields and continues processing", () => {
+    const jsonl = [
+      JSON.stringify({
+        replayChatItemAction: {
+          videoOffsetTimeMsec: "1000",
+          actions: 5, // Should be an array, but it's a number
+        },
+      }),
+      line(2, "liveChatTextMessageRenderer", [{ text: "ok" }]),
+    ].join("\n");
+    expect(parseChat(jsonl).map((m) => m.text)).toEqual(["ok"]);
+  });
 });
