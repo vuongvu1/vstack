@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LAG, MIN_GAP, SKIP_HEAD, TOP, parseChat, peaks } from "./chat.ts";
-import type { ChatMsg } from "./chat.ts";
+import type { ChatMsg, Moment } from "./chat.ts";
 
 /** One line of the JSONL yt-dlp writes. `kind` is the renderer key, which is
  *  the single key of `item` and the thing parseChat filters on. */
@@ -100,7 +100,7 @@ function flat(from: number, to: number, perBin: number): ChatMsg[] {
   return out;
 }
 
-const at = (ms: { t: number }[], binStart: number) =>
+const at = (ms: Moment[], binStart: number) =>
   ms.find((m) => m.t === binStart - LAG);
 
 describe("peaks", () => {
