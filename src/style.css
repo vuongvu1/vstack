@@ -436,8 +436,7 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   color: var(--slate-11);
 }
 
-/* YouTube's 100-character cap is reachable by typing an ordinary title, since
-   defaultTitle already spends 22 of them on hashtags. */
+/* YouTube's 100-character cap is reachable by typing an ordinary title. */
 .field-count { font-variant-numeric: tabular-nums; color: var(--slate-9); }
 .field-count-full { color: var(--amber-11); }
 

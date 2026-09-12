@@ -2437,8 +2437,7 @@ function renderPublishForm(): Node[] {
   const count = el("span", { className: "field-count" });
   const showCount = (text: string) => {
     count.textContent = `${text.length}/${YT_TITLE_MAX}`;
-    // `defaultTitle` already spends 42 of those characters on hashtags, so
-    // the ceiling is reachable by typing an ordinary Vietnamese title.
+    // The ceiling is reachable by typing an ordinary Vietnamese title.
     count.classList.toggle("field-count-full", text.length >= YT_TITLE_MAX);
   };
 

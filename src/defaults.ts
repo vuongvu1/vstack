@@ -15,20 +15,6 @@
  *  this is reachable from the UI, not theoretical. */
 export const YT_TITLE_MAX = 100;
 
-/** Appended to the YouTube title. It carries no `#shorts` of its own — the
- *  `#Shorts` `buildSnippet` guarantees lives in the *description*, and that
- *  is the tag that does the classifying; the title's hashtags are what shows
- *  under the video.
- *
- *  Order is load-bearing: YouTube surfaces only the *first three* hashtags
- *  above the title and ignores the rest for display, so the two niche tags
- *  and `#siini` are the ones on show, and `#habine`/`#sim` ride along for
- *  search. Swap them round to change which three are visible.
- *
- *  Every character here is taken off `defaultTitle`'s budget for the title
- *  itself — 44 of the 100 now, leaving 55. */
-export const TITLE_HASHTAGS = "#vtubervn #vtubervietnam #habine #siini #sim";
-
 /** Pre-fills the description field. Already carries a shorts tag, which is
  *  why `buildSnippet`'s append is a no-op against it — see the test. */
 export const DESCRIPTION_TEMPLATE = `#vtuber #vtubervn #vtubervietnam #viral #shorts #habine #siini #sim
@@ -73,18 +59,13 @@ Sim: https://www.youtube.com/@simchan_hojo`;
  *  someone searching for this would actually type. */
 export const LONG_TAGS_DEFAULT = "vtuber, vtubervn, vtuber vietnam, tổng hợp, compilation";
 
-/** The starter title plus the hashtags, capped for YouTube.
+/** The starter title, capped for YouTube.
  *
- *  Room for the tags is reserved *first* and the title takes what is left.
- *  The naive order — concatenate, then `slice(0, 100)` — cuts the tail, and
- *  the tail is the tags: a long Vietnamese title would upload ending in
- *  `#vtubervn #vtuberv`. A clipped title is recoverable by editing the field; a
- *  clipped hashtag reads as a typo to every viewer. */
+ *  The title carries no hashtags of its own — the tags live in the
+ *  description and the tags field, which is where YouTube reads them from
+ *  anyway. The whole 100 characters are the title's. */
 export function defaultTitle(starterTitle: string): string {
-  const head = starterTitle
-    .slice(0, YT_TITLE_MAX - TITLE_HASHTAGS.length - 1)
-    .trim();
-  return head === "" ? TITLE_HASHTAGS : `${head} ${TITLE_HASHTAGS}`;
+  return starterTitle.trim().slice(0, YT_TITLE_MAX).trim();
 }
 
 /** The largest file `/api/upload` will take, in bytes.
