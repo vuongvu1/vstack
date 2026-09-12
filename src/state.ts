@@ -1,3 +1,4 @@
+import type { Moment } from "./api.ts";
 import { MAX_CUSTOM, isValidCustom } from "./custom.ts";
 import type { CustomBox } from "./custom.ts";
 import { isValidBox } from "./geometry.ts";
@@ -6,7 +7,7 @@ import { DEFAULT_LAYOUT_ID, cellsOf, layoutById, ratioOf, resolveLayout } from "
 import { isValidSegments, keepRanges, totalDuration } from "./segments.ts";
 import type { Segment } from "./segments.ts";
 
-export type Phase = "idle" | "trimming" | "framing" | "stacking" | "preview";
+export type Phase = "idle" | "trimming" | "framing" | "stacking" | "moments" | "preview";
 
 /** One uploaded long-form part.
  *
@@ -34,6 +35,14 @@ export type AppState = {
    *  of not storing a list of paths the user may have swept from
    *  `media/uploads/` by hand. The files themselves survive. */
   parts: UploadPart[];
+  /** The chat-moments lookup's result, and the video it belongs to.
+   *
+   *  NOT persisted, and `momentsFor` is a field of its own rather than a
+   *  reuse of `videoId`: this flow never enters a journey, so it must not
+   *  leave a video id behind that `load()` or the clip picker would then be
+   *  overwriting. Two unpersisted strings are cheaper than that coupling. */
+  moments: Moment[];
+  momentsFor: string;
   /** The long-form thumbnail, already stretched to 1280x720 JPEG by
    *  `renderThumb`, as bare base64. `""` until the user picks a picture, and
    *  `Render \u2192` is gated on it the same way it is gated on the title.
@@ -145,6 +154,8 @@ const initial: AppState = {
   busy: "",
   mode: "short",
   parts: [],
+  moments: [],
+  momentsFor: "",
   thumb: "",
   thumbName: "",
   url: "",

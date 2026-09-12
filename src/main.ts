@@ -5,6 +5,7 @@
 // mp3 import a string URL.
 import titleSound from "../server/assets/start-title-sound.mp3";
 import * as api from "./api.ts";
+import type { Moment } from "./api.ts";
 import { MAX_CUSTOM, defaultCustom, moveOut, outRatio, resizeOut, resnapCrop } from "./custom.ts";
 import type { CustomBox } from "./custom.ts";
 import { mountEditor } from "./editor.ts";
@@ -21,7 +22,7 @@ import {
   YT_TITLE_MAX,
   defaultTitle,
 } from "./defaults.ts";
-import { clock, parseTimestamp } from "./format.ts";
+import { clock, mmss, parseTimestamp } from "./format.ts";
 import {
   DEFAULT_LAYOUT_ID,
   LAYOUTS,
@@ -118,7 +119,20 @@ const publishForm = el("div", { className: "publish-form", hidden: true });
 // and is only ever hidden — never removed, and never by hiding sourceSlot
 // itself, which would put the YouTube iframe's ancestor into display:none.
 const stackPanel = el("div", { className: "stack-panel", hidden: true });
-const sourceSlot = el("div", { className: "source" }, sourcePlaceholder, publishForm, stackPanel);
+// The chat-moments lookup's result list. Part of the persistent shell for the
+// same reason publishForm and stackPanel are: it takes over the left column
+// during `moments`, and is only ever hidden — never removed, and never by
+// hiding sourceSlot itself, which would put the YouTube iframe's ancestor
+// into display:none.
+const momentsPanel = el("div", { className: "moments-panel", hidden: true });
+const sourceSlot = el(
+  "div",
+  { className: "source" },
+  sourcePlaceholder,
+  publishForm,
+  stackPanel,
+  momentsPanel,
+);
 const outSlot = el("div", { className: "out" }, outPlaceholder);
 const barSlot = el("div", { className: "bar" });
 const statusSlot = el("div", { className: "status" });
@@ -2676,6 +2690,111 @@ function renderClipPicker(s: AppState): HTMLSelectElement {
   return select;
 }
 
+/** One copyable line per moment — Todoist turns a multi-line paste into one
+ *  task per line, so the line format IS the deliverable. `mm:ss` leads so
+ *  the tasks sort and read as positions; the sample is what makes a task
+ *  triageable without opening it. */
+function momentLine(s: AppState, m: Moment): string {
+  return `${mmss(m.t)}  ${m.sample}  https://youtu.be/${s.momentsFor}?t=${m.t}`;
+}
+
+async function findMoments(url: string): Promise<void> {
+  await guard("Reading chat replay… (up to a minute)", async () => {
+    const res = await api.moments(url);
+    // Never `title`: that field belongs to a probed video on the short
+    // journey, and this flow has not probed one for that purpose.
+    setState({ moments: res.moments, momentsFor: res.videoId });
+  });
+}
+
+function renderMoments(): Node[] {
+  const s = getState();
+  const busy = s.busy !== "";
+  const input = el("input", {
+    type: "url",
+    placeholder: "https://www.youtube.com/watch?v=… (a finished livestream)",
+    size: 60,
+    value: s.url,
+    disabled: busy,
+    className: "field-grow",
+  });
+  // Quiet for the same reason the idle bar's field is: a notifying update
+  // rebuilds this very input and drops the cursor mid-typing.
+  input.oninput = () => setQuiet({ url: input.value });
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") void findMoments(input.value);
+  };
+
+  const find = el("button", { className: "btn-solid", textContent: "Find", disabled: busy });
+  find.onclick = () => void findMoments(input.value);
+
+  const back = el("button", { className: "btn-gray", textContent: "← Back", disabled: busy });
+  back.onclick = () => setState({ phase: "idle", error: "" });
+
+  const copy = el("button", {
+    textContent: "Copy all",
+    title: "One line per moment — pastes into Todoist as one task each",
+    disabled: busy || s.moments.length === 0,
+  });
+  copy.onclick = () => {
+    const live = getState();
+    void navigator.clipboard
+      .writeText(live.moments.map((m) => momentLine(live, m)).join("\n"))
+      .then(
+        () => {
+          copy.textContent = "Copied";
+          setTimeout(() => {
+            copy.textContent = "Copy all";
+          }, 1200);
+        },
+        // A clipboard write can be refused (no user gesture, no permission),
+        // and a button that silently did nothing reads as a broken feature.
+        (err: unknown) => setState({ error: String(err) }),
+      );
+  };
+
+  return [
+    el("div", { className: "bar-row" }, back, input, find),
+    el(
+      "div",
+      { className: "bar-row" },
+      el("span", { className: "badge", textContent: `${s.moments.length} moments` }),
+      el("div", { className: "bar-end" }, copy),
+    ),
+  ];
+}
+
+function renderMomentsPanel(): Node[] {
+  const s = getState();
+  if (s.moments.length === 0) {
+    return [
+      el("p", {
+        textContent:
+          "Paste a finished livestream URL. The first look at a stream downloads " +
+          "its chat replay, which takes about a minute; after that it is cached.",
+      }),
+    ];
+  }
+  // An <a> per row rather than a click handler: middle-click, cmd-click and
+  // "copy link address" all come free, and checking a peak before copying the
+  // list is the whole reason the rows are here rather than only in the
+  // clipboard.
+  return s.moments.map((m) =>
+    el(
+      "a",
+      {
+        className: "moment-row",
+        href: `https://youtu.be/${s.momentsFor}?t=${m.t}`,
+        target: "_blank",
+        rel: "noreferrer",
+      },
+      el("span", { className: "moment-time", textContent: mmss(m.t) }),
+      el("span", { className: "moment-sample", textContent: m.sample }),
+      el("span", { className: "badge", textContent: `${m.count}` }),
+    ),
+  );
+}
+
 function renderIdle(s: AppState): Node[] {
   const busy = s.busy !== "";
   const input = el("input", {
@@ -2705,11 +2824,23 @@ function renderIdle(s: AppState): Node[] {
   });
   long.onclick = () => setState({ mode: "long", phase: "stacking", error: "" });
 
+  const chat = el("button", {
+    className: "btn-gray",
+    textContent: "Chat moments →",
+    title: "Find where a finished livestream's chat reacted hardest",
+    disabled: busy,
+  });
+  // No `mode` here, deliberately. Every exit from `idle` on the two journeys
+  // claims it because they meet at `preview` and a stale value misclassifies
+  // an upload — this flow reaches neither phase, so there is nothing to
+  // claim and nothing downstream that could read it.
+  chat.onclick = () => setState({ phase: "moments", error: "" });
+
   const rows: Node[] = [el("div", { className: "bar-row" }, input, go)];
   if (clipList.length > 0) {
     rows.push(el("div", { className: "bar-row" }, renderClipPicker(s)));
   }
-  rows.push(el("div", { className: "bar-row" }, long));
+  rows.push(el("div", { className: "bar-row" }, long, chat));
   return rows;
 }
 
@@ -2720,7 +2851,9 @@ function render(): void {
   // video yet" placeholders are stale — hide them so Tasks 8-11 inherit
   // clean containers instead of layering real content under leftover text.
   sourcePlaceholder.hidden = s.phase !== "idle";
-  outPlaceholder.hidden = s.phase !== "idle";
+  // The out column has nothing to show in `moments` either, so its
+  // placeholder stays rather than leaving an empty card.
+  outPlaceholder.hidden = s.phase !== "idle" && s.phase !== "moments";
   // The iframe is hidden, never removed, once framing owns the stage —
   // removing it (or any ancestor) is what discards its nested browsing
   // context and reloads the video (see ensureSourcePlayer above). Neither
@@ -2776,11 +2909,15 @@ function render(): void {
 
   publishForm.hidden = s.phase !== "preview";
   stackPanel.hidden = s.phase !== "stacking";
+  momentsPanel.hidden = s.phase !== "moments";
 
   if (s.phase === "idle") barSlot.replaceChildren(...renderIdle(s));
   else if (s.phase === "trimming") barSlot.replaceChildren(...renderTrimming());
   else if (s.phase === "framing") barSlot.replaceChildren(...renderFraming());
-  else if (s.phase === "stacking") {
+  else if (s.phase === "moments") {
+    barSlot.replaceChildren(...renderMoments());
+    momentsPanel.replaceChildren(...renderMomentsPanel());
+  } else if (s.phase === "stacking") {
     // Bar first: it assigns stackBtn, which the title handler flips in place
     // on a quiet keystroke.
     barSlot.replaceChildren(...renderStacking());
@@ -2797,7 +2934,12 @@ function render(): void {
   // The long journey has no probed video behind it: `title`, `duration` and
   // `source` are all still their initial values, and three empty badges read
   // as a broken header rather than as an absence.
-  if (s.phase !== "idle" && s.mode === "short") {
+  //
+  // `moments` has no probed video behind it either — `title`, `duration` and
+  // `source` are whatever a previous journey left — so it is excluded
+  // explicitly rather than inheriting the `mode` test, which is true here
+  // for a reason that has nothing to do with this phase.
+  if (s.phase !== "idle" && s.phase !== "moments" && s.mode === "short") {
     meta.push(el("span", { className: "badge badge-title", textContent: s.title }));
     meta.push(el("span", { className: "badge", textContent: clock(s.duration) }));
     meta.push(el("span", { className: "badge", textContent: `${s.source.w}×${s.source.h}` }));
@@ -2937,7 +3079,7 @@ window.addEventListener("keydown", (e) => {
     if (outVideoEl.paused) void outVideoEl.play();
     else outVideoEl.pause();
   } else {
-    return; // idle and stacking own no medium — leave the page's own scroll alone
+    return; // idle, stacking and moments own no medium — leave the page's own scroll alone
   }
   // Only once something was actually toggled: space scrolls the page by
   // default, and suppressing that on a phase with nothing to play would be
