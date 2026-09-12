@@ -275,7 +275,7 @@ Merge the value import into the one Task 1 already added — a second
 `import ... from "./chat.ts"` in the same file is legal and untidy:
 
 ```ts
-import { LAG, MIN_GAP, TOP, parseChat, peaks } from "./chat.ts";
+import { LAG, MIN_GAP, SKIP_HEAD, TOP, parseChat, peaks } from "./chat.ts";
 import type { ChatMsg } from "./chat.ts";
 
 /** `n` messages inside the ten-second bin starting at `start`, each from a
@@ -317,9 +317,12 @@ describe("peaks", () => {
 
   it("ignores the stream-open flood", () => {
     // A huge bin at t=0 and a real one at 600s. Only the second may appear.
+    // Asserted on the BIN the moment came from (`m.t + LAG`), not on `m.t`:
+    // the first legal bin starts at SKIP_HEAD and emits SKIP_HEAD - LAG, so
+    // a bare `m.t < SKIP_HEAD` check fails on a perfectly legal moment.
     const msgs = [...flat(0, 2000, 2), ...burst(0, 80), ...burst(600, 40)];
     const top = peaks(msgs);
-    expect(top.some((m) => m.t < 60)).toBe(false);
+    expect(top.every((m) => m.t + LAG >= SKIP_HEAD)).toBe(true);
     expect(at(top, 600)).toBeDefined();
   });
 
@@ -337,7 +340,11 @@ describe("peaks", () => {
       ...flat(0, 1200, 1),
       ...burst(600, 9),
       ...flat(1200, 2400, 9),
-      ...burst(1800, 40, { text: "=)))" }),
+      // No laugh tokens on the hot burst, deliberately: the multiplier would
+      // roughly double its score and let `count / base` survive the mutation
+      // (10.0 dead against 10.8 hot). Plain, it is 10.0 against 5.4 and the
+      // mutation fails, which is the whole point of this test.
+      ...burst(1800, 40),
     ];
     const top = peaks(msgs);
     const hot = at(top, 1800);
