@@ -60,7 +60,7 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 272 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 359 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -127,13 +127,13 @@ src/frame.ts       GUTTER/CORNER_RADIUS, windowOf/windowsOf, ringOf, maskRgba
 src/starter.ts     TITLE_FONT, renderTitleArt (title → transparent PNG)
 src/thumb.ts       THUMB, renderThumb (any picture → 1280x720 JPEG, stretched)
 src/state.ts       AppState, setState/setQuiet, save/restore
-src/api.ts         9 fetch wrappers
+src/api.ts         12 fetch wrappers
 src/format.ts      mmss / clock / slugify (shared client + server)
 src/player.ts      YT IFrame API wrapper + trim strip
 src/editor.ts      box drag/resize overlay (crops over the <video>, pieces'
                    `out` rects over the <canvas>); returns { place, stop }
 src/preview.ts     canvas composite rAF loop
-src/main.ts        persistent shell, phase machine, all five phases
+src/main.ts        persistent shell, phase machine, all six phases
 media/             clip cache (gitignored)
 media/uploads/     long-form parts, one <uuid>.mp4 per upload (gitignored)
 ~/Desktop/vstack/  finished shorts, plus a vertical .jpg still beside each
@@ -176,7 +176,7 @@ its cache and imports nothing else, deliberately not `ytdlp.ts`, so
 `videoIdFrom` stays the one trust boundary that decides whether a subprocess
 spawns.
 
-Five phases in two journeys that share the last one: `idle` (URL) →
+Six phases: five of them in two journeys that share the last one: `idle` (URL) →
 `trimming` (YouTube iframe, mark start/end, no download) → `framing` (real
 `<video>` of the fetched window, crop boxes, canvas composite, export) →
 `preview` (the finished file played back on the right, with the upload's

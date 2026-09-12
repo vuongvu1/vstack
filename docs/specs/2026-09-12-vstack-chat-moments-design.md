@@ -2,6 +2,16 @@
 
 2026-09-12
 
+> **Amended 2026-09-12.** One decision below was reversed during the
+> branch's own final review, before anything downstream came to depend on
+> it. `/api/moments`'s response is `{ videoId, moments }`, not
+> `{ videoId, title, moments }` as "`/api/moments`" below still says —
+> `title` was dropped. The client has nowhere to put it that would not mean
+> either a third state field or writing `state.title`, which belongs to a
+> probed video on the short journey; the user pasted the URL, so they
+> already know which stream this is. `server/index.ts`'s `/api/moments`
+> handler carries the same reasoning at the call site.
+
 Supersedes nothing and extends nothing. It adds a **dead-end lookup** beside
 the two journeys: a way in from `idle` that answers "where are the
 interesting moments in this 11-hour stream" and hands back a list of

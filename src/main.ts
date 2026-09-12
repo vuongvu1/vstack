@@ -22,7 +22,7 @@ import {
   YT_TITLE_MAX,
   defaultTitle,
 } from "./defaults.ts";
-import { clock, mmss, parseTimestamp } from "./format.ts";
+import { clock, parseTimestamp } from "./format.ts";
 import {
   DEFAULT_LAYOUT_ID,
   LAYOUTS,
@@ -2695,11 +2695,15 @@ function renderClipPicker(s: AppState): HTMLSelectElement {
  *  the tasks sort and read as positions; the sample is what makes a task
  *  triageable without opening it. */
 function momentLine(s: AppState, m: Moment): string {
-  return `${mmss(m.t)}  ${m.sample}  https://youtu.be/${s.momentsFor}?t=${m.t}`;
+  return `${clock(m.t)}  ${m.sample}  https://youtu.be/${s.momentsFor}?t=${m.t}`;
 }
 
 async function findMoments(url: string): Promise<void> {
   await guard("Reading chat replay… (up to a minute)", async () => {
+    // Clear the previous search's rows before the await: otherwise a
+    // thrown error (or a fresh visit via ← Back) leaves the last stream's
+    // moments on screen under a message that is about a different stream.
+    setState({ moments: [], momentsFor: "" });
     const res = await api.moments(url);
     // Never `title`: that field belongs to a probed video on the short
     // journey, and this flow has not probed one for that purpose.
@@ -2788,7 +2792,7 @@ function renderMomentsPanel(): Node[] {
         target: "_blank",
         rel: "noreferrer",
       },
-      el("span", { className: "moment-time", textContent: mmss(m.t) }),
+      el("span", { className: "moment-time", textContent: clock(m.t) }),
       el("span", { className: "moment-sample", textContent: m.sample }),
       el("span", { className: "badge", textContent: `${m.count}` }),
     ),
