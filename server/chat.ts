@@ -1,3 +1,15 @@
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, rename } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { HttpError, toolError } from "./errors.ts";
+import { MEDIA_DIR } from "./ffmpeg.ts";
+
+const run = promisify(execFile);
+const BIG = 64 << 20; // an 11-hour stream's chat is ~20 MB
+
 /** A message out of a livestream's chat replay, at its offset in the VOD's
  *  own timeline. `text` carries emoji shortcuts verbatim — a channel's
  *  custom emotes are most of the reaction on a Vietnamese stream, and they
@@ -178,4 +190,61 @@ export function peaks(msgs: ChatMsg[]): Moment[] {
     if (out.length === TOP) break;
   }
   return out.sort((a, b) => a.t - b.t);
+}
+
+/** Downloads a finished stream's chat replay to `media/<id>/chat.json` and
+ *  returns that path, or returns it immediately when it is already there.
+ *
+ *  A finished stream's replay is immutable, so there is no staleness to
+ *  reason about — and the cache is not for the user's sake so much as for
+ *  the scorer's: retuning any constant in this file means re-running it over
+ *  the same stream, and 45 seconds a run is the difference between tuning
+ *  and not bothering.
+ *
+ *  `chat.json` cannot collide with the clip cache: `CLIP_RE` in `ytdlp.ts` is
+ *  anchored on `<digits>-<digits>[-<8 hex>].mp4`, so `listClips` can never
+ *  offer this file as a clip, while `reportCache` counts it for free.
+ *
+ *  The download goes to a UUID-suffixed name and is renamed into place — the
+ *  same lesson the download partial and the export partial carry. A fetch
+ *  killed halfway must not leave a truncated file under the name the cache
+ *  checks for, because nothing would ever re-fetch it.
+ *
+ *  CALLER MUST have rejected a live stream first: `--sub-langs live_chat`
+ *  follows an ongoing chat in real time and never returns. */
+export async function fetchChat(videoId: string): Promise<string> {
+  const dir = join(MEDIA_DIR, videoId);
+  const path = join(dir, "chat.json");
+  if (existsSync(path)) return path;
+
+  await mkdir(dir, { recursive: true });
+  const stem = join(dir, `chat.${randomUUID()}`);
+  try {
+    await run(
+      "yt-dlp",
+      [
+        "--skip-download",
+        "--write-subs",
+        "--sub-langs",
+        "live_chat",
+        "--no-warnings",
+        "--no-playlist",
+        "-o",
+        `${stem}.%(ext)s`,
+        `https://www.youtube.com/watch?v=${videoId}`,
+      ],
+      { maxBuffer: BIG },
+    );
+  } catch (err) {
+    throw toolError("yt-dlp", err);
+  }
+
+  // yt-dlp exits 0 and writes nothing when a video has no chat replay —
+  // never a stream, or the uploader turned replay off after the fact.
+  const written = `${stem}.live_chat.json`;
+  if (!existsSync(written)) {
+    throw new HttpError(400, "No chat replay for this video.");
+  }
+  await rename(written, path);
+  return path;
 }

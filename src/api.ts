@@ -267,3 +267,13 @@ export async function publishProgress(): Promise<{ sent: number; total: number }
     total: number;
   }>;
 }
+
+/** One moment the chat reacted to. `t` already carries the lag offset — it
+ *  is the instant a link should open, not the instant chat peaked. */
+export type Moment = { t: number; score: number; count: number; sample: string };
+
+export type MomentsResult = { videoId: string; moments: Moment[] };
+
+export async function moments(url: string): Promise<MomentsResult> {
+  return (await post("/api/moments", { url })).json() as Promise<MomentsResult>;
+}

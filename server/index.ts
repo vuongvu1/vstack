@@ -42,6 +42,7 @@ import {
   thumbPath,
   uploadPath,
 } from "./ffmpeg.ts";
+import { fetchChat, parseChat, peaks } from "./chat.ts";
 import { ensureMask } from "./mask.ts";
 import type { Trim } from "./longform.ts";
 import { checkLongform, detectTrim, keptRange, stackWide } from "./longform.ts";
@@ -404,6 +405,18 @@ const NOT_FETCHABLE: Record<string, string> = {
     "only live fragments exist, which cannot be cut. Try again in an hour.",
 };
 
+/** Why a video has no chat replay to read yet. Separate from NOT_FETCHABLE
+ *  above, whose `is_live` message is about a section of video being
+ *  ill-defined — the reason a live stream fails HERE is different and
+ *  sharper: yt-dlp would follow the ongoing chat and never return. */
+const CHAT_NOT_READY: Record<string, string> = {
+  is_live: "Stream still live — chat replay exists only after it ends.",
+  is_upcoming: "This stream has not started yet.",
+  post_live:
+    "This stream just ended and YouTube is still processing the replay. " +
+    "Try again in an hour.",
+};
+
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // Above the POST-only guard, and deliberately the only thing that is.
   if (req.method === "GET" && (req.url ?? "").startsWith("/out/")) return serveOut(req, res);
@@ -445,6 +458,27 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // network. No request body at all — there is nothing here for a caller to
   // supply, so nothing to validate.
   if (req.url === "/api/clips") return send(res, 200, { clips: await listClips() });
+
+  // The idle screen's third way in, and a dead end — it fetches no video,
+  // writes no segments and reaches no other phase. Answers where a
+  // livestream's chat reacted hardest, as timestamps the user copies out.
+  if (req.url === "/api/moments") {
+    const body = await json<Record<string, unknown>>(req);
+    const videoId = videoIdFrom(str(body.url, "url"));
+    if (!videoId) return send(res, 400, { error: "Not a YouTube video URL." });
+    const info = await probe(videoId);
+    // Load-bearing, not politeness: on a live stream `--sub-langs live_chat`
+    // follows the chat in real time and the request never returns.
+    const why = CHAT_NOT_READY[info.liveStatus];
+    if (why) return send(res, 400, { error: why });
+    const moments = peaks(parseChat(await readFile(await fetchChat(videoId), "utf8")));
+    reportCache();
+    // No title in the answer, deliberately: the client has nowhere to put it
+    // that would not mean either a third state field or writing `state.title`,
+    // which belongs to a probed video on the short journey. The user pasted
+    // the URL; they know which stream this is.
+    return send(res, 200, { videoId, moments });
+  }
 
   if (req.url === "/api/export") {
     const raw = await json<Record<string, unknown>>(req);
