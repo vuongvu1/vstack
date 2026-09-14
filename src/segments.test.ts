@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SEGMENTS, isValidSegments, keepRanges, normalize, totalDuration } from "./segments.ts";
+import {
+  MAX_SEGMENTS,
+  editMark,
+  isValidSegments,
+  keepRanges,
+  normalize,
+  totalDuration,
+} from "./segments.ts";
 import type { Segment } from "./segments.ts";
 
 const D = 600;
@@ -200,5 +207,52 @@ describe("keepRanges", () => {
       { start: 0, end: 10 },
       { start: 25, end: 30 },
     ]);
+  });
+});
+
+describe("editMark", () => {
+  const part: Segment = { start: 100, end: 105 };
+
+  it("moves the aimed bound and leaves the other one alone", () => {
+    expect(editMark(part, "start", 102, D, false)).toEqual({ start: 102, end: 105 });
+    expect(editMark(part, "end", 140, D, false)).toEqual({ start: 100, end: 140 });
+  });
+
+  // THE bug: `+ Part` defaults a new range to five seconds, so aiming Set
+  // Start after rolling forward always overshoots that end. Refusing there
+  // left the button dead and the following Set End then measured the part
+  // from the `+ Part` playhead instead of from the aimed start.
+  it("carries an un-aimed end when the start overshoots it", () => {
+    expect(editMark(part, "start", 140, D, false)).toEqual({ start: 140, end: 145 });
+  });
+
+  it("keeps the part's own length when it carries the end", () => {
+    expect(editMark({ start: 10, end: 40 }, "start", 200, D, false)).toEqual({
+      start: 200,
+      end: 230,
+    });
+  });
+
+  it("clamps a carried end to the duration", () => {
+    expect(editMark(part, "start", D - 2, D, false)).toEqual({ start: D - 2, end: D });
+  });
+
+  it("refuses rather than overwriting an end the user aimed", () => {
+    expect(editMark(part, "start", 140, D, true)).toBeNull();
+  });
+
+  it("refuses a start with nowhere left to carry the end to", () => {
+    expect(editMark(part, "start", D, D, false)).toBeNull();
+  });
+
+  // The half that must NOT change: `normalize` drops a segment whose end is
+  // not after its start, so this would delete the part being edited.
+  it("refuses an end at or before the part's start", () => {
+    expect(editMark(part, "end", 100, D, false)).toBeNull();
+    expect(editMark(part, "end", 90, D, false)).toBeNull();
+  });
+
+  it("does not carry anything when the end is aimed at", () => {
+    expect(editMark(part, "end", 140, D, true)).toEqual({ start: 100, end: 140 });
   });
 });

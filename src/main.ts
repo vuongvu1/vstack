@@ -34,7 +34,7 @@ import {
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
-import { MAX_SEGMENTS, isValidSegments, normalize } from "./segments.ts";
+import { MAX_SEGMENTS, editMark, isValidSegments, normalize } from "./segments.ts";
 import type { Segment } from "./segments.ts";
 import { renderTitleArt } from "./starter.ts";
 import { renderThumb } from "./thumb.ts";
@@ -454,18 +454,28 @@ function renderTrimming(): Node[] {
     const t = clampMark(player.currentTime(), cur.duration);
     const seg = cur.segments[active];
     if (seg === undefined) return;
-    const edited = { ...seg, [which]: t };
-    // Ignored rather than normalised away: `normalize` DROPS a segment whose
-    // end is not after its start, so Set End with the playhead before the
-    // part's start would silently delete the part the user was editing —
-    // the worst possible answer to an ordinary misclick. Refusing the edit
-    // leaves the strip exactly as it was, which reads as "that did nothing".
-    if (!(edited.end > edited.start)) return;
+    // `editMark` owns both halves of this: carrying an un-aimed end along
+    // with a start that overshot it (the `+ Part` five-second default, which
+    // the ordinary add-a-part-then-roll-forward flow always overshoots), and
+    // refusing anything that would still leave `end <= start` rather than
+    // letting `normalize` DROP the part being edited.
+    const edited = editMark(seg, which, t, cur.duration, aimed.end.has(seg.end));
+    // Out loud, not silently: a refusal used to leave the strip untouched
+    // with no tick and no message, which reads as "that button is broken".
+    if (edited === null) {
+      setState({
+        error:
+          which === "start"
+            ? "That start is after this part's end. Aim earlier, or set the end first."
+            : "That end is before this part's start. Aim later, or pick another part.",
+      });
+      return;
+    }
     aimed[which].add(t);
     const next = cur.segments.map((s2, i) => (i === active ? edited : s2));
     const normalized = normalize(next, cur.duration);
     activeSegment = segmentContaining(normalized, edited.start, edited.end);
-    setState({ segments: normalized });
+    setState({ segments: normalized, error: "" });
     save();
   };
 

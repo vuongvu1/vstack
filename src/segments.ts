@@ -105,3 +105,37 @@ export function keepRanges(start: number, end: number, cuts: Segment[]): Segment
   if (end > at) keeps.push({ start: at, end });
   return keeps;
 }
+
+/** One bound of `seg` moved to `t`, or `null` if the edit has to be refused.
+ *
+ *  Two rules, and both of them were user-visible bugs:
+ *
+ *  - `+ Part` hands a new range a SYNTHETIC five-second end, so the ordinary
+ *    flow — add a part, roll forward, aim Set Start — lands the start past
+ *    that end. Refusing there read as "Set Start is broken" (no tick, no
+ *    change), and the Set End that followed then stretched the part from the
+ *    `+ Part` playhead rather than from the start the user had aimed. So an
+ *    end the user never aimed at (`endAimed`) is carried along, keeping the
+ *    part's own length; an end they DID aim is theirs, and is refused rather
+ *    than silently overwritten.
+ *  - Anything still leaving `end <= start` is refused rather than handed to
+ *    `normalize`, which DROPS such a segment — a misclicked Set End would
+ *    otherwise delete the very part being edited.
+ *
+ *  Pure and here rather than in `main.ts` beside `segmentContaining` because
+ *  both failures are silent: neither throws, and both produce a plausible
+ *  strip. */
+export function editMark(
+  seg: Segment,
+  which: "start" | "end",
+  t: number,
+  duration: number,
+  endAimed: boolean,
+): Segment | null {
+  const edited: Segment =
+    which === "start" ? { start: t, end: seg.end } : { start: seg.start, end: t };
+  if (which === "start" && edited.end <= t && !endAimed) {
+    edited.end = Math.min(t + (seg.end - seg.start), duration);
+  }
+  return edited.end > edited.start ? edited : null;
+}
