@@ -208,12 +208,12 @@ be reached by pasting a YouTube `?t=` link into the trimming bar's timestamp
 field (`parseTimestamp` in `src/format.ts`), which only seeks. The `NUDGES`
 group (−2/−1/+1/+2s) only seeks too: YouTube's own arrow keys move 5s and the
 iframe only hears them while focused, which every button in the bar takes
-away. Aiming at a mark pauses first — a rolling player has left the frame you
-aimed at by the time you reach Set Start — so the nudges and the pasted
-timestamp both pause before seeking. The jump-to-mark buttons deliberately do
-not: reviewing a cut is not aiming at one, and YouTube's `seekTo` resumes a
-playing player while leaving a paused one paused, so a bare seek preserves
-whatever the user was already doing.
+away. A pasted timestamp pauses before seeking — a rolling player has left the
+frame you aimed at by the time you reach Set Start. The nudges and the
+jump-to-mark buttons deliberately do not: YouTube's `seekTo` resumes a playing
+player while leaving a paused one paused, so a bare seek preserves whatever the
+user was already doing, and a nudge is reached from a pause the user already
+took.
 
 `idle` → `moments` → `idle` is a third way out of `idle` and a dead end,
 sharing no phase with either journey.

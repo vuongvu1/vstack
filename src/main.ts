@@ -532,7 +532,7 @@ function renderTrimming(): Node[] {
   // Jump to a mark, to review the cut without hunting for it on the strip.
   // Deliberately no pause(): YouTube's seekTo resumes a playing player and
   // leaves a paused one paused, so a jump preserves whatever the user was
-  // doing — unlike the nudges below, where the pause is the point.
+  // doing — the nudges below follow the same rule.
   const jump = (label: string, at: number, enabled: boolean) => {
     const b = el("button", {
       className: "btn-gray",
@@ -571,10 +571,11 @@ function renderTrimming(): Node[] {
     });
     step.onclick = () => {
       if (!player) return;
-      // Paused before the seek, for the reason spelled out on the timestamp
-      // field: a rolling player has left the frame by the time you reach
-      // Set Start, which would make the nudge pointless.
-      player.pause();
+      // Deliberately no pause(), same as the jump buttons above: seekTo
+      // resumes a playing player and leaves a paused one paused, so a nudge
+      // preserves whatever the user was doing. Aiming at a frame is done
+      // from a pause the user already took; forcing one here stops playback
+      // they wanted kept.
       player.seekTo(clampMark(player.currentTime() + delta, s.duration));
     };
     nudges.append(step);
