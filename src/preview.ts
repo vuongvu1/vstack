@@ -1,5 +1,6 @@
 import { CORNER_RADIUS, GUTTER, ringOf, windowOf } from "./frame.ts";
 import { OUTPUT } from "./geometry.ts";
+import { drawTitle } from "./starter.ts";
 import { THUMB } from "./thumb.ts";
 import type { Rect } from "./geometry.ts";
 import type { CustomBox } from "./custom.ts";
@@ -91,7 +92,7 @@ export function startPreview(
   cells: Rect[],
   boxes: () => Rect[],
   customs: () => CustomBox[],
-  still: () => HTMLImageElement | null,
+  still: () => string | null,
 ): () => void {
   canvas.width = OUTPUT.w;
   canvas.height = OUTPUT.h;
@@ -204,8 +205,10 @@ export function startPreview(
         band.fillRect(0, 0, OUTPUT.w, OUTPUT.h);
 
         ctx.drawImage(band.canvas, 0, 0);
-        // Already 1080x1920 and transparent everywhere but the glyphs.
-        ctx.drawImage(art, 0, 0);
+        // The same function `renderTitleArt` encodes for the export, drawn
+        // straight onto the composite — so a keystroke in the title field
+        // reaches this frame with nothing to re-encode or re-decode.
+        drawTitle(ctx, art);
 
         // What `thumbnails.set` actually gets. Two strokes because this line
         // has to read over both a bright title and dark video: black under,

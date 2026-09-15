@@ -1281,46 +1281,19 @@ function currentCustoms(): CustomBox[] {
   return getState().customs;
 }
 
-/** The rendered starter title, while the thumbnail preview is on.
+/** The title the thumbnail is painting, or null when it is not showing.
  *
- *  Module-scoped rather than in state for the reason `state.showThumb`'s
- *  comment gives: a decoded PNG is not serialisable. Kept in step with the
- *  title field by `refreshThumb` on blur, which needs no render at all —
- *  the preview loop reads this through `currentStill` every frame. */
-let titleArt: HTMLImageElement | null = null;
-
-/** Non-null only while the thumbnail is showing. Read fresh every preview
- *  frame, like currentBoxes: null is byte-identical to the behaviour before
- *  this existed. */
-function currentStill(): HTMLImageElement | null {
-  return getState().showThumb ? titleArt : null;
-}
-
-/** `renderTitleArt` as a decoded image, ready to draw. */
-async function loadTitleArt(title: string): Promise<HTMLImageElement> {
-  const png = await renderTitleArt(title);
-  const img = new Image();
-  img.src = `data:image/png;base64,${png}`;
-  // decode() rather than an onload race: drawing an undecoded image is a
-  // silent no-op on some browsers, which would read as a title that vanished.
-  await img.decode();
-  return img;
-}
-
-/** Repaints the title into the showing thumbnail after an edit. No setState:
- *  the preview loop re-reads `titleArt` every frame, so this reaches the
- *  canvas without rebuilding the bar and taking the caret with it. */
-async function refreshThumb(): Promise<void> {
-  const title = getState().starterTitle.trim();
-  if (!getState().showThumb) return;
-  if (title === "") {
-    // A blank title cannot be exported either, so the honest preview of it is
-    // no screen at all rather than a blank one.
-    setState({ showThumb: false });
-    titleArt = null;
-    return;
-  }
-  titleArt = await loadTitleArt(title);
+ *  The live title STRING, not a rendered image: `drawTitle` runs on the
+ *  preview canvas every frame, so a `setQuiet` keystroke in the title field
+ *  reaches the thumbnail with no render, no re-encode and no refresh wiring
+ *  at all. Read fresh every frame, like currentBoxes — null is byte-identical
+ *  to the behaviour before this existed.
+ *
+ *  A title edited down to blank falls out here too, which is the honest
+ *  preview of it: a blank title cannot be exported either. */
+function currentStill(): string | null {
+  const s = getState();
+  return s.showThumb ? s.starterTitle.trim() || null : null;
 }
 
 /** Toggles the framing canvas between the live composite and the export's
@@ -1329,25 +1302,14 @@ async function refreshThumb(): Promise<void> {
  *  Seeking to the in-point is the load-bearing half. The export's thumbnail is
  *  `prependStarter`'s first frame of body.mp4, which is the composite at the
  *  in-point — so previewing the screen over whatever frame the playhead
- *  happened to be sitting on would show a picture YouTube never renders.
- *
- *  No `guard`: rendering the title is a canvas draw and a decode, so a global
- *  busy would disable Export and the transport for no measurable time. */
-async function toggleThumb(): Promise<void> {
+ *  happened to be sitting on would show a picture YouTube never renders. */
+function toggleThumb(): void {
   const s = getState();
   if (s.showThumb) {
     setState({ showThumb: false });
-    titleArt = null;
     return;
   }
-  const title = s.starterTitle.trim();
-  if (title === "") return;
-  try {
-    titleArt = await loadTitleArt(title);
-  } catch (err) {
-    setState({ error: err instanceof Error ? err.message : String(err) });
-    return;
-  }
+  if (s.starterTitle.trim() === "") return;
   if (videoEl) {
     videoEl.pause();
     // `clipStart` is in the fetched window's timeline and the element's is
@@ -2000,7 +1962,7 @@ function renderFraming(): Node[] {
     ariaPressed: String(s.showThumb),
     disabled: Boolean(s.busy) || s.starterTitle.trim() === "",
   });
-  thumb.onclick = () => void toggleThumb();
+  thumb.onclick = () => toggleThumb();
 
   title.oninput = () => {
     setQuiet({ starterTitle: title.value });
@@ -2013,15 +1975,10 @@ function renderFraming(): Node[] {
     thumb.disabled = title.value.trim() === "";
   };
   // On blur rather than per keystroke: the value is settled by then, and
-  // save() notifies nothing, so the caret is safe either way. Re-rendering
-  // the title art rides along for the same reason — a showing thumbnail must
-  // not keep displaying the title the user has just edited away, and
-  // refreshThumb reaches the canvas without a render, so the caret is safe
-  // here too.
-  title.onblur = () => {
-    save();
-    void refreshThumb();
-  };
+  // save() notifies nothing, so the caret is safe either way. The thumbnail
+  // needs nothing here — it reads the live string through `currentStill`
+  // every frame, so the quiet update above has already reached it.
+  title.onblur = () => save();
 
   // Three rows, split by what each one is for: pick the shape and read the
   // facts about the clip, drive the clip, then name it and ship it. One row
@@ -3006,14 +2963,10 @@ function render(): void {
   }
   if (canvasEl) canvasEl.hidden = s.phase !== "framing";
   // The thumbnail is a way of LOOKING at the framing canvas, not a property
-  // of the clip, so it does not survive leaving the phase — and the decoded
-  // title goes with it rather than being held for a return that may never
-  // come. setQuiet because this runs inside render(); the bar is rebuilt
-  // below in this same pass and reads the flag fresh.
-  if (s.phase !== "framing" && s.showThumb) {
-    setQuiet({ showThumb: false });
-    titleArt = null;
-  }
+  // of the clip, so it does not survive leaving the phase. setQuiet because
+  // this runs inside render(); the bar is rebuilt below in this same pass and
+  // reads the flag fresh.
+  if (s.phase !== "framing" && s.showThumb) setQuiet({ showThumb: false });
   if (outVideoEl) {
     outVideoEl.hidden = s.phase !== "preview";
     if (s.phase !== "preview") outVideoEl.pause();

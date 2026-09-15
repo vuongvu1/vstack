@@ -124,7 +124,8 @@ src/custom.ts      CustomBox, MAX_CUSTOM/MIN_OUT_SIDE, outRatio, clampOut/
                    moveOut/resizeOut, resnapCrop, isValidOut/isValidCustom,
                    defaultCustom
 src/frame.ts       GUTTER/CORNER_RADIUS, windowOf/windowsOf, ringOf, maskRgba
-src/starter.ts     TITLE_FONT, renderTitleArt (title → transparent PNG)
+src/starter.ts     TITLE_FONT, drawTitle (title → a canvas), renderTitleArt
+                   (that same draw, encoded as a transparent PNG)
 src/thumb.ts       THUMB, renderThumb (any picture → 1280x720 JPEG, stretched)
 src/state.ts       AppState, setState/setQuiet, save/restore
 src/api.ts         12 fetch wrappers
@@ -506,11 +507,25 @@ trade `stackWide` makes by blurring at 480x270.
 `server/starter.ts`'s `SCREEN_FILTER` rather than shared — they sit on
 opposite sides of the client/server line, and the client cannot import a
 server module. Approximate in exactly one thing, the blur's rounding.
-Everything that *decides* anything is exact: the title is the same
-`renderTitleArt` PNG the export overlays, and the crop is arithmetic. The
-exact fix is a `/api/still` route running the real pipeline; worth it the day
-the blur misleads someone about the screen rather than about the title.
-Marked `ponytail:` at the constants.
+Everything that *decides* anything is exact: `drawTitle` is the same function
+`renderTitleArt` encodes for the export, and the crop is arithmetic. The exact
+fix is a `/api/still` route running the real pipeline; worth it the day the
+blur misleads someone about the screen rather than about the title. Marked
+`ponytail:` at the constants.
+
+**The preview shares the title's DRAW, not its bytes, and that is what makes
+it live.** `drawTitle` was split out of `renderTitleArt` so the rAF loop can
+paint the title straight onto the composite from the current string —
+`currentStill` returns `starterTitle` itself, so a `setQuiet` keystroke
+reaches the canvas with no render, no PNG re-encode, no image re-decode and
+no refresh wiring. Going through the PNG instead means an async round trip
+per keystroke, which needs a race guard (out-of-order completions show a
+stale title) and a trigger to hang it on; the first version hung it on blur
+and simply looked broken while typing. Measured at 8.3ms a frame either way
+on a 120Hz display — laying the title out every frame costs nothing worth
+caching, so there is no memo. A title edited down to blank falls back to the
+live composite rather than showing an empty screen, and typing brings it
+back: `showThumb` stays on throughout.
 
 **A segment is identified by which part contains an instant, never by exact
 `start` equality.** `normalize` merges overlapping parts, and a merged part

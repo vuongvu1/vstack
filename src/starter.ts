@@ -37,20 +37,18 @@ function wrapLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number
   return lines;
 }
 
-/** Renders the title as a transparent 1080x1920 PNG and returns it as bare
- *  base64 (no data: prefix).
+/** Lays the title out and paints it into `ctx`, which must be an OUTPUT-sized
+ *  canvas. Leaves no drawing state behind.
  *
- *  Client-side because this machine's ffmpeg has no `drawtext` — no
- *  libfreetype in the build — so the server cannot rasterise a glyph at all.
- *  The server treats this exactly like the frame mask: an RGBA image it
- *  overlays, never something it computes. */
-export async function renderTitleArt(title: string): Promise<string> {
-  const canvas = document.createElement("canvas");
-  canvas.width = OUTPUT.w;
-  canvas.height = OUTPUT.h;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("2d context unavailable");
-
+ *  Separate from `renderTitleArt` so that the framing phase's thumbnail can
+ *  paint the title straight onto the composite canvas rather than going
+ *  through a PNG. Sharing the *draw* rather than the bytes is what makes the
+ *  preview track the title field per keystroke: there is nothing to re-encode
+ *  and nothing to re-decode, so the rAF loop simply reads the current string.
+ *  It is also tighter than sharing the image was — the previewed title and
+ *  the exported one are now the same code path, not the same output. */
+export function drawTitle(ctx: CanvasRenderingContext2D, title: string): void {
+  ctx.save();
   const maxWidth = OUTPUT.w - 2 * MARGIN;
   let size = MIN_SIZE;
   let lines: string[] = [];
@@ -90,6 +88,23 @@ export async function renderTitleArt(title: string): Promise<string> {
   lines.forEach((line, i) => {
     ctx.fillText(line, OUTPUT.w / 2, top + i * step);
   });
+  ctx.restore();
+}
+
+/** Renders the title as a transparent 1080x1920 PNG and returns it as bare
+ *  base64 (no data: prefix).
+ *
+ *  Client-side because this machine's ffmpeg has no `drawtext` — no
+ *  libfreetype in the build — so the server cannot rasterise a glyph at all.
+ *  The server treats this exactly like the frame mask: an RGBA image it
+ *  overlays, never something it computes. */
+export async function renderTitleArt(title: string): Promise<string> {
+  const canvas = document.createElement("canvas");
+  canvas.width = OUTPUT.w;
+  canvas.height = OUTPUT.h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("2d context unavailable");
+  drawTitle(ctx, title);
 
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
   if (!blob) throw new Error("Could not render the title image.");

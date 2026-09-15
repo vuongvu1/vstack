@@ -113,9 +113,9 @@ export type AppState = {
    *  looking at this clip, not a property of it, and a session that reloads
    *  wants the live preview back.
    *
-   *  The rendered title image itself lives in `main.ts`, not here: it is a
-   *  decoded PNG, which is neither serialisable nor something `save()` could
-   *  do anything with. */
+   *  The only flag it needs: the title it paints is `starterTitle` itself,
+   *  read live by the preview loop, so there is no second copy of anything to
+   *  keep in step with the field. */
   showThumb: boolean;
   /** A stitch's segment digest, `""` for an ordinary clip. `/api/export`
    *  needs it to rebuild the cache path. Not persisted — it belongs to a
