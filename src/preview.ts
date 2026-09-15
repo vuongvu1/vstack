@@ -1,7 +1,57 @@
 import { CORNER_RADIUS, GUTTER, ringOf, windowOf } from "./frame.ts";
 import { OUTPUT } from "./geometry.ts";
+import { THUMB } from "./thumb.ts";
 import type { Rect } from "./geometry.ts";
 import type { CustomBox } from "./custom.ts";
+
+/** The starter screen's look, mirrored from `server/starter.ts`'s
+ *  SCREEN_FILTER so the framing phase can show the thumbnail without paying
+ *  for an export.
+ *
+ *  Approximate in exactly one thing — the blur. CSS `blur(Npx)` is a Gaussian
+ *  with standard deviation N, the same as `gblur=sigma=N`, but the two
+ *  implementations round differently and this one runs on the composite
+ *  canvas rather than on the decoded frame. Everything that DECIDES anything
+ *  is exact: the title is the same PNG the export overlays, and the crop
+ *  guide is arithmetic.
+ *
+ *  ponytail: four constants copied across the client/server line. They only
+ *  move together when the screen is retuned. The exact fix is a `/api/still`
+ *  route running the real pipeline; worth it the day the blur misleads
+ *  someone about the screen rather than about the title. */
+const BLUR_SIGMA = 30;
+const SCRIM = 0.65;
+const BAND_H = 820;
+const BAND_FEATHER = 60;
+
+/** How far past each edge the composite is stretched before it is blurred.
+ *
+ *  Load-bearing, not polish: a canvas blur of an edge-to-edge image bleeds
+ *  ALPHA inward at the frame's borders, so the band's left and right ends
+ *  would come back semi-transparent and the sharp composite would show
+ *  through them — a defect ffmpeg's `gblur` does not have, since it clamps.
+ *  Drawing the source 3 sigma oversized puts real pixels under every sample.
+ *  The ~17% scale-up is invisible in a picture whose whole purpose is to be
+ *  out of focus, the same trade `stackWide` makes by blurring at 480x270. */
+const EDGE = BLUR_SIGMA * 3;
+
+/** The 16:9 crop `firstFrame("wide")` takes, in output pixels. It scales to
+ *  COVER 1280x720 and trims the overflow, so the full width survives and the
+ *  height is whatever 16:9 makes of it, centred — which is why a title of
+ *  four or more lines loses its outer lines from the thumbnail but never
+ *  from the video. Showing that line is the whole point of the preview. */
+const CROP_H = Math.round((OUTPUT.w * THUMB.h) / THUMB.w);
+
+/** A full-frame scratch canvas. Two of these are ~16 MB of backing store, so
+ *  they are built on the first thumbnail frame rather than with the loop. */
+function offscreen(): CanvasRenderingContext2D {
+  const canvas = document.createElement("canvas");
+  canvas.width = OUTPUT.w;
+  canvas.height = OUTPUT.h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("2d context unavailable");
+  return ctx;
+}
 
 /** Narrows the current clip to everything OUTSIDE one piece's rounded
  *  window. `clip()` intersects, so applying this once per piece leaves the
@@ -41,6 +91,7 @@ export function startPreview(
   cells: Rect[],
   boxes: () => Rect[],
   customs: () => CustomBox[],
+  still: () => HTMLImageElement | null,
 ): () => void {
   canvas.width = OUTPUT.w;
   canvas.height = OUTPUT.h;
@@ -50,6 +101,12 @@ export function startPreview(
   // Derived from the cells rather than passed in, so these are necessarily
   // the same windows the export's mask was rendered from.
   const windows = cells.map(windowOf);
+
+  // Built on the first thumbnail frame, then kept. A session that never opens
+  // the thumbnail allocates neither.
+  let soft: CanvasRenderingContext2D | null = null;
+  let band: CanvasRenderingContext2D | null = null;
+  let mask: CanvasGradient | null = null;
 
   let raf = 0;
   const frame = () => {
@@ -110,6 +167,60 @@ export function startPreview(
         ctx.fill();
         ctx.restore();
       });
+
+      // The starter screen, painted over the finished composite in the same
+      // order the export builds it: treated background, then the title. This
+      // frame IS the export's thumbnail — `prependStarter` lifts body.mp4's
+      // first frame and `firstFrame` crops this picture — so the caller seeks
+      // the video to `clipStart` before switching this on.
+      const art = still();
+      if (art) {
+        if (!soft || !band || !mask) {
+          soft = offscreen();
+          band = offscreen();
+          // Each draw replaces what is under it: the blur leaves
+          // semi-transparent pixels and a plain source-over blit would
+          // composite this frame on top of the last one.
+          soft.globalCompositeOperation = "copy";
+          soft.filter = `blur(${BLUR_SIGMA}px) brightness(${SCRIM})`;
+          // The feathered band's alpha, and the canvas spelling of
+          // SCREEN_FILTER's `clip(min(Y-(H-BAND_H)/2, (H+BAND_H)/2-Y)/
+          // BAND_FEATHER, 0, 1)` — ramping 0 to 1 across BAND_FEATHER pixels
+          // at each edge of a band centred on the frame, which is where
+          // `renderTitleArt` centres the title block.
+          const top = (OUTPUT.h - BAND_H) / 2;
+          mask = band.createLinearGradient(0, top, 0, top + BAND_H);
+          const ramp = BAND_FEATHER / BAND_H;
+          mask.addColorStop(0, "rgba(0,0,0,0)");
+          mask.addColorStop(ramp, "rgba(0,0,0,1)");
+          mask.addColorStop(1 - ramp, "rgba(0,0,0,1)");
+          mask.addColorStop(1, "rgba(0,0,0,0)");
+        }
+        soft.drawImage(canvas, -EDGE, -EDGE, OUTPUT.w + 2 * EDGE, OUTPUT.h + 2 * EDGE);
+        band.globalCompositeOperation = "copy";
+        band.drawImage(soft.canvas, 0, 0);
+        band.globalCompositeOperation = "destination-in";
+        band.fillStyle = mask;
+        band.fillRect(0, 0, OUTPUT.w, OUTPUT.h);
+
+        ctx.drawImage(band.canvas, 0, 0);
+        // Already 1080x1920 and transparent everywhere but the glyphs.
+        ctx.drawImage(art, 0, 0);
+
+        // What `thumbnails.set` actually gets. Two strokes because this line
+        // has to read over both a bright title and dark video: black under,
+        // white dashed over.
+        const y = (OUTPUT.h - CROP_H) / 2;
+        ctx.save();
+        ctx.lineWidth = 10;
+        ctx.strokeStyle = "rgba(0,0,0,0.7)";
+        ctx.strokeRect(0, y, OUTPUT.w, CROP_H);
+        ctx.lineWidth = 6;
+        ctx.strokeStyle = "#fff";
+        ctx.setLineDash([36, 28]);
+        ctx.strokeRect(0, y, OUTPUT.w, CROP_H);
+        ctx.restore();
+      }
     }
     raf = requestAnimationFrame(frame);
   };

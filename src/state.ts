@@ -107,6 +107,16 @@ export type AppState = {
    *  holes applied at export, on a file that is already one continuous
    *  thing however it was assembled. */
   cuts: Segment[];
+  /** Whether the framing canvas is painting the export's thumbnail — the
+   *  starter screen with the 16:9 crop YouTube takes marked on it — instead
+   *  of the live composite. Framing-only, and not persisted: it is a way of
+   *  looking at this clip, not a property of it, and a session that reloads
+   *  wants the live preview back.
+   *
+   *  The rendered title image itself lives in `main.ts`, not here: it is a
+   *  decoded PNG, which is neither serialisable nor something `save()` could
+   *  do anything with. */
+  showThumb: boolean;
   /** A stitch's segment digest, `""` for an ordinary clip. `/api/export`
    *  needs it to rebuild the cache path. Not persisted — it belongs to a
    *  fetched window, like `clipUrl`. */
@@ -169,6 +179,7 @@ const initial: AppState = {
   clipStart: 0,
   clipEnd: 0,
   cuts: [],
+  showThumb: false,
   clipDigest: "",
   clipUrl: "",
   windowStart: 0,

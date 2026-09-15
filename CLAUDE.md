@@ -132,7 +132,7 @@ src/format.ts      mmss / clock / slugify (shared client + server)
 src/player.ts      YT IFrame API wrapper + trim strip
 src/editor.ts      box drag/resize overlay (crops over the <video>, pieces'
                    `out` rects over the <canvas>); returns { place, stop }
-src/preview.ts     canvas composite rAF loop
+src/preview.ts     canvas composite rAF loop, plus the thumbnail overpaint
 src/main.ts        persistent shell, phase machine, all six phases
 media/             clip cache (gitignored)
 media/uploads/     long-form parts, one <uuid>.mp4 per upload (gitignored)
@@ -479,6 +479,38 @@ as well, instead of the clip-timeline `start`/`end` it already sends, would
 leave the framing `<video>` playing footage the export drops — the exact
 preview/export divergence this codebase treats as the cardinal failure,
 reintroduced at the one layer this design exists to keep it out of.
+
+**The thumbnail preview seeks to the in-point, and `clipStart` is not the
+number to seek to.** `🖼 Thumbnail` in the framing bar repaints the composite
+canvas as the starter screen with the 16:9 rectangle `firstFrame("wide")`
+takes drawn on it — which is the export's own first frame, and therefore the
+only frame `thumbnails.set` can ever be given. Painting it over whatever the
+playhead was sitting on previews a picture YouTube never renders, silently.
+`clipStart` is in the *fetched window's* timeline and the `<video>` element's
+is the file's own, so the seek is `clipStart - windowStart` — the same
+conversion `playCutOnly` makes. They differ by `PAD` on an ordinary window,
+which is seconds of footage the thumbnail does not come from. Caught in a
+browser, not by a test: on a reopened cached clip the two are equal and the
+wrong version looks perfect.
+
+**The preview's blur draws the composite 3 sigma oversized, and that is a
+correctness fix rather than a flourish.** A canvas `filter: blur()` over an
+edge-to-edge image bleeds ALPHA inward at the frame's borders, so the band's
+left and right ends come back semi-transparent and the sharp composite shows
+through them — a defect `gblur` does not have, since ffmpeg clamps. `EDGE`
+in `src/preview.ts` puts real pixels under every sample. The ~17% scale-up
+is invisible in a picture whose whole purpose is to be out of focus, the same
+trade `stackWide` makes by blurring at 480x270.
+
+`BLUR_SIGMA`/`SCRIM`/`BAND_H`/`BAND_FEATHER` are copied from
+`server/starter.ts`'s `SCREEN_FILTER` rather than shared — they sit on
+opposite sides of the client/server line, and the client cannot import a
+server module. Approximate in exactly one thing, the blur's rounding.
+Everything that *decides* anything is exact: the title is the same
+`renderTitleArt` PNG the export overlays, and the crop is arithmetic. The
+exact fix is a `/api/still` route running the real pipeline; worth it the day
+the blur misleads someone about the screen rather than about the title.
+Marked `ponytail:` at the constants.
 
 **A segment is identified by which part contains an instant, never by exact
 `start` equality.** `normalize` merges overlapping parts, and a merged part
@@ -993,7 +1025,10 @@ tail slot the voice leaves free, and the clip's own sound after the cut (the
 assertion that caught `hasAudio` reading the wrong ffprobe line). Each window
 is one where only that layer can be heard, so all four are load-bearing. `src/starter.ts` is DOM-driven and untested like the rest — it was
 verified by hand in a real browser and through a real export.
-`state.test.ts` covers the save-gating that guards against erasing framed boxes, and the `{start, end}` → `segments` migration: a stored old-shape record restores as one segment (tested on `!== undefined`, not truthiness, so a mark stored as `0` still migrates), and a stored `segments` array survives a round trip untouched. `ytdlp.test.ts` covers `videoIdFrom`, the trust boundary that decides whether a subprocess spawns, and the widened `CLIP_RE`: the digest form parses, a `.part.mp4` still does not, and a digest of the wrong length or alphabet (including uppercase) does not either.
+`state.test.ts` covers the save-gating that guards against erasing framed
+boxes, the `showThumb` exclusion from the persisted record (a way of *looking*
+at the canvas, not a property of the video — and its title image is a decoded
+PNG that could not be stored anyway), and the `{start, end}` → `segments` migration: a stored old-shape record restores as one segment (tested on `!== undefined`, not truthiness, so a mark stored as `0` still migrates), and a stored `segments` array survives a round trip untouched. `ytdlp.test.ts` covers `videoIdFrom`, the trust boundary that decides whether a subprocess spawns, and the widened `CLIP_RE`: the digest form parses, a `.part.mp4` still does not, and a digest of the wrong length or alphabet (including uppercase) does not either.
 `src/defaults.test.ts` covers `defaultTitle` — that the tags survive a
 200-character starter title, that no input can exceed 100, and that the
 description template still carries a shorts tag so `buildSnippet`'s append
@@ -1041,7 +1076,9 @@ strips end to end — a two-part stack a whole tail clear of both failure
 modes, and a head strip asserting the output opens on the BODY's colour
 rather than on the navy starter. `beforeAll` carries an explicit 180s
 timeout: seven real encodes pass in isolation and exceed vitest's default
-10s hook budget in the full suite, where the files compete for CPU. It also shells out to
+10s hook budget in the full suite, where the files compete for CPU.
+`server/starter.test.ts`'s hook carries one for the same reason — real
+encodes plus the ~4.6s VieNeu model load, ~17s in isolation. It also shells out to
 real ffmpeg and asserts output pixels, the same posture
 `server/ffmpeg.test.ts` holds: the output is
 1920x1080, a centre sample in each half carries that part's own colour, and

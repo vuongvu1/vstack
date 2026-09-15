@@ -1169,7 +1169,7 @@ function ensureFraming(): void {
     save();
   }
 
-  stopPreview = startPreview(canvasEl, videoEl, cells, currentBoxes, currentCustoms);
+  stopPreview = startPreview(canvasEl, videoEl, cells, currentBoxes, currentCustoms, currentStill);
 
   const cellCount = cells.length;
   sourceEditor?.stop();
@@ -1279,6 +1279,84 @@ function currentBoxes(): Rect[] {
  *  mismatches mid-switch. */
 function currentCustoms(): CustomBox[] {
   return getState().customs;
+}
+
+/** The rendered starter title, while the thumbnail preview is on.
+ *
+ *  Module-scoped rather than in state for the reason `state.showThumb`'s
+ *  comment gives: a decoded PNG is not serialisable. Kept in step with the
+ *  title field by `refreshThumb` on blur, which needs no render at all —
+ *  the preview loop reads this through `currentStill` every frame. */
+let titleArt: HTMLImageElement | null = null;
+
+/** Non-null only while the thumbnail is showing. Read fresh every preview
+ *  frame, like currentBoxes: null is byte-identical to the behaviour before
+ *  this existed. */
+function currentStill(): HTMLImageElement | null {
+  return getState().showThumb ? titleArt : null;
+}
+
+/** `renderTitleArt` as a decoded image, ready to draw. */
+async function loadTitleArt(title: string): Promise<HTMLImageElement> {
+  const png = await renderTitleArt(title);
+  const img = new Image();
+  img.src = `data:image/png;base64,${png}`;
+  // decode() rather than an onload race: drawing an undecoded image is a
+  // silent no-op on some browsers, which would read as a title that vanished.
+  await img.decode();
+  return img;
+}
+
+/** Repaints the title into the showing thumbnail after an edit. No setState:
+ *  the preview loop re-reads `titleArt` every frame, so this reaches the
+ *  canvas without rebuilding the bar and taking the caret with it. */
+async function refreshThumb(): Promise<void> {
+  const title = getState().starterTitle.trim();
+  if (!getState().showThumb) return;
+  if (title === "") {
+    // A blank title cannot be exported either, so the honest preview of it is
+    // no screen at all rather than a blank one.
+    setState({ showThumb: false });
+    titleArt = null;
+    return;
+  }
+  titleArt = await loadTitleArt(title);
+}
+
+/** Toggles the framing canvas between the live composite and the export's
+ *  thumbnail.
+ *
+ *  Seeking to the in-point is the load-bearing half. The export's thumbnail is
+ *  `prependStarter`'s first frame of body.mp4, which is the composite at the
+ *  in-point — so previewing the screen over whatever frame the playhead
+ *  happened to be sitting on would show a picture YouTube never renders.
+ *
+ *  No `guard`: rendering the title is a canvas draw and a decode, so a global
+ *  busy would disable Export and the transport for no measurable time. */
+async function toggleThumb(): Promise<void> {
+  const s = getState();
+  if (s.showThumb) {
+    setState({ showThumb: false });
+    titleArt = null;
+    return;
+  }
+  const title = s.starterTitle.trim();
+  if (title === "") return;
+  try {
+    titleArt = await loadTitleArt(title);
+  } catch (err) {
+    setState({ error: err instanceof Error ? err.message : String(err) });
+    return;
+  }
+  if (videoEl) {
+    videoEl.pause();
+    // `clipStart` is in the fetched window's timeline and the element's is
+    // the file's own, so the in-point is `clipStart - windowStart` — the same
+    // conversion `playCutOnly` makes above. They differ by PAD on an ordinary
+    // window, which is seconds of footage the thumbnail does not come from.
+    videoEl.currentTime = s.clipStart - s.windowStart;
+  }
+  setState({ showThumb: true });
 }
 
 /** Renders the clip and moves to the preview phase. The file lands in `out/`
@@ -1911,16 +1989,39 @@ function renderFraming(): Node[] {
   // stay disabled until some unrelated setState happened along, which reads
   // as "Export is broken" rather than "type a title first".
   const tryVoice = renderTryVoice(s, title, voiceTitle);
+
+  // The export's own first frame, without paying for an export: the starter
+  // screen over the in-point, with the 16:9 rectangle `thumbnails.set` takes
+  // drawn on it. A four-line title is the thing to look for — it loses its
+  // outer lines from the thumbnail while the video keeps them.
+  const thumb = el("button", {
+    textContent: s.showThumb ? "↩ Live" : "🖼 Thumbnail",
+    title: "Show the starter screen and the 16:9 crop YouTube takes from it",
+    ariaPressed: String(s.showThumb),
+    disabled: Boolean(s.busy) || s.starterTitle.trim() === "",
+  });
+  thumb.onclick = () => void toggleThumb();
+
   title.oninput = () => {
     setQuiet({ starterTitle: title.value });
     download.disabled = !exportable(title.value);
     // Same in-place flip, same reason — Try reads the title aloud too, so a
     // blank one leaves it with nothing to say.
     tryVoice.disabled = title.value.trim() === "";
+    // And again — the thumbnail paints this title, so a blank one has no
+    // screen to show.
+    thumb.disabled = title.value.trim() === "";
   };
   // On blur rather than per keystroke: the value is settled by then, and
-  // save() notifies nothing, so the caret is safe either way.
-  title.onblur = () => save();
+  // save() notifies nothing, so the caret is safe either way. Re-rendering
+  // the title art rides along for the same reason — a showing thumbnail must
+  // not keep displaying the title the user has just edited away, and
+  // refreshThumb reaches the canvas without a render, so the caret is safe
+  // here too.
+  title.onblur = () => {
+    save();
+    void refreshThumb();
+  };
 
   // Three rows, split by what each one is for: pick the shape and read the
   // facts about the clip, drive the clip, then name it and ship it. One row
@@ -1980,6 +2081,7 @@ function renderFraming(): Node[] {
       voiceTitle,
       renderVoicePicker(s),
       tryVoice,
+      thumb,
       // Re-fetch first: it is the odd one out, a utility rather than a step,
       // so it sits furthest from the action that ends the phase.
       el("div", { className: "bar-end" }, refetch, back, download),
@@ -2903,6 +3005,15 @@ function render(): void {
     if (s.phase !== "framing") videoEl.pause();
   }
   if (canvasEl) canvasEl.hidden = s.phase !== "framing";
+  // The thumbnail is a way of LOOKING at the framing canvas, not a property
+  // of the clip, so it does not survive leaving the phase — and the decoded
+  // title goes with it rather than being held for a return that may never
+  // come. setQuiet because this runs inside render(); the bar is rebuilt
+  // below in this same pass and reads the flag fresh.
+  if (s.phase !== "framing" && s.showThumb) {
+    setQuiet({ showThumb: false });
+    titleArt = null;
+  }
   if (outVideoEl) {
     outVideoEl.hidden = s.phase !== "preview";
     if (s.phase !== "preview") outVideoEl.pause();

@@ -562,6 +562,16 @@ describe("segments", () => {
     expect(raw).not.toHaveProperty("clipEnd");
     expect(raw).not.toHaveProperty("clipDigest");
   });
+
+  it("never persists showThumb", () => {
+    // A way of looking at the framing canvas, not a property of the video —
+    // a reload wants the live composite back, not a thumbnail whose title
+    // image was never stored and cannot be.
+    setState({ videoId: "vid00000007", duration: 600, segments: [{ start: 1, end: 2 }],
+      showThumb: true });
+    save();
+    expect(readRaw("vid00000007")).not.toHaveProperty("showThumb");
+  });
 });
 
 describe("save / restore — custom boxes", () => {

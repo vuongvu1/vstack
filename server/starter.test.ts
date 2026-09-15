@@ -93,7 +93,12 @@ beforeAll(async () => {
   voice = join(dir, "voice.aiff");
   voiceSeconds = await speak("Ăn cơm chưa bạn ơi", dir, voice);
   endSeconds = Number((await probeOut(END_PATH)).format.duration);
-});
+  // Explicit timeout, for the reason `server/longform.test.ts`'s hook
+  // carries one: this builds real encodes AND pays the VieNeu model load,
+  // which is ~4.6s on its own. It passes in isolation (~17s) and times out
+  // against vitest's default 10s hook budget in the full suite, where the
+  // files run in parallel and compete for CPU.
+}, 180_000);
 
 afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
