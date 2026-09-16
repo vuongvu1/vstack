@@ -1,0 +1,360 @@
+# vstack — a lofi mix from a track, a picture and some speeches
+
+2026-09-16
+
+Supersedes nothing. It adds a **fourth journey** beside the short one, the
+long one and the chat-moments dead end: `idle → lofi → preview`. A user
+picks one music track, one background image and a handful of speech clips;
+the app finds the quiet stretches in the music, drops the speeches into
+them, and renders one 1920x1080 video the length of the track. It shares
+`preview`, `/out/`, the publish panel and `/api/upload` with the long
+journey and nothing else.
+
+Everything the other specs describe is unchanged by this one.
+
+## What the user asked for
+
+A lofi music video in the shape of
+`youtube.com/watch?v=OYX64gV0ZQg`: a track plays end to end over a still
+picture, and where the music thins out, a spoken clip cuts in — treated so
+it sounds like it belongs to the mix rather than pasted over it.
+
+Three inputs, all the user's own files:
+
+- one **music** track (the bed, and the output's full length),
+- some **speeches** (`.mp4`, used whole — the user trims them elsewhere),
+- one **background image**.
+
+Explicitly **not** asked for: trimming a speech in-app, more than one
+picture, captions, or animating the background.
+
+## Decisions taken before the design
+
+Recorded because each one closed off a branch of the design rather than
+being a detail inside it.
+
+| question | answer |
+|---|---|
+| what is on screen during a speech | the speech's own video, cut in |
+| output shape | 1920x1080, always |
+| how the speech video sits in the frame | letterboxed over a blurred copy of itself — `stackWide`'s recipe |
+| how much of a speech is used | all of it |
+| how positions are chosen | detected, then correctable by dragging |
+| what "lofi effect" means | a 300–3000 Hz band on the voice, and the music ducks under it |
+| what happens at the edge of a cut-in | a dip to black, like the long journey's |
+
+## Mode
+
+A fourth `mode`: `"lofi"`. The mode-claim invariant already in CLAUDE.md
+holds — every exit from `idle` claims one — so this adds one call site (the
+`Lofi →` button) and touches two existing reads:
+
+- `preview`'s `← Back` target, which currently branches `long` →
+  `stacking`, otherwise `framing`; it becomes a three-way.
+- the wide-slot test, `s.phase === "preview" && s.mode === "long"`, which
+  becomes `s.mode !== "short"`. A lofi render is 16:9 for the same reason a
+  stack is, so the slot's shape follows "not the short journey" rather than
+  an enumeration that grows with every journey.
+
+`shorts: false` on publish, for the reason the long journey documents: a
+track-length video carrying `#Shorts` is misfiled at the platform level and
+cannot be undone from Studio.
+
+## Inputs
+
+### Speeches — `/api/upload`, unchanged
+
+Exactly what the long journey's parts already do: raw bytes over loopback, a
+server-minted UUID, `probeFile` as the trust boundary, `isUploadId` on the
+way back in, `UPLOAD_MAX_BYTES` checked client-side with the socket-destroy
+backstop behind it. Nothing in that route changes for a speech.
+
+### Music — `/api/upload?audio=1`
+
+One branch, and it exists because `probeFile` **requires a video stream**
+(`ffprobe found no video stream in …`) and an mp3 has none. The audio case
+calls a small `probeAudio` instead: duration from `format`, plus an
+assertion that some stream has `codec_type === "audio"`. Everything else is
+the same code path.
+
+The file still lands as `<uuid>.mp4`. ffmpeg dispatches on content, not on
+extension, so `uploadPath`, `isUploadId`, `reportCache` and the partial's
+`.part.mp4` naming all need no edits at all.
+
+`ponytail:` the misleading extension. Give `uploadPath` a second argument
+the day someone opens `media/uploads/` by hand and is confused by it.
+
+### Background image — not uploaded at all
+
+The client rasterises the picked file into a 1920x1080 JPEG on a canvas and
+sends the bytes in the render body, where the existing `jpeg()` validator
+checks the signature. This is the third image this client rasterises for a
+server that cannot (after `titlePng` and `renderThumb`), and it is here for
+`renderThumb`'s reasons: `createImageBitmap` decodes every format the
+browser can display, which is wider than a scale filter would have to be
+told about, and the output's dimensions are fixed so nothing server-side has
+to check one.
+
+The same picture, re-rasterised at 1280x720 by `renderThumb`, is the publish
+thumbnail. So the long journey's "a wide video's thumbnail must be picked,
+not derived" decision is satisfied without a second picker.
+
+Unlike the background, the thumbnail is **stretched** rather than cropped —
+that is `renderThumb`'s existing rule and it is not changed here.
+
+## Detection — `src/lofi.ts`
+
+A pure module at the bottom of the client layering beside `geometry.ts` and
+`segments.ts`, importing nothing. That is what lets vitest's `node`
+environment test it, and what would let the server import it later if
+detection ever has to move.
+
+```ts
+export type Speech = { id: string; name: string; seconds: number };
+export type Placement = { id: string; at: number };
+
+export const BUCKETS_PER_SEC = 4;
+export const MIN_GAP = 20;       // seconds between two speeches
+export const SKIP_HEAD = 15;     // no speech in the opening
+export const SKIP_TAIL = 10;     // nor over the ending
+
+export function troughs(
+  env: Float32Array,
+  seconds: number,
+  speeches: Speech[],
+): Placement[] | { error: string };
+```
+
+The envelope is produced by the client, not by this module: `main.ts`
+already decodes audio through an 8 kHz mono `OfflineAudioContext` and
+reduces it with `peaks()` from `src/waveform.ts`. The lofi panel reuses both,
+at four buckets a second.
+
+The algorithm:
+
+1. `baseline = median(env)`, floored away from zero. Global, not rolling —
+   a music track is stationary in a way an eleven-hour chat log is not, which
+   is the one place this deliberately does **not** copy `server/chat.ts`'s
+   scorer. `ponytail:` a rolling median if a track with a loud half comes to
+   misplace everything.
+2. Each speech needs `L = seconds + 2 * FADE` of room — the dip out of the
+   picture and back into it are part of its slot, not extra.
+3. Slide an `L`-wide window over the bins; a window's score is its mean
+   divided by `baseline`. Lower is quieter.
+4. Place the **longest speech first**. A long speech has strictly fewer
+   legal windows than a short one, so placing the short ones first can take
+   the only slot the long one had. Take the lowest-scoring window that
+   starts after `SKIP_HEAD`, ends before `seconds - SKIP_TAIL`, and clears
+   `MIN_GAP` from every slot already taken.
+5. Sort the result by time and return it. `at` is the window's start plus
+   `FADE` — the instant the speech's own picture is fully up.
+
+If a speech has no legal window, the whole call fails with a message that
+names it: *"Speech 3 (47s) has no quiet stretch that long."* It does **not**
+fall back to the least-bad position. A silently misplaced speech is
+indistinguishable from a working render until someone watches the output,
+which is the failure class this codebase treats as cardinal.
+
+The returned positions are drawn as markers on the waveform strip and can be
+dragged. A drag rewrites that one `at`, clamped to the track and to its
+neighbours' `MIN_GAP`; detection does not re-run on a drag, only when the
+speech set changes.
+
+## The `lofi` phase
+
+### The panel
+
+`lofiPanel`, a third child of `sourceSlot` beside `publishForm` and
+`stackPanel`, toggled with `hidden` under the same rule: `sourceSlot` itself
+is never hidden, because that would put the YouTube iframe's ancestor into
+`display: none`.
+
+Three pickers:
+
+- **Music** — one file. Once uploaded, the panel shows its name and
+  duration, and the bar's strip gains its waveform.
+- **Background** — one image, shown as a chip at the size it will be
+  cropped to.
+- **Speeches** — many `.mp4`s, a list with a remove button each. **No
+  reorder controls**, unlike the stacking panel: time places these, not list
+  order, so a row's position in the list means nothing.
+
+### The bar
+
+The waveform strip with a draggable marker per speech, a title field, and
+`Render` as the one `.btn-solid`. `Render` is disabled until there is a
+title, music, an image, at least one speech, and a placement for every
+speech — flipped in place from the title field's `oninput`, the same way
+Export's and Publish's already are, because the field writes through
+`setQuiet` and reaches no render.
+
+### State
+
+`music`, `image`, `speeches[]` and `placements[]` join `AppState` beside
+`parts`, and like `parts` and `thumb` they are **not persisted**. A reload
+re-picks. The image in particular is a megabyte-scale data URL that has no
+business in localStorage, and the ids alone would restore a panel whose
+pickers disagree with it.
+
+## Render — `server/lofi.ts`
+
+A sibling of `ffmpeg.ts`, `longform.ts` and `starter.ts`, not a layer above
+any of them: it takes input paths and an output path from the caller, needs
+neither `MEDIA_DIR` nor `OUT_DIR`, and imports `probeFile` and nothing else.
+
+It re-derives the transition asset's path with its own `asset()` helper and
+declares its own `FADE` and `TRANSITION_PEAK` rather than importing them
+from `longform.ts`. Siblings do not import siblings here — the same call
+`longform.ts` made when it re-derived `TRANSITION_PATH` instead of reaching
+into `starter.ts` for it, and the same call `starter.ts` and `youtube.ts`
+each made re-deriving `~/.vstack/`.
+
+One ffmpeg pass. Inputs: `0` the image (`-loop 1`), `1` the music, `2 …
+N+1` the speeches in placement order.
+
+### Video
+
+Base: the image scaled to **cover** 1920x1080 (`force_original_aspect_ratio=
+increase` + `crop`), at 30 fps, `setsar=1`.
+
+Then one `fade=t=out` / `fade=t=in` pair chained onto that base per speech,
+at `at - FADE` and at `at + duration`. Chaining works because `fade=out`
+**holds** black after it completes rather than restoring, so N pairs read as
+N dips rather than as one fade the stream never comes back from.
+
+Each speech gets `stackWide`'s exact foreground recipe — `scale=1920:1080:
+force_original_aspect_ratio=decrease:force_divisible_by=2` over a blurred,
+upscaled copy of itself — then `setpts=PTS-STARTPTS+at/TB`, its own
+`fade=in` at 0 and `fade=out` at `duration - FADE`, then
+`overlay=enable='between(t,at,at+duration)':eof_action=pass:repeatlast=0`
+onto the base. `format=yuv420p` closes the chain and `-t <music seconds>`
+closes the output.
+
+`decrease` rather than a fixed height for `stackWide`'s reason: an upload is
+whatever file the user picked, and a part wider than 16:9 scaled to a fixed
+height overflows the frame.
+
+### Why overlay rather than concat
+
+The output's duration is the music's **by construction**. Nothing sums, so
+`outName`'s `mmss` cannot come to disagree with the file it names, and no
+leg's length feeds any later leg's offset. A concat of image legs and speech
+legs would put that arithmetic back — the trap the long journey's
+dip-rather-than-`xfade` decision already exists to avoid, and it would have
+one extra twist here: the final image leg would have to absorb the rounding
+so the picture still ends when the music does.
+
+### Audio
+
+Each speech: `highpass=f=300,lowpass=f=3000` — the AM-radio band, which is
+the whole lofi treatment — then `adelay` to its `at`. Those mix into
+`[speech]` with `normalize=0`.
+
+`[speech]` is `asplit`, and one copy is the sidechain of a
+`sidechaincompress` over the music. The duck is what makes a merely
+*adequate* trough sound deliberate: the detector only has to find a thin
+stretch, not a silent one. It is also why the duck is a compressor rather
+than a `volume` step gated on `between(t,a,b)` — a step has no attack or
+release and clicks at both edges.
+
+The ducked music and `[speech]` mix, and the swell goes on top of that: one
+`adelay` of `at - TRANSITION_PEAK`, clamped at zero, per speech, **on the
+way in only**. Entering a cut-in is a chapter break and wants marking;
+leaving one has the voice ending and the music resuming already, and a
+second swell there is noise.
+
+Both mixes are `normalize=0` and `duration=first`, for the two reasons
+`stackWide` documents: `amix` divides by its input count by default, so a
+render would come out quiet purely for carrying a swell; and `longest` would
+let a swell delayed onto a late speech outrun the programme and push the
+render past the duration `outName` has already committed to.
+
+Two knobs: `DUCK_DB` (-9 dB, the compressor's makeup target under a
+speech) and `TRANSITION_GAIN` (1.0, `longform.ts`'s value). Setting the
+second to zero removes the swell without touching the graph.
+
+`FADE` is 0.5s, the same number `longform.ts` uses and for the same reason —
+a beat the eye reads as a break — but declared here rather than imported, so
+tuning one does not move the other.
+
+## The route — `/api/lofi`
+
+```
+{ title, music: <uploadId>, image: <jpeg bytes>,
+  speeches: [{ id: <uploadId>, at: <seconds> }], prev? }
+```
+
+Validators, in order — the first four already exist:
+
+- `readTitle(raw.title, "title")`
+- `isUploadId` on `music` and on every `speeches[].id`
+- `jpeg(raw.image, "image")` — three bytes, `FF D8 FF`
+- `isOutName` on `prev`
+- this route's own: at most `MAX_SPEECHES` (8) entries; every `at` finite and
+  ≥ 0; **and, against durations the server probes itself rather than any
+  the client sent**, `at + duration <= music duration` for each speech and
+  no two speeches overlapping.
+
+There is no client-supplied path component: a UUID `isUploadId` has reduced
+to 36 characters of hex and dashes, and `uploadPath` builds the path. The
+image is bytes, not a name.
+
+The response is the same three fields `/api/stack` answers with, and the
+same post-render work: `outName(title, 0, total)`, where `total` is the music's probed duration —
+which passes today's
+`OUT_NAME` unchanged, exactly as a long-form name does, so `/out/`,
+`/api/reveal` and `/api/publish` need no edits — the image saved beside it
+as the `<name>.thumb.jpg` sidecar `applyThumbnail` already prefers over a
+render's own first frame, the partial-and-rename dance with the in-flight
+`Set`, and the `prev` sweep after the rename rather than before it.
+
+## Error handling
+
+- No quiet stretch long enough for some speech → detection fails
+  client-side, naming the speech; no request is sent.
+- A file ffmpeg cannot read → the existing `/api/upload` 400, unchanged.
+- An upload over `UPLOAD_MAX_BYTES` → the client's own size check, with the
+  socket-destroy backstop behind it.
+- A speech that no longer fits after a drag → the drag is clamped, so this
+  cannot reach the route; the server check exists because the route is
+  reachable without the client.
+
+## Testing
+
+`src/lofi.test.ts` — pure, and exhaustive on the model the other bottom
+modules are: `troughs` over a synthetic envelope with two known holes,
+longest-speech-first placement (a case where placing the short one first
+would strand the long one), `MIN_GAP`, `SKIP_HEAD` and `SKIP_TAIL` at either
+side of their boundaries, the no-fit refusal, and stability across repeated
+calls.
+
+`server/lofi.test.ts` — real ffmpeg, real pixels, real audio levels, with an
+explicit `beforeAll` timeout for `longform.test.ts`'s reason (several real
+encodes competing for CPU in the full suite):
+
+- the output is 1920x1080 and **exactly the music's duration**,
+- a frame at 0.5s carries the image's colour,
+- a frame mid-speech carries the speech's,
+- a frame on a dip is near black,
+- the music's level during a speech is measurably below its level before
+  it,
+- the speech's energy above 4 kHz is near zero.
+
+Mutation-pinned: dropping the duck, dropping `-t`, dropping the fades, and
+reversing the overlay order each fail exactly one of those.
+
+The route, the panel and the pickers have no tests, like the rest of the
+network and DOM surface.
+
+## Out of scope
+
+- Trimming a speech inside the app.
+- More than one background, or any motion on the one background — no Ken
+  Burns drift, no video background.
+- Captions or any text on screen. This ffmpeg has no `drawtext`, and a
+  per-speech rasterised PNG is a feature of its own.
+- Eviction for `media/uploads/`, which this journey grows the same way the
+  long one does.
+- A crossfade between the picture and a cut-in. Named in the long journey's
+  `ponytail:` comment for the same arithmetic reason, and the reason is
+  stronger here: a crossfade would make the video shorter than the track.
