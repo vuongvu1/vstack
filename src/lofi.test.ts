@@ -118,4 +118,25 @@ describe("troughs", () => {
   it("has no placements to make for no speeches", () => {
     expect(ok(troughs(envOf(60, []), 60, []))).toEqual([]);
   });
+
+  it("returns sorted placements even when processing order diverges from time order", () => {
+    // Processing order is longest-first: [long, short]. Chronological order must
+    // still be [short, long] in the result.
+    const env = new Float32Array(300 * BUCKETS_PER_SEC).fill(0.8);
+    const quiet = (from: number, to: number, level: number) => {
+      for (let b = from * BUCKETS_PER_SEC; b < to * BUCKETS_PER_SEC; b++) env[b] = level;
+    };
+    quiet(20, 32, 0.05);   // 12s hole, room for 6s speech only
+    quiet(150, 180, 0.02); // 30s hole, the only place a 20s speech fits
+    const out = ok(
+      troughs(env, 300, [
+        { id: "short", name: "short.mp4", seconds: 6 },
+        { id: "long", name: "long.mp4", seconds: 20 },
+      ]),
+    );
+    expect(out).toHaveLength(2);
+    // Processing was [long, short] but returned order must be chronological [short, long]
+    expect(out[0]?.id).toBe("short");
+    expect(out[1]?.id).toBe("long");
+  });
 });

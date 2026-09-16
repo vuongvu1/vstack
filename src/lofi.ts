@@ -82,6 +82,11 @@ function windowMean(env: Float32Array, from: number, to: number): number {
  *  take the only window the long one had — and the failure is not an error,
  *  it is a render with a speech missing from it.
  *
+ *  Each window is chosen for being the QUIETEST AVAILABLE given the geometry
+ *  constraints (SKIP_HEAD, SKIP_TAIL, MIN_GAP between speeches, no overlap
+ *  with other placements), not for clearing any quietness threshold. The
+ *  render ducks the music under every speech anyway.
+ *
  *  It does NOT fall back to a least-bad position for a speech that fits
  *  nowhere. A silently misplaced speech is indistinguishable from a working
  *  render until someone watches the output, which is the failure class this
@@ -137,8 +142,8 @@ export function troughs(
     if (bestAt < 0) {
       return {
         error:
-          `${speech.name} (${Math.round(speech.seconds)}s) has no quiet stretch ` +
-          `that long left in the track.`,
+          `${speech.name} (${Math.round(speech.seconds)}s) does not fit anywhere ` +
+          `left in the track.`,
       };
     }
     taken.push({ from: bestAt, to: bestAt + need });
