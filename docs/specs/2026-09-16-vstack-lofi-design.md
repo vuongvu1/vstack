@@ -2,6 +2,20 @@
 
 2026-09-16
 
+> **Amended 2026-09-16**, while the implementation plan was being written and
+> before any code existed. Two decisions below were reversed against what the
+> codebase actually does:
+>
+> - The music upload is **`/api/upload-audio`**, not `/api/upload?audio=1`.
+> `server/index.ts` routes on exact `req.url` equality (the comment on
+> `/api/publish/progress` says so), and a query string does not match
+> `/api/upload`. The two routes share one extracted handler and differ only
+> in which prober they call.
+> - The duck's knobs are **`DUCK_THRESHOLD` and `DUCK_RATIO`**, not a
+> `DUCK_DB`. `sidechaincompress` takes a threshold and a ratio, not a target
+> depth, so a dB knob would have been a number that named nothing in the
+> graph.
+
 Supersedes nothing. It adds a **fourth journey** beside the short one, the
 long one and the chat-moments dead end: `idle → lofi → preview`. A user
 picks one music track, one background image and a handful of speech clips;
@@ -69,9 +83,14 @@ server-minted UUID, `probeFile` as the trust boundary, `isUploadId` on the
 way back in, `UPLOAD_MAX_BYTES` checked client-side with the socket-destroy
 backstop behind it. Nothing in that route changes for a speech.
 
-### Music — `/api/upload?audio=1`
+### Music — `/api/upload-audio`
 
-One branch, and it exists because `probeFile` **requires a video stream**
+A second URL rather than a flag on the first, because this server routes on
+exact `req.url` equality and a query string would miss `/api/upload`
+entirely. Both URLs run the same extracted handler; the only difference is
+which prober validates the bytes.
+
+The audio prober exists because `probeFile` **requires a video stream**
 (`ffprobe found no video stream in …`) and an mp3 has none. The audio case
 calls a small `probeAudio` instead: duration from `format`, plus an
 assertion that some stream has `codec_type === "audio"`. Everything else is
@@ -269,9 +288,10 @@ render would come out quiet purely for carrying a swell; and `longest` would
 let a swell delayed onto a late speech outrun the programme and push the
 render past the duration `outName` has already committed to.
 
-Two knobs: `DUCK_DB` (-9 dB, the compressor's makeup target under a
-speech) and `TRANSITION_GAIN` (1.0, `longform.ts`'s value). Setting the
-second to zero removes the swell without touching the graph.
+Three knobs: `DUCK_THRESHOLD` and `DUCK_RATIO` (the compressor's own two
+parameters — `sidechaincompress` has no target-depth input, so there is no
+dB number to set), and `TRANSITION_GAIN` (1.0, `longform.ts`'s value).
+Setting the last to zero removes the swell without touching the graph.
 
 `FADE` is 0.5s, the same number `longform.ts` uses and for the same reason —
 a beat the eye reads as a break — but declared here rather than imported, so
