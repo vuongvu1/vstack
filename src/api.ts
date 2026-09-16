@@ -86,7 +86,9 @@ async function post(path: string, body: unknown): Promise<Response> {
 
 export type UploadResult = { id: string; duration: number; width: number; height: number };
 
-/** Sends one file's raw bytes to `/api/upload`.
+/** Sends one file's raw bytes to `/api/upload`, or `/api/upload-audio` for a
+ *  music track — the server routes on exact `req.url` equality, so this is
+ *  a flag on the wrapper rather than a query string on the URL.
  *
  *  Not `post`: the body is the file itself, not JSON. `multipart/form-data`
  *  would need a parser on the other end that this dependency-free server
@@ -100,16 +102,19 @@ export type UploadResult = { id: string; duration: number; width: number; height
  *  — "start the backend" for a file that is simply too big. This is what
  *  turns that into a sentence the user can act on. The server's check is
  *  still the actual boundary. */
-export async function upload(file: File): Promise<UploadResult> {
+export async function upload(file: File, audio = false): Promise<UploadResult> {
   if (file.size > UPLOAD_MAX_BYTES) {
     throw new Error(
       `${file.name} is ${(file.size / 1e6).toFixed(0)} MB — the limit is ` +
         `${Math.round(UPLOAD_MAX_BYTES / 1e6)} MB.`,
     );
   }
-  const res = await send("/api/upload", {
+  // The content type is informational — the server reads the bytes, not the
+  // header — but sending `video/mp4` for a music track would be a lie in
+  // the one place a future reader would trust.
+  const res = await send(audio ? "/api/upload-audio" : "/api/upload", {
     method: "POST",
-    headers: { "content-type": "video/mp4" },
+    headers: { "content-type": audio ? "application/octet-stream" : "video/mp4" },
     body: file,
   });
   return res.json() as Promise<UploadResult>;

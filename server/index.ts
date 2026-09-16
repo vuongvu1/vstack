@@ -35,6 +35,7 @@ import {
   isUploadId,
   outName,
   outPath,
+  probeAudio,
   probeFile,
   removeExport,
   reportCache,
@@ -716,7 +717,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // display and the server's handle is the UUID it minted itself, so unlike
   // `isOutName` and `/api/export`'s `digest` there is no client-supplied
   // path component to validate on the way IN at all.
-  if (req.url === "/api/upload") {
+  if (req.url === "/api/upload" || req.url === "/api/upload-audio") {
+    // Two URLs rather than `?audio=1`, because this server routes on exact
+    // `req.url` equality (see the comment on /api/publish/progress) and a
+    // query string matches neither branch. They share every line but the
+    // prober: a music track has no video stream, so `probeFile` — whose
+    // whole job is to report dimensions — is the wrong trust boundary for
+    // one, and `probeAudio` is the right one.
+    const audio = req.url === "/api/upload-audio";
     await mkdir(UPLOADS_DIR, { recursive: true });
     const id = randomUUID();
     const final = uploadPath(id);
@@ -752,10 +760,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         },
       });
       await pipeline(req, cap, createWriteStream(partial));
-      // THE TRUST BOUNDARY. Nothing else inspects these bytes, and nothing
-      // needs to — ffmpeg is their only consumer, so "ffprobe understands
-      // it" is exactly the property that matters.
-      const probed = await probeFile(partial);
+      // THE TRUST BOUNDARY, either way. Nothing else inspects these bytes,
+      // and nothing needs to — ffmpeg is their only consumer, so "ffprobe
+      // understands it" is exactly the property that matters.
+      const probed = audio
+        ? { seconds: (await probeAudio(partial)).seconds, width: 0, height: 0 }
+        : await probeFile(partial);
       await rename(partial, final);
       console.warn(
         `vstack: uploaded ${id} (${Math.round(statSync(final).size / 1e6)} MB)`,
@@ -773,7 +783,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         console.warn(`vstack: refused an upload over ${UPLOAD_MAX_BYTES} bytes`);
         return;
       }
-      throw new HttpError(400, `That file is not video ffmpeg can read: ${
+      throw new HttpError(400, `That file is not ${audio ? "audio" : "video"} ffmpeg can read: ${
         err instanceof Error ? err.message : String(err)
       }`);
     } finally {

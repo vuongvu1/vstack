@@ -261,6 +261,40 @@ export async function probeFile(path: string): Promise<{
   };
 }
 
+/** An audio-only file's duration.
+ *
+ *  A separate function rather than a flag on `probeFile` because the two
+ *  answer different questions and have different failure modes: `probeFile`
+ *  throws when there is no VIDEO stream (`ffprobe found no video stream in
+ *  …`), which is the correct answer for a part and the wrong one for a music
+ *  track. This throws when there is no AUDIO stream, which is the only thing
+ *  that makes a track useless here.
+ *
+ *  Note what it does not return: dimensions, fps, `hasAudio`. An mp3 with
+ *  cover art HAS a video stream (one attached picture), so reporting those
+ *  would hand the caller numbers that describe a thumbnail. */
+export async function probeAudio(path: string): Promise<{ seconds: number }> {
+  let stdout: string;
+  try {
+    ({ stdout } = await run("ffprobe", [
+      "-v", "error",
+      "-show_entries", "stream=codec_type:format=duration",
+      "-of", "json",
+      path,
+    ]));
+  } catch (err) {
+    throw toolError("ffprobe", err);
+  }
+  const parsed = JSON.parse(stdout) as {
+    streams?: { codec_type?: string }[];
+    format?: { duration?: string };
+  };
+  if (!(parsed.streams ?? []).some((s) => s.codec_type === "audio")) {
+    throw new Error(`ffprobe found no audio stream in ${path}`);
+  }
+  return { seconds: Number(parsed.format?.duration ?? 0) };
+}
+
 export type ExportOpts = {
   input: string;
   start: number;

@@ -22,6 +22,7 @@ import {
   isOutName,
   isUploadId,
   outName,
+  probeAudio,
   probeFile,
   removeExport,
   segmentDigest,
@@ -892,5 +893,41 @@ describe("concatClips", () => {
       out,
     );
     expect((await probeFile(out)).seconds).toBeGreaterThan(1.5);
+  });
+});
+
+describe("probeAudio", () => {
+  let tone = "";
+
+  beforeAll(async () => {
+    tone = join(dir, "tone.mp3");
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+      "-y", tone,
+    ]);
+  }, 60_000);
+
+  it("reads an audio-only file's duration", async () => {
+    const { seconds } = await probeAudio(tone);
+    expect(seconds).toBeGreaterThan(2.8);
+    expect(seconds).toBeLessThan(3.3);
+  });
+
+  // The whole reason this function exists: the music upload cannot go
+  // through probeFile, which demands a video stream.
+  it("is needed because probeFile rejects the same file", async () => {
+    await expect(probeFile(tone)).rejects.toThrow(/no video stream/);
+  });
+
+  it("rejects a file with no audio stream", async () => {
+    const silent = join(dir, "silent-probe.mp4");
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i", "color=c=red:s=64x64:d=1:r=30",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p",
+      "-y", silent,
+    ]);
+    await expect(probeAudio(silent)).rejects.toThrow(/no audio stream/);
   });
 });
