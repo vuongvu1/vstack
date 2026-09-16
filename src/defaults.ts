@@ -85,3 +85,12 @@ export const UPLOAD_MAX_BYTES = 512 << 20;
  *  `stackWide` opens every part as a simultaneous ffmpeg input, and the
  *  filter graph grows five legs per part. */
 export const MAX_PARTS = 20;
+
+/** The most speeches one lofi render will take.
+ *
+ *  Shared client and server, like `MAX_PARTS`: the panel refuses the
+ *  eleventh file before it is uploaded, and `/api/lofi` refuses it again
+ *  because the route is reachable without the panel. Eight cut-ins over one
+ *  track is already a lot of interruption; the cap is a sanity bound on the
+ *  filter graph's size, not a judgement about music. */
+export const MAX_SPEECHES = 8;
