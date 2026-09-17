@@ -6,8 +6,9 @@ import type { Rect, Size } from "./geometry.ts";
 import { DEFAULT_LAYOUT_ID, cellsOf, layoutById, ratioOf, resolveLayout } from "./layout.ts";
 import { isValidSegments, keepRanges, totalDuration } from "./segments.ts";
 import type { Segment } from "./segments.ts";
+import type { Placement, Speech } from "./lofi.ts";
 
-export type Phase = "idle" | "trimming" | "framing" | "stacking" | "moments" | "preview";
+export type Phase = "idle" | "trimming" | "framing" | "stacking" | "lofi" | "moments" | "preview";
 
 /** One uploaded long-form part.
  *
@@ -28,13 +29,38 @@ export type AppState = {
    *  session's work rather than a property of a video. Defaulting to
    *  "short" is also what makes every record written before this field
    *  existed restore onto the journey it was made for. */
-  mode: "short" | "long";
+  mode: "short" | "long" | "lofi";
   /** Uploaded long-form parts, in render order. Empty on the short path.
    *
    *  NOT persisted: a reload loses the ordering, which is the accepted cost
    *  of not storing a list of paths the user may have swept from
    *  `media/uploads/` by hand. The files themselves survive. */
   parts: UploadPart[];
+  /** The lofi journey's music track, once uploaded. `null` until then, which
+   *  is what the panel's Render button is gated on along with the rest.
+   *
+   *  NOT persisted, like `parts`: it names an upload the user may have swept
+   *  from `media/uploads/` by hand, and a restored id pointing at a file
+   *  that is gone would look like a working panel until Render. */
+  music: { id: string; name: string; seconds: number } | null;
+  /** The background picture as bare base64 JPEG at 1920x1080 — the render's
+   *  base video. Its 1280x720 twin is the publish thumbnail, rendered from
+   *  the same file at pick time. `""` until picked.
+   *
+   *  NOT persisted, for `thumb`'s reason: once a render lands the server has
+   *  written the picture beside the output, so nothing downstream needs this
+   *  copy. */
+  bg: string;
+  /** The picked picture's local filename, for display only — never sent.
+   *  Same rule `UploadPart.name` and `thumbName` follow. */
+  bgName: string;
+  /** The uploaded speeches. Order is display order only: a speech's position
+   *  in the render is its `at`, not its index here. NOT persisted. */
+  speeches: Speech[];
+  /** Where each speech goes, in the track's own timeline. Written by
+   *  `troughs` when the speech set changes and by a marker drag after that.
+   *  NOT persisted. */
+  placements: Placement[];
   /** The chat-moments lookup's result, and the video it belongs to.
    *
    *  NOT persisted, and `momentsFor` is a field of its own rather than a
@@ -164,6 +190,11 @@ const initial: AppState = {
   busy: "",
   mode: "short",
   parts: [],
+  music: null,
+  bg: "",
+  bgName: "",
+  speeches: [],
+  placements: [],
   moments: [],
   momentsFor: "",
   thumb: "",

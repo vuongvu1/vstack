@@ -145,6 +145,25 @@ export async function stack(body: {
   return (await post("/api/stack", body)).json() as Promise<StackResult>;
 }
 
+/** What `/api/lofi` answers with — the same three fields `/api/stack` and
+ *  `/api/export` return, `url` already carrying the file's mtime. */
+export type LofiResult = { name: string; url: string; size: number };
+
+/** Renders the track, the picture and the placed speeches into one
+ *  1920x1080 file. `music` and every `speeches[].id` are the UUIDs `upload`
+ *  returned; `image` is bare base64 JPEG at 1920x1080. */
+export async function lofi(body: {
+  title: string;
+  music: string;
+  image: string;
+  speeches: { id: string; at: number }[];
+  /** The previous render's name, so a title edit does not strand the file it
+   *  replaces. Omitted on the first render of a session. */
+  prev?: string;
+}): Promise<LofiResult> {
+  return (await post("/api/lofi", body)).json() as Promise<LofiResult>;
+}
+
 export async function probe(url: string): Promise<ProbeResult> {
   return (await post("/api/probe", { url })).json() as Promise<ProbeResult>;
 }

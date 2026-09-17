@@ -809,3 +809,28 @@ describe("the long-form fields", () => {
     expect(localStorage.length).toBe(0);
   });
 });
+
+describe("the lofi journey's state", () => {
+  // Same rule `parts` and `thumb` already follow: these describe a session's
+  // work, not a property of a video, and the picture is a megabyte-scale
+  // data URL that has no business in localStorage. Mutation-tested: putting
+  // any of them into save()'s record fails here.
+  it("is not persisted", () => {
+    setState({
+      phase: "framing",
+      videoId: "abc12345678",
+      music: { id: "11111111-1111-4111-8111-111111111111", name: "track.mp3", seconds: 200 },
+      bg: "/9j/base64",
+      bgName: "bg.png",
+      speeches: [{ id: "22222222-2222-4222-8222-222222222222", name: "a.mp4", seconds: 6 }],
+      placements: [{ id: "22222222-2222-4222-8222-222222222222", at: 40 }],
+    });
+    save();
+    const stored = readRaw("abc12345678") as Record<string, unknown>;
+    expect(stored).not.toHaveProperty("music");
+    expect(stored).not.toHaveProperty("bg");
+    expect(stored).not.toHaveProperty("bgName");
+    expect(stored).not.toHaveProperty("speeches");
+    expect(stored).not.toHaveProperty("placements");
+  });
+});
