@@ -270,8 +270,27 @@ export async function renderLofi(opts: {
     // mix: amix divides by its input count by default, so the whole render
     // would come out quiet purely for carrying a second stream.
     legs.push(`[speech]asplit=2[sc][sm]`);
+    // `sidechaincompress` is a FRAMESYNC filter: its output ends the instant
+    // its SHORTER input ends, not when the longer one does — unlike `amix`,
+    // which has its own `duration=` option and silence-pads a short input up
+    // to the target length. `[sc]` is only as long as the last speech, so
+    // without this pad `[ducked]` died at the last cut-in's own end and the
+    // final `amix ... duration=first` faithfully inherited that truncated
+    // length from its first input: the container and video ran the full
+    // track, but the music itself went silent partway through. `apad`'s
+    // `whole_dur` is the same `seconds` this graph already probed from the
+    // track, so the sidechain now runs exactly as long as `[music]` does and
+    // the compressor has something to follow all the way to the end.
+    //
+    // Only `[sc]` needs this. `[sm]` — the AUDIBLE copy — reaches `[mix]`
+    // through `amix ... duration=first`, which already silence-pads a
+    // shorter second input up to its first input's length on its own; once
+    // `[ducked]` is the full track length, `[sm]`'s own shortness is handled
+    // the ordinary way `amix` was already relied on to handle it everywhere
+    // else in this graph.
+    legs.push(`[sc]apad=whole_dur=${seconds}[scp]`);
     legs.push(
-      `[music][sc]sidechaincompress=threshold=${DUCK_THRESHOLD}:ratio=${DUCK_RATIO}:` +
+      `[music][scp]sidechaincompress=threshold=${DUCK_THRESHOLD}:ratio=${DUCK_RATIO}:` +
         `attack=${DUCK_ATTACK}:release=${DUCK_RELEASE}[ducked]`,
     );
     // `duration=first` keeps the programme's length — the music's — so a

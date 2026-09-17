@@ -104,6 +104,21 @@ async function loudness(path: string, t: number, dur: number, pre = "") {
   return { mean: mean ? Number(mean[1]) : -91, max: max ? Number(max[1]) : -91 };
 }
 
+/** The AUDIO STREAM's own duration, in seconds — deliberately not
+ *  `probeFile`'s, which reports the CONTAINER's `format.duration` and would
+ *  read a full 30s even on a render whose audio track silently died at
+ *  15s. `-select_streams a:0` is what makes this the stream's own claim
+ *  rather than the file's overall one. */
+async function audioStreamDuration(path: string): Promise<number> {
+  const { stdout } = await run("ffprobe", [
+    "-v", "error", "-select_streams", "a:0",
+    "-show_entries", "stream=duration",
+    "-of", "default=nk=1:nw=1",
+    path,
+  ]);
+  return Number(stdout.trim());
+}
+
 describe("FADE", () => {
   // The dip samples below are placed from this value.
   it("is the 0.5s the dip samples assume", () => {
@@ -120,6 +135,29 @@ describe("renderLofi", () => {
     // `/api/lofi` builds from it cannot come to describe a different file.
     expect(probed.seconds).toBeGreaterThan(29.5);
     expect(probed.seconds).toBeLessThan(30.5);
+  });
+
+  it("keeps the audio STREAM itself as long as the music, not just the container", async () => {
+    // `probeFile` reads `format.duration` — the CONTAINER's claim — which
+    // stayed a faithful 30s even while `sidechaincompress`'s framesync
+    // behaviour silently truncated the actual audio stream to the last
+    // speech's own end (15s on this fixture: a cut at t=12 plus its 3s
+    // speech). A structural check on the container could never have caught
+    // that; this reads the stream's own duration instead.
+    const dur = await audioStreamDuration(out);
+    expect(dur).toBeGreaterThan(29.5);
+  });
+
+  it("keeps the music audible near the end of the render", async () => {
+    // Behavioural, not structural: even a correctly-reported stream length
+    // proves nothing about what is actually IN it. Sampled well past the
+    // beforeAll fixture's one speech (cut at t=12, 3s long, ends at t=15),
+    // in the bed's own 220 Hz band — the same band "ducks the music under
+    // the speech" already measures. This is the assertion that fails if the
+    // bed ever goes silent early again for a different reason, structural
+    // duration check or not.
+    const near = await loudness(out, 28, 2, "bandpass=f=220:width_type=h:width=40");
+    expect(near.mean).toBeGreaterThan(-40);
   });
 
   it("shows the background picture outside a cut-in", async () => {
