@@ -75,11 +75,10 @@ pnpm youtube-auth  # one-off OAuth setup for publishing (see server/youtube.ts)
 ```
 
 Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH, the speech venv from
-`pnpm tts-setup`, and all five bundled assets in `server/assets/`. The server checks
+`pnpm tts-setup`, and all six bundled assets in `server/assets/`. The server checks
 all of it at boot and exits with an install hint if any is missing —
-`checkStarter` owns the short journey's four and `checkLongform` the long
-journey's one. The lofi journey bundles no asset of its own, so it has no
-boot check — it plays the user's own three files and nothing else. Nothing
+`checkStarter` owns the short journey's four, `checkLongform` the long
+journey's one, and `checkLofi` the lofi journey's one. Nothing
 here needs macOS `say` any more — the starter screen's voice is VieNeu-TTS,
 and the only remaining macOS dependency is `afplay` in `pnpm voices` and
 `open -R` in `/api/reveal`.
@@ -100,9 +99,8 @@ server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
 server/longform.ts WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK,
                    checkLongform, Trim/MIN_KEPT/detectTrim/keptRange,
                    stackWide (the long journey's one ffmpeg pass)
-server/lofi.ts     WIDE, FADE, Cut/renderLofi (the lofi journey's one ffmpeg
-                   pass — overlay, not concat). No bundled asset, so no
-                   boot check
+server/lofi.ts     WIDE, FADE, CRACKLE_PATH, checkLofi, Cut/renderLofi (the
+                   lofi journey's one ffmpeg pass — overlay, not concat)
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
                    starterDuration, checkStarter, installedVoices,
                    knownVoices, synthesize, speak, prependStarter (the title
@@ -116,7 +114,11 @@ server/assets/     starter-music.mp3 (the bed), before-video-start-sound.mp3
                    at t=0, and the app's own phase-advance chime),
                    end_video.mp4 (the outro, concatenated after the clip),
                    long-form-transition-sound.mp3 (the swell over each cut —
-                   the LONG journey's asset, owned by longform.ts)
+                   the LONG journey's asset, owned by longform.ts),
+                   vinyl-crackle.mp3 (the lofi journey's surface noise, owned
+                   by lofi.ts — built from the lead-in grooves of two
+                   public-domain Edison cylinder recordings on Wikimedia
+                   Commons, reversed and speed-varied into a ~12s loop)
 server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
                    buildSnippet, accessToken, uploadVideo, publishProgress,
                    setThumbnail
@@ -190,9 +192,10 @@ it takes an output path from the caller and needs neither `MEDIA_DIR` nor
 `lofi.ts` sits beside `ffmpeg.ts`, `longform.ts` and `starter.ts` for the
 same reason — every path is the caller's, neither directory is needed — and
 imports `probeFile` and `probeAudio` from `ffmpeg.ts` and nothing else. It
-declares its own `FADE` rather than importing `longform.ts`'s, which is its
-SIBLING rather than a layer below it — the same call `longform.ts` already
-made against `starter.ts` for `~/.vstack/`. `src/lofi.ts` sits at the very bottom beside
+declares its own `FADE` and re-derives its own asset path rather than
+importing either from `longform.ts`, which is its SIBLING rather than a
+layer below it — the same call `longform.ts` already made against
+`starter.ts` for `~/.vstack/`. `src/lofi.ts` sits at the very bottom beside
 `geometry.ts` and `segments.ts` and imports nothing — a music track's own
 loudness envelope and a speech's own length are enough to place it, with no
 need to reach into `layout.ts`, `custom.ts` or `frame.ts`.
@@ -934,6 +937,51 @@ target-depth input, so there is deliberately no dB knob here at all. The duck is
 THIN stretch, because the render itself makes that stretch sound deliberate
 regardless of how thin it is.
 
+**The vinyl treatment runs on a cut-in's voice and never on the silence
+stand-in, and `acrusher` sits BEFORE the lowpass.** Two orderings, both
+silent if wrong.
+
+`acrusher` is a bit-reducer, so it manufactures aliasing all the way up to
+Nyquist. Placed before `lowpass=3000` that grit is rolled off with
+everything else; placed after, the render simply stops being band-limited,
+which `server/lofi.test.ts`'s above-6 kHz assertion reads as the failure it
+is.
+
+The skip on silence is a correctness fix rather than a saving. A cut-in
+with no audio of its own is fed digital silence by the `anullsrc` stand-in,
+and there is nothing in silence to band-limit or crush — but more than
+that, filtering it is what BREAKS the render. Some filters emit NaN on a
+zero signal, it propagates through every mix downstream, and the AAC
+encoder dies with `Error submitting audio frame to the encoder: Invalid
+argument` — a message naming neither the filter nor the silence. Every test
+using the silent fixture failed on exactly that and no other test did,
+which is the shape this failure always takes: it looks like an encoder
+problem and it is an input problem.
+
+**There is deliberately no pitch wobble, though the effect being imitated
+has one.** `vibrato` is clean on these fixtures in isolation, at every
+depth tried, and emits NaN inside the full render graph — bisected against
+the real failing command, where removing it was the only one of seven
+variants that came back clean. Do not re-add it on the strength of a
+standalone test; that is precisely what hid this. `chorus` is the other
+route to pitch movement, and a newer ffmpeg may simply fix `vibrato` —
+either way, bisect against the whole graph. It is also the effect least
+suited to the material: on singing a wobble reads as a warped record, on
+speech as seasick.
+
+**The crackle is two summed layers, not one gated one.** A bed at
+`CRACKLE_BED` runs the whole render and each cut-in adds a second leg at
+`CRACKLE_BOOST`, faded in and out. A `volume` gated on `enable=` would step
+instead, and a step clicks at both edges — the same reason the duck is a
+compressor rather than a gate. Both layers carry the speech's own
+300-3000 Hz band: a real record's surface noise is broadband, but leaving it
+so puts energy above 6 kHz across the whole render and breaks the
+band-limit assertion, and rolling it off with the voice is truer to what is
+being imitated anyway — one worn-out playback chain, not a clean one with
+noise pasted on. The asset is looped with `-stream_loop -1` and every tap
+`atrim`s its own copy, so the infinite input can never outrun the output's
+own `-t`.
+
 ## Gotchas that each cost real time
 
 **Never empty `sourceSlot` or `outSlot`.** They hold the trimming iframe,
@@ -1310,7 +1358,17 @@ catch the `sidechaincompress` truncation bug (above) by a route the
 duration assertion cannot reach — the audio STREAM's own duration via
 `ffprobe -select_streams a:0`, and the bed's loudness well past the last
 speech's end — and a third renders two cut-ins to prove each stays inside
-its own window. Mutation-pinned: dropping the duck, dropping the fades, and
+its own window. A fourth covers the crackle — the bed audible well clear of
+any cut-in, and measurably louder inside one — measured in 1-2.5 kHz, a band
+the fixtures otherwise leave empty, and against the SILENT fixture, because
+a real speech is white noise across that same band and would drown the thing
+under test. Its bed threshold is -28 dB rather than a comfortable floor for
+a reason worth keeping: this band reads about -35 dB with no crackle at all
+(the AAC-encoded sine's own artefacts) and about -17 dB with the bed in
+place, and a looser bound passes with the bed gain at zero — verified, and
+the first version of that assertion did exactly that. Mutation-pinned:
+zeroing the bed gain and zeroing the boost gain each fail one of its two
+assertions. Also mutation-pinned: dropping the duck, dropping the fades, and
 dropping the 300-3000 Hz band each fail exactly one assertion. Dropping the
 output `-t` was also run and failed nothing — it is provably redundant for
 this graph (the image input's own `-t` already bounds `[bg]`/`[v]`, and two

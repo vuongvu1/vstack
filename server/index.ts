@@ -47,7 +47,7 @@ import { fetchChat, parseChat, peaks } from "./chat.ts";
 import { ensureMask } from "./mask.ts";
 import type { Trim } from "./longform.ts";
 import { checkLongform, detectTrim, keptRange, stackWide } from "./longform.ts";
-import { renderLofi } from "./lofi.ts";
+import { checkLofi, renderLofi } from "./lofi.ts";
 import {
   END_PATH,
   VOICE,
@@ -1125,7 +1125,9 @@ await checkStarter();
 // The long journey's own bundled asset. Hard, like checkStarter's four: a
 // missing file fails a render that costs minutes of encoding to reach.
 await checkLongform();
-// Soft, unlike the three above: no Google credentials means Publish does not
+// The lofi journey's own bundled asset, same posture as checkLongform's.
+await checkLofi();
+// Soft, unlike the four above: no Google credentials means Publish does not
 // work, not that vstack refuses to boot.
 checkYouTube();
 // SIGTERMs whatever vstack server already holds PORT, and reports whether it

@@ -5,6 +5,8 @@
  *  `MEDIA_DIR` nor `OUT_DIR`, and may read `probeFile` and nothing else. */
 
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { toolError } from "./errors.ts";
 import { probeAudio, probeFile } from "./ffmpeg.ts";
@@ -59,6 +61,57 @@ const DUCK_RATIO = 8;
 const DUCK_ATTACK = 20;
 const DUCK_RELEASE = 400;
 
+/** The "vinyl record" treatment on a cut-in's own voice, and the surface
+ *  noise under the whole mix.
+ *
+ *  Three effects, and the ORDER of the first two inside the speech chain is
+ *  load-bearing. `acrusher` is a bit-reducer, so it generates aliasing all
+ *  the way up to Nyquist; it sits BEFORE `lowpass` so that grit is rolled
+ *  off with everything else. Put it after and the render stops being
+ *  band-limited at all — which `server/lofi.test.ts`'s own above-6 kHz
+ *  assertion reads as the failure it is.
+ *
+ *  `mode=lin`, never `mode=log`. Log-mode quantisation takes a logarithm of
+ *  the sample, and a cut-in with no audio of its own is fed DIGITAL SILENCE
+ *  by the `anullsrc` stand-in — log(0) is -inf, the NaN reaches the AAC
+ *  encoder, and the render dies with `Error submitting audio frame to the
+ *  encoder: Invalid argument`, which names neither this filter nor silence.
+ *  Every test using the silent fixture failed on exactly that.
+ *
+ *  There is deliberately NO pitch wobble, though the effect this imitates
+ *  has one. `vibrato` emits NaN inside this graph: isolated on the same
+ *  fixture it is clean at every depth tried, and inside the full render it
+ *  poisons the mix and kills the AAC encoder with `Error submitting audio
+ *  frame to the encoder: Invalid argument`. Bisected against the real
+ *  failing command — removing `vibrato` was the only variant of seven that
+ *  came back clean. It is also the effect least suited to a voice: on
+ *  singing a wobble reads as a warped record, on speech as seasick.
+ *
+ *  ponytail: no wobble. If one is wanted, `chorus` with a slow depth is the
+ *  other way to get pitch movement, and a newer ffmpeg may simply fix
+ *  `vibrato` — re-bisect against the full graph rather than testing the
+ *  filter on its own, which is what hid this. */
+const CRUSH_BITS = 10;
+const CRUSH_MIX = 0.5;
+
+const asset = (name: string) => fileURLToPath(new URL(`assets/${name}`, import.meta.url));
+
+/** Surface noise, looped under the render for its whole length.
+ *
+ *  Built from the lead-in grooves of two public-domain Edison cylinder
+ *  recordings — the seconds of pure groove noise before each band starts —
+ *  reversed and speed-varied into a ~12s loop so its own period is not
+ *  audible under a three-minute track. Measured at a 23 dB crest factor,
+ *  which is what makes it read as POPS rather than as hiss.
+ *
+ *  Two gains rather than a gate: the bed plays at `CRACKLE_BED` for the
+ *  whole render and each cut-in adds a second leg at `CRACKLE_BOOST`, faded
+ *  in and out. A `volume` gated on `enable=` would step, and a step clicks
+ *  at both edges — the same reason the duck is a compressor. */
+export const CRACKLE_PATH = asset("vinyl-crackle.mp3");
+const CRACKLE_BED = 0.5;
+const CRACKLE_BOOST = 1.1;
+
 /** One speech, and where its own picture starts in the music's timeline. Its
  *  duration is probed here rather than taken from the caller: the graph's
  *  fades, its `enable=` window and its audio delay all have to agree about
@@ -71,6 +124,16 @@ const DUCK_RELEASE = 400;
  *  sorts before calling this, which is what keeps the one real caller
  *  safe. */
 export type Cut = { path: string; at: number };
+
+/** Boot check for the one asset this journey bundles. Hard, like
+ *  `checkLongform`'s: a missing file fails a render that is minutes of
+ *  encoding away from discovering it. */
+export async function checkLofi(): Promise<void> {
+  if (!existsSync(CRACKLE_PATH)) {
+    console.error(`vstack: bundled asset missing at ${CRACKLE_PATH}.`);
+    process.exit(1);
+  }
+}
 
 /** Renders the picture, the track and the cut-ins into one 1920x1080 file.
  *
@@ -113,6 +176,10 @@ export async function renderLofi(opts: {
   // failure `server/starter.test.ts` documents for the same arithmetic.
   const firstCut = 2;
   const silenceIndex = firstCut + cuts.length;
+  // AFTER the stand-in, never before it: an input inserted above that index
+  // shifts it and breaks silent cut-ins only, which is the failure
+  // `server/starter.test.ts` documents for this same arithmetic.
+  const crackleIndex = silenceIndex + (anySilent ? 1 : 0);
 
   const inputs: string[] = [
     "-loop", "1", "-framerate", String(FPS), "-t", String(seconds), "-i", image,
@@ -120,6 +187,10 @@ export async function renderLofi(opts: {
   ];
   for (const cut of cuts) inputs.push("-i", cut.path);
   if (anySilent) inputs.push("-f", "lavfi", "-i", `anullsrc=r=${RATE}:cl=stereo`);
+  // Looped rather than trimmed to length here: the asset is ~12s and a track
+  // is minutes. Every tap below `atrim`s its own copy, and the output's own
+  // `-t` bounds the lot, so the infinite input can never outrun the render.
+  inputs.push("-stream_loop", "-1", "-i", CRACKLE_PATH);
 
   const legs: string[] = [];
 
@@ -228,7 +299,6 @@ export async function renderLofi(opts: {
     legs.push(`[music]anull[a]`);
   } else {
     cuts.forEach((cut, i) => {
-      const src = probed[i]?.hasAudio === true ? `${firstCut + i}:a` : `${silenceIndex}:a`;
       const dur = probed[i]?.seconds ?? 0;
       // `atrim` matters only for the stand-in, which carries no `-t` of its
       // own and would otherwise run for the length of the whole track.
@@ -241,9 +311,27 @@ export async function renderLofi(opts: {
       // local fade uses, `Math.min(FADE, dur / 3)`) the day a real render
       // audibly clicks; not added now because tuning it needs a recording to
       // listen to, not a synthetic fixture.
+      // The vinyl treatment runs only on a cut-in that HAS audio. A silent
+      // one is standing in with `anullsrc`, and there is nothing in digital
+      // silence to band-limit, wobble or bit-crush — the leg exists only to
+      // keep the mix's input count right and give the sidechain something to
+      // follow.
+      //
+      // This is a correctness fix, not a saving. `vibrato` fed pure silence
+      // emits NaN, which propagates through the mix to the AAC encoder and
+      // kills the render with `Error submitting audio frame to the encoder:
+      // Invalid argument` — a message naming neither this filter nor the
+      // silence that triggered it. Bisected out of a real failure; every
+      // test using the silent fixture died on it and no other test did.
+      const voice = probed[i]?.hasAudio === true;
+      const src = voice ? `${firstCut + i}:a` : `${silenceIndex}:a`;
+      const vinyl = voice
+        ? `highpass=f=${SPEECH_HP},` +
+          `acrusher=bits=${CRUSH_BITS}:mode=lin:mix=${CRUSH_MIX},` +
+          `lowpass=f=${SPEECH_LP},volume=${SPEECH_GAIN},`
+        : "";
       legs.push(
-        `[${src}]atrim=0:${dur},asetpts=PTS-STARTPTS,` +
-          `highpass=f=${SPEECH_HP},lowpass=f=${SPEECH_LP},volume=${SPEECH_GAIN},` +
+        `[${src}]atrim=0:${dur},asetpts=PTS-STARTPTS,${vinyl}` +
           `adelay=${Math.round(cut.at * 1000)}:all=1,aresample=${RATE},${fmt}[sp${i}]`,
       );
     });
@@ -283,10 +371,44 @@ export async function renderLofi(opts: {
     // `duration=first` keeps the programme's length — the music's — so a
     // delayed stream cannot extend the render past the duration the caller
     // has already committed to in the filename.
+    // The crackle, in two layers so its level can change without a step.
+    // One tap is the bed, trimmed to the track; one per cut-in is the boost,
+    // faded at both edges and delayed onto its own cut. They SUM, so the
+    // noise is quiet throughout and lifts under each voice.
+    //
+    // Both taps carry the speech's own 300-3000 Hz band. A real record's
+    // surface noise is broadband, but leaving it so would put energy above
+    // 6 kHz across the whole render — and "the mix is band-limited" is an
+    // assertion this suite makes and this feature should not quietly break.
+    // Rolling the noise off with the voice is also what the effect is
+    // imitating: one worn-out playback chain, not a clean one with noise
+    // added.
+    const ckBand = `highpass=f=${SPEECH_HP},lowpass=f=${SPEECH_LP}`;
+    const ckTaps = [`[ckbed]`, ...cuts.map((_, i) => `[ckup${i}]`)].join("");
+    legs.push(`[${crackleIndex}:a]asplit=${cuts.length + 1}${ckTaps}`);
+    legs.push(
+      `[ckbed]atrim=0:${seconds},asetpts=PTS-STARTPTS,${ckBand},` +
+        `volume=${CRACKLE_BED},aresample=${RATE},${fmt}[bed]`,
+    );
+    cuts.forEach((cut, i) => {
+      const dur = probed[i]?.seconds ?? 0;
+      const d = Math.min(FADE, dur / 3);
+      legs.push(
+        `[ckup${i}]atrim=0:${dur},asetpts=PTS-STARTPTS,${ckBand},` +
+          `volume=${CRACKLE_BOOST},afade=t=in:st=0:d=${d},` +
+          `afade=t=out:st=${dur - d}:d=${d},` +
+          `adelay=${Math.round(cut.at * 1000)}:all=1,aresample=${RATE},${fmt}[ckb${i}]`,
+      );
+    });
+    const ckLegs = cuts.map((_, i) => `[ckb${i}]`).join("");
     // The programme's own length is the music's, so `duration=first` with
-    // `[ducked]` first is what stops a delayed speech extending the render
-    // past the duration the caller has already committed to in the filename.
-    legs.push(`[ducked][sm]amix=inputs=2:normalize=0:duration=first[a]`);
+    // `[ducked]` first is what stops a delayed speech — or a looped crackle
+    // leg — extending the render past the duration the caller has already
+    // committed to in the filename.
+    legs.push(
+      `[ducked][sm][bed]${ckLegs}amix=inputs=${3 + cuts.length}:` +
+        `normalize=0:duration=first[a]`,
+    );
   }
 
   try {

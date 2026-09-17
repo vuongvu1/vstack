@@ -252,4 +252,32 @@ describe("renderLofi", () => {
     expect(between.g).toBeGreaterThan(90);
     expect(between.b).toBeGreaterThan(90);
   }, 180_000);
+
+  // The crackle bed and its per-cut-in boost, measured in 1-2.5 kHz — a band
+  // the fixtures leave otherwise empty. The music is a pure 220 Hz sine, and
+  // the crackle carries the speech's own 300-3000 Hz band, so anything this
+  // window hears in a silent cut-in's render is the crackle itself.
+  //
+  // The SILENT fixture is what makes the boost measurable at all: a real
+  // speech is white noise across this same band and would drown the thing
+  // under test. With `mute` there is no speech signal, so the only
+  // difference between the two windows below is the boost leg.
+  it("lays a crackle bed down and lifts it under a cut-in", async () => {
+    const crackly = join(dir, "crackle.mp4");
+    await renderLofi({ image: bg, music, cuts: [{ path: mute, at: 12 }], out: crackly });
+    const band = "bandpass=f=1700:width_type=h:width=1500";
+
+    // The bed, well clear of the one cut-in. The threshold sits between two
+    // measured numbers rather than at an arbitrary floor: this band reads
+    // about -35 dB with no crackle at all (the AAC-encoded sine's own
+    // artefacts) and about -17 dB with the bed in place. A looser bound here
+    // passes with the bed gain at zero — verified, and the reason this
+    // number is -28 and not -60.
+    const bed = await loudness(crackly, 5, 2, band);
+    expect(bed.max).toBeGreaterThan(-28);
+
+    // And louder inside the cut-in, where the boost leg adds to it.
+    const under = await loudness(crackly, 12.6, 1.5, band);
+    expect(under.max).toBeGreaterThan(bed.max + 3);
+  }, 120_000);
 });

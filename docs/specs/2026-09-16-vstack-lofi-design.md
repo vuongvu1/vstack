@@ -42,6 +42,25 @@
 > bundles nothing. The dip to black at each cut-in's edges is unchanged;
 > only the sound over it is gone.
 
+> **Amended 2026-09-18**, adding the "vinyl record" treatment on a cut-in's
+> voice, after the reference tool at `audiokit.in/tools/lofi-converter` —
+> which describes its own preset as rolling off the high end, injecting
+> "faux-vinyl crackle and tape hiss", wobbling the pitch, and crushing the
+> bit rate. Three of those four shipped. The band-limit was already here;
+> `acrusher` adds the bit reduction, BEFORE the lowpass so its aliasing is
+> rolled off rather than sprayed past a filter that already ran; and
+> `vinyl-crackle.mp3` — a sixth bundled asset, built from the lead-in
+> grooves of two public-domain Edison cylinders on Wikimedia Commons — plays
+> as a bed under the whole render with a second, louder leg faded in under
+> each cut-in. `checkLofi` returns with it.
+>
+> The pitch wobble did NOT ship. `vibrato` emits NaN inside this graph
+> (clean in isolation, which is what hid it) and kills the AAC encoder; it
+> is also the effect least suited to speech. The treatment is skipped
+> entirely on a cut-in with no audio of its own, both because there is
+> nothing in silence to treat and because filtering silence is what
+> triggered the NaN.
+
 Supersedes nothing. It adds a **fourth journey** beside the short one, the
 long one and the chat-moments dead end: `idle → lofi → preview`. A user
 picks one music track, one background image and a handful of speech clips;
