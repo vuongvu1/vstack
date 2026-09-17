@@ -18,7 +18,7 @@ import { promisify } from "node:util";
 import type { Rect } from "../src/geometry.ts";
 import { layoutById } from "../src/layout.ts";
 import type { CustomBox } from "../src/custom.ts";
-import { MAX_PARTS, UPLOAD_MAX_BYTES } from "../src/defaults.ts";
+import { MAX_PARTS, MAX_SPEECHES, UPLOAD_MAX_BYTES } from "../src/defaults.ts";
 import { MAX_SEGMENTS, isValidSegments, keepRanges, totalDuration } from "../src/segments.ts";
 import type { Segment } from "../src/segments.ts";
 import { HttpError } from "./errors.ts";
@@ -47,6 +47,7 @@ import { fetchChat, parseChat, peaks } from "./chat.ts";
 import { ensureMask } from "./mask.ts";
 import type { Trim } from "./longform.ts";
 import { checkLongform, detectTrim, keptRange, stackWide } from "./longform.ts";
+import { checkLofi, renderLofi } from "./lofi.ts";
 import {
   END_PATH,
   VOICE,
@@ -911,6 +912,115 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
   }
 
+  // The lofi render. Takes ids and bytes, never paths — `uploadPath` builds
+  // every path from a UUID `isUploadId` has already reduced to 36 characters
+  // of hex and dashes, and the picture is bytes with a signature rather than
+  // a name.
+  if (req.url === "/api/lofi") {
+    const raw = await json<Record<string, unknown>>(req);
+    const title = readTitle(raw.title, "title");
+    // Required, like the stack's: a lofi video's thumbnail is the background
+    // the user picked, and there is no frame worth deriving one from — every
+    // frame outside a cut-in is that same picture anyway.
+    const image = jpeg(raw.image, "image");
+    if (!isUploadId(raw.music)) return send(res, 400, { error: "Bad music id." });
+    const musicPath = uploadPath(raw.music);
+    if (!existsSync(musicPath)) {
+      return send(res, 404, { error: "That music upload is no longer on disk." });
+    }
+
+    const speeches = raw.speeches;
+    if (!Array.isArray(speeches) || speeches.length === 0) {
+      return send(res, 400, { error: "speeches must be a non-empty array." });
+    }
+    if (speeches.length > MAX_SPEECHES) {
+      return send(res, 400, { error: `At most ${MAX_SPEECHES} speeches.` });
+    }
+    const cuts: { path: string; at: number }[] = [];
+    for (const entry of speeches) {
+      if (entry === null || typeof entry !== "object") {
+        return send(res, 400, { error: "Each speech must be an object." });
+      }
+      const { id, at } = entry as { id?: unknown; at?: unknown };
+      if (!isUploadId(id)) return send(res, 400, { error: "Bad upload id." });
+      if (typeof at !== "number" || !Number.isFinite(at) || at < 0) {
+        return send(res, 400, { error: "Each speech needs a finite at >= 0." });
+      }
+      const path = uploadPath(id);
+      if (!existsSync(path)) {
+        return send(res, 404, { error: "One of those uploads is no longer on disk." });
+      }
+      cuts.push({ path, at });
+    }
+    cuts.sort((a, b) => a.at - b.at);
+
+    // Every bound is checked against durations the SERVER probed. The client
+    // sends only positions: a length it reported could put a cut-in past the
+    // end of the track, which ffmpeg renders as a graph that fails minutes
+    // in rather than as an error anyone can read.
+    const { seconds: musicLength } = await probeAudio(musicPath);
+    const lengths = await Promise.all(cuts.map((c) => probeFile(c.path)));
+    for (const [i, cut] of cuts.entries()) {
+      const dur = lengths[i]?.seconds ?? 0;
+      if (cut.at + dur > musicLength) {
+        return send(res, 400, { error: "A speech runs past the end of the track." });
+      }
+      const prev = cuts[i - 1];
+      const prevDur = lengths[i - 1]?.seconds ?? 0;
+      if (prev !== undefined && cut.at < prev.at + prevDur) {
+        return send(res, 400, { error: "Two speeches overlap." });
+      }
+    }
+
+    await mkdir(OUT_DIR, { recursive: true });
+    // Marks of 0 and the track's length, ceiled — `<slug>-0000-<mmss>.mp4`,
+    // which today's OUT_NAME already accepts. That is the whole reason
+    // /out/, /api/reveal and /api/publish need no changes here.
+    const total = Math.ceil(musicLength);
+    const name = outName(title, 0, total);
+    const outFile = join(OUT_DIR, name);
+    const partial = outFile.replace(/\.mp4$/, `.${randomUUID()}.part.mp4`);
+
+    // `renderLofi` takes a path and the picture arrived as bytes, so it goes
+    // to a temp dir this route sweeps in its own `finally` — the same shape
+    // /api/export and /api/say already use. Not tracked in `inFlight`: it is
+    // in $TMPDIR, is not servable, and has no name a client could request.
+    const work = await mkdtemp(join(tmpdir(), "vstack-lofi-"));
+    const imageFile = join(work, "bg.jpg");
+    await writeFile(imageFile, image);
+
+    inFlight.add(partial);
+    try {
+      await renderLofi({ image: imageFile, music: musicPath, cuts, out: partial });
+      await rename(partial, outFile);
+      await writeFile(thumbPath(outFile), image).catch((err: unknown) => {
+        console.warn(`vstack: could not save the thumbnail beside ${name}:`, err);
+      });
+      // After the rename and the sidecar, never before: a failed render must
+      // leave the render it was replacing intact. Skipped when the name is
+      // unchanged, which would unlink the file just written.
+      if (isOutName(raw.prev) && raw.prev !== name) await removeExport(raw.prev);
+      const { size, mtimeMs } = statSync(outFile);
+      console.warn(`vstack: mixed out/${name} (${Math.round(size / 1e6)} MB)`);
+      return send(res, 200, {
+        name,
+        // The mtime is the cache-buster: the name is stable across
+        // re-renders, so without it the <video> re-shows the previous one.
+        url: `/out/${name}?t=${Math.round(mtimeMs)}`,
+        size,
+        duration: total,
+      });
+    } finally {
+      inFlight.delete(partial);
+      await rm(partial, { force: true }).catch((err: unknown) => {
+        console.error("vstack: lofi partial cleanup failed:", err);
+      });
+      await rm(work, { recursive: true, force: true }).catch((err: unknown) => {
+        console.error("vstack: lofi temp cleanup failed:", err);
+      });
+    }
+  }
+
   if (req.url === "/api/reveal") {
     const body = await json<Record<string, unknown>>(req);
     // The name is validated, not reconstructed — see isOutName. This is the
@@ -1003,7 +1113,9 @@ await checkStarter();
 // The long journey's own bundled asset. Hard, like checkStarter's four: a
 // missing file fails a render that costs minutes of encoding to reach.
 await checkLongform();
-// Soft, unlike the two above: no Google credentials means Publish does not
+// The lofi journey's own bundled asset, same posture as checkLongform's.
+await checkLofi();
+// Soft, unlike the three above: no Google credentials means Publish does not
 // work, not that vstack refuses to boot.
 checkYouTube();
 // SIGTERMs whatever vstack server already holds PORT, and reports whether it
