@@ -909,7 +909,7 @@ stream in this graph does.
 This is the worst bug the feature shipped with, and it is worth recording
 *why* the render's own "exactly the music's duration" test could not have
 caught it: that assertion reads `probeFile`'s CONTAINER duration
-(`format.duration`), which stayed a faithful ~30s throughout — the container
+(`format.duration`), which stayed a faithful 30s throughout — the container
 and the video track were never wrong, only the audio stream nested inside
 them. The regression test instead reads the AUDIO STREAM's own duration via
 `ffprobe -select_streams a:0`, plus a behavioural loudness check well past
