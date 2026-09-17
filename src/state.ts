@@ -55,11 +55,18 @@ export type AppState = {
    *  Same rule `UploadPart.name` and `thumbName` follow. */
   bgName: string;
   /** The uploaded speeches. Order is display order only: a speech's position
-   *  in the render is its `at`, not its index here. NOT persisted. */
+   *  in the render is its `at`, not its index here.
+   *
+   *  NOT persisted, `music`'s reason: each entry names an upload the user may
+   *  have swept from `media/uploads/` by hand, and a restored id pointing at
+   *  a file that is gone would look like a working panel until Render. */
   speeches: Speech[];
   /** Where each speech goes, in the track's own timeline. Written by
    *  `troughs` when the speech set changes and by a marker drag after that.
-   *  NOT persisted. */
+   *
+   *  NOT persisted: a placement is meaningless without the envelope it was
+   *  found in, and that envelope (`lofiEnv`, a module-scoped decode) is never
+   *  persisted either — there is nothing to restore a placement against. */
   placements: Placement[];
   /** The chat-moments lookup's result, and the video it belongs to.
    *

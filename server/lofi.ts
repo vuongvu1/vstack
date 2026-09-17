@@ -80,7 +80,14 @@ const TRANSITION_GAIN = 1.0;
 /** One speech, and where its own picture starts in the music's timeline. Its
  *  duration is probed here rather than taken from the caller: the graph's
  *  fades, its `enable=` window and its audio delay all have to agree about
- *  it, and one prober is how they stay agreed. */
+ *  it, and one prober is how they stay agreed.
+ *
+ *  `renderLofi` requires an array of `Cut`s in ASCENDING `at` order — the
+ *  half-gap fade clamp indexes each cut's own neighbours (`cuts[i - 1]`,
+ *  `cuts[i + 1]`) to find the gap on either side, and an unsorted array
+ *  hands it the wrong neighbour rather than failing loudly. `/api/lofi`
+ *  sorts before calling this, which is what keeps the one real caller
+ *  safe. */
 export type Cut = { path: string; at: number };
 
 /** Boot check for the one asset this journey plays. Hard, like
@@ -254,6 +261,15 @@ export async function renderLofi(opts: {
       const dur = probed[i]?.seconds ?? 0;
       // `atrim` matters only for the stand-in, which carries no `-t` of its
       // own and would otherwise run for the length of the whole track.
+      //
+      // ponytail: no `afade` at this hard `atrim` edge. A speech recording
+      // is near-silent at its own end and the video is dipping to black over
+      // the same instant, which covers most of it — but a genuine click is
+      // possible on a recording that does not fade out on its own. Add
+      // `afade=t=out:st=${dur - d}:d=${d}` (the same `d` the video's own
+      // local fade uses, `Math.min(FADE, dur / 3)`) the day a real render
+      // audibly clicks; not added now because tuning it needs a recording to
+      // listen to, not a synthetic fixture.
       legs.push(
         `[${src}]atrim=0:${dur},asetpts=PTS-STARTPTS,` +
           `highpass=f=${SPEECH_HP},lowpass=f=${SPEECH_LP},volume=${SPEECH_GAIN},` +
