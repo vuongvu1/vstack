@@ -1007,7 +1007,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       // After the rename and the sidecar, never before: a failed render must
       // leave the render it was replacing intact. Skipped when the name is
       // unchanged, which would unlink the file just written.
-      if (isOutName(raw.prev) && raw.prev !== name) await removeExport(outPath(raw.prev));
+      if (isOutName(raw.prev) && raw.prev !== name) {
+        await removeExport(outPath(raw.prev)).catch((err: unknown) => {
+          console.warn(`vstack: could not remove the previous out/${raw.prev}:`, err);
+        });
+      }
       const { size, mtimeMs } = statSync(outFile);
       console.warn(`vstack: mixed out/${name} (${Math.round(size / 1e6)} MB)`);
       return send(res, 200, {
