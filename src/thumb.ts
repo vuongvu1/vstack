@@ -22,34 +22,47 @@ export const WIDE_IMAGE = { w: 1920, h: 1080 };
  *  1280x720 with room to spare, without visible ringing on a photo. */
 const QUALITY = 0.92;
 
-/** `file` stretched to `w`x`h` as bare base64 JPEG (no `data:` prefix).
+/** Decodes `file` into an `ImageBitmap`, or throws with a message naming the
+ *  file — the only validation either rasteriser needs client-side. Shared
+ *  because it is genuinely the same step for both jobs; what each does with
+ *  the decoded bitmap is not. */
+async function decodeBitmap(file: File): Promise<ImageBitmap> {
+  try {
+    return await createImageBitmap(file);
+  } catch {
+    throw new Error(`${file.name} is not a picture this browser can read.`);
+  }
+}
+
+/** `canvas` encoded as bare base64 JPEG (no `data:` prefix).
+ *
+ *  The server takes bare base64 and checks the JPEG signature itself, so the
+ *  "data:image/jpeg;base64," preamble is dropped here rather than parsed
+ *  there — the same split `renderTitleArt` does. */
+function encodeJpeg(canvas: HTMLCanvasElement): string {
+  return canvas.toDataURL("image/jpeg", QUALITY).split(",")[1] ?? "";
+}
+
+/** `file` stretched to 1280x720 as bare base64 JPEG — the publish thumbnail.
  *
  *  STRETCHED, deliberately: `drawImage` is given the whole destination
  *  rectangle, so a portrait or square picture is distorted to fill the frame
  *  rather than being cropped or letterboxed. That is what was asked for —
- *  the user picks the picture knowing the shape it has to become, and a crop
- *  would silently throw away whatever they had put at the edges.
- *
- *  Throws if the file is not a picture this browser can decode, which is the
- *  only validation this side needs: the message names the file. */
-async function drawTo(file: File, w: number, h: number): Promise<string> {
-  let bitmap: ImageBitmap;
-  try {
-    bitmap = await createImageBitmap(file);
-  } catch {
-    throw new Error(`${file.name} is not a picture this browser can read.`);
-  }
+ *  the user picks the picture for THIS slot knowing the shape it has to
+ *  become, and a crop would silently discard whatever they had composed at
+ *  the edges. Cover-cropping here would be the wrong rule for the right
+ *  reason: it looks more "correct" in isolation but throws away exactly the
+ *  framing the user picked the picture for. */
+export async function renderThumb(file: File): Promise<string> {
+  const bitmap = await decodeBitmap(file);
   try {
     const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
+    canvas.width = THUMB.w;
+    canvas.height = THUMB.h;
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2d context unavailable");
-    ctx.drawImage(bitmap, 0, 0, w, h);
-    // The server takes bare base64 and checks the JPEG signature itself, so
-    // the "data:image/jpeg;base64," preamble is dropped here rather than
-    // parsed there — the same split `renderTitleArt` does.
-    return canvas.toDataURL("image/jpeg", QUALITY).split(",")[1] ?? "";
+    ctx.drawImage(bitmap, 0, 0, THUMB.w, THUMB.h);
+    return encodeJpeg(canvas);
   } finally {
     // An ImageBitmap holds decoded pixels off-heap until it is closed, and a
     // user auditioning several pictures would otherwise leak one full-size
@@ -58,20 +71,40 @@ async function drawTo(file: File, w: number, h: number): Promise<string> {
   }
 }
 
-/** `file` stretched to 1280x720 as bare base64 JPEG — see `drawTo`. */
-export async function renderThumb(file: File): Promise<string> {
-  return drawTo(file, THUMB.w, THUMB.h);
-}
-
-/** The lofi background: the same stretch-to-fill draw `renderThumb` does, at
- *  the render's own 1920x1080.
+/** `file` cover-cropped to 1920x1080 as bare base64 JPEG — the lofi
+ *  journey's background, the render's own picture for its entire length.
  *
- *  Stretched for `renderThumb`'s reason — the user picked the picture
- *  knowing the shape it has to become, and a crop would silently discard
- *  whatever they put at the edges. Note this differs from what
- *  `server/lofi.ts` would do on its own (it cover-crops any picture it is
- *  handed); handing it a picture that is already exactly 1920x1080 is what
- *  makes that crop a no-op, so the two never disagree. */
+ *  COVER-CROPPED, deliberately, and NOT `renderThumb`'s stretch: a distorted
+ *  photo here is not a thumbnail glanced at once, it is on screen behind the
+ *  video for every second of the render. The source rectangle in the
+ *  nine-argument `drawImage` below is scaled to cover both axes of the
+ *  destination and centred, so a non-16:9 picture keeps its proportions and
+ *  loses its edges instead of being squashed into the frame.
+ *
+ *  This is also the half of the agreement `server/lofi.ts`'s own
+ *  `force_original_aspect_ratio=increase` + `crop` graph depends on: that
+ *  graph cover-crops too, but only ever sees a frame that is already exactly
+ *  1920x1080 because this function did the cropping first, which is what
+ *  keeps it a no-op instead of a second, disagreeing crop. */
 export async function renderWide(file: File): Promise<string> {
-  return drawTo(file, WIDE_IMAGE.w, WIDE_IMAGE.h);
+  const bitmap = await decodeBitmap(file);
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = WIDE_IMAGE.w;
+    canvas.height = WIDE_IMAGE.h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("2d context unavailable");
+    const scale = Math.max(
+      WIDE_IMAGE.w / bitmap.width,
+      WIDE_IMAGE.h / bitmap.height,
+    );
+    const sw = WIDE_IMAGE.w / scale;
+    const sh = WIDE_IMAGE.h / scale;
+    const sx = (bitmap.width - sw) / 2;
+    const sy = (bitmap.height - sh) / 2;
+    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, WIDE_IMAGE.w, WIDE_IMAGE.h);
+    return encodeJpeg(canvas);
+  } finally {
+    bitmap.close();
+  }
 }
