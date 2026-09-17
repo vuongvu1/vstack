@@ -18,11 +18,12 @@ import {
   LONG_DESCRIPTION_TEMPLATE,
   LONG_TAGS_DEFAULT,
   MAX_PARTS,
+  MAX_SPEECHES,
   TAGS_DEFAULT,
   YT_TITLE_MAX,
   defaultTitle,
 } from "./defaults.ts";
-import { clock, parseTimestamp } from "./format.ts";
+import { clock, mmss, parseTimestamp } from "./format.ts";
 import {
   DEFAULT_LAYOUT_ID,
   LAYOUTS,
@@ -31,13 +32,15 @@ import {
   ratioOf,
   resolveLayout,
 } from "./layout.ts";
+import { BUCKETS_PER_SEC, FADE, MIN_GAP, troughs } from "./lofi.ts";
+import type { Placement } from "./lofi.ts";
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
 import { MAX_SEGMENTS, editMark, isValidSegments, normalize } from "./segments.ts";
 import type { Segment } from "./segments.ts";
 import { renderTitleArt } from "./starter.ts";
-import { renderThumb } from "./thumb.ts";
+import { renderThumb, renderWide } from "./thumb.ts";
 import type { AppState } from "./state.ts";
 import {
   getState,
@@ -125,12 +128,19 @@ const stackPanel = el("div", { className: "stack-panel", hidden: true });
 // hiding sourceSlot itself, which would put the YouTube iframe's ancestor
 // into display:none.
 const momentsPanel = el("div", { className: "moments-panel", hidden: true });
+// The lofi phase's three pickers and speech list. Part of the persistent
+// shell for the same reason stackPanel and momentsPanel are: it takes over
+// the left column during `lofi`, and is only ever hidden — never removed,
+// and never by hiding sourceSlot itself, which would put the YouTube
+// iframe's ancestor into display:none.
+const lofiPanel = el("div", { className: "lofi-panel", hidden: true });
 const sourceSlot = el(
   "div",
   { className: "source" },
   sourcePlaceholder,
   publishForm,
   stackPanel,
+  lofiPanel,
   momentsPanel,
 );
 const outSlot = el("div", { className: "out" }, outPlaceholder);
@@ -1033,6 +1043,28 @@ async function loadWave(clipUrl: string): Promise<void> {
   render();
 }
 
+/** The picked track's envelope, at `BUCKETS_PER_SEC`, and its length.
+ *  Module-scoped like `wavePeaks`, and for the same reason: the bar is
+ *  rebuilt on every render and the decode must not be. */
+let lofiEnv: Float32Array | null = null;
+let lofiSeconds = 0;
+
+/** Decodes a picked music File into the envelope `troughs` scores, through
+ *  the same 8 kHz mono OfflineAudioContext `loadWave` uses — that bounds the
+ *  decode at ~8000 floats a second regardless of the source's rate, which
+ *  for a six-minute track is the difference between 19 MB and 230 MB.
+ *
+ *  Unlike `loadWave` this one must NOT swallow its failures: a flat strip is
+ *  a cosmetic loss on the framing bar, but here the envelope is what places
+ *  every speech. */
+async function decodeTrack(file: File): Promise<{ env: Float32Array; seconds: number }> {
+  const Ctor = window.OfflineAudioContext ?? window.webkitOfflineAudioContext;
+  if (!Ctor) throw new Error("This browser cannot decode audio.");
+  const decoded = await new Ctor(1, 1, 8000).decodeAudioData(await file.arrayBuffer());
+  const buckets = Math.max(1, Math.round(decoded.duration * BUCKETS_PER_SEC));
+  return { env: peaks(decoded.getChannelData(0), buckets), seconds: decoded.duration };
+}
+
 /** Paints the envelope as a centred amplitude band, on the *strip's* axis.
  *
  *  `span` is that axis — `windowEnd - windowStart`, exactly what places the
@@ -1453,6 +1485,114 @@ async function doStack(): Promise<void> {
       outSize: out.size,
       // Both defaults are `||`-guarded for the same reason the export's are:
       // a re-render after a reorder keeps whatever was already typed.
+      ytTitle: getState().ytTitle || defaultTitle(title),
+      ytDescription: getState().ytDescription || LONG_DESCRIPTION_TEMPLATE,
+      ytTags: getState().ytTags || LONG_TAGS_DEFAULT,
+      ytVideoId: "",
+      ytThumbnail: false,
+    });
+    bell();
+  });
+}
+
+/** Uploads the track and decodes its envelope. Both, because the render
+ *  needs the file server-side and the placement needs the envelope here —
+ *  and doing them in one action is what keeps the two from disagreeing about
+ *  which file is loaded. */
+async function doPickMusic(file: File): Promise<void> {
+  await guard("Reading the track…", async () => {
+    const { env, seconds } = await decodeTrack(file);
+    const { id } = await api.upload(file, true);
+    lofiEnv = env;
+    lofiSeconds = seconds;
+    setState({
+      music: { id, name: file.name, seconds },
+      // A new track invalidates every position: they were found in the old
+      // one's envelope.
+      placements: [],
+    });
+    place();
+  });
+}
+
+/** The background picture, rasterised twice: 1920x1080 for the render's base
+ *  video and 1280x720 for the publish thumbnail. Both here rather than one
+ *  server-side, because this machine's ffmpeg is the wrong tool for an image
+ *  format and the browser decodes every format it can display. */
+async function doPickBackground(file: File): Promise<void> {
+  await guard("Reading the picture…", async () => {
+    setState({
+      bg: await renderWide(file),
+      thumb: await renderThumb(file),
+      bgName: file.name,
+      thumbName: file.name,
+    });
+  });
+}
+
+async function doAddSpeeches(files: File[]): Promise<void> {
+  if (files.length === 0) return;
+  await guard("Uploading…", async () => {
+    const existing = getState().speeches.length;
+    if (existing + files.length > MAX_SPEECHES) {
+      throw new Error(
+        `That's ${existing + files.length} speeches — the limit is ${MAX_SPEECHES}.`,
+      );
+    }
+    for (const [i, file] of files.entries()) {
+      setState({ busy: `Uploading ${i + 1}/${files.length}…` });
+      const { id, duration } = await api.upload(file);
+      // Live state, not a snapshot: each iteration appends to what the
+      // previous one wrote.
+      setState({
+        speeches: [...getState().speeches, { id, name: file.name, seconds: duration }],
+      });
+    }
+    place();
+  });
+}
+
+/** Re-runs detection for the current speech set. Called whenever that set
+ *  changes and never on a drag — a drag is the user overriding one position,
+ *  and re-detecting would throw it away. */
+function place(): void {
+  const s = getState();
+  if (!lofiEnv || s.music === null || s.speeches.length === 0) {
+    setState({ placements: [] });
+    return;
+  }
+  const found = troughs(lofiEnv, lofiSeconds, s.speeches);
+  if ("error" in found) {
+    setState({ placements: [], error: found.error });
+    return;
+  }
+  setState({ placements: found.placements, error: "" });
+}
+
+/** Renders the mix and moves to the preview phase. */
+async function doLofi(): Promise<void> {
+  const s = getState();
+  const title = s.starterTitle.trim();
+  if (title === "" || s.music === null || s.bg === "" || s.placements.length === 0) return;
+  if (s.placements.length !== s.speeches.length) return;
+  await guard("Mixing… (a five-minute track takes ~1-2 min)", async () => {
+    const music = getState().music;
+    if (music === null) return;
+    const out = await api.lofi({
+      title,
+      music: music.id,
+      image: getState().bg,
+      speeches: getState().placements.map((p) => ({ id: p.id, at: p.at })),
+      // In-memory, like the export's: a reload between two renders strands
+      // the older file, which is the accepted cost of not persisting a field
+      // whose only job is naming a file to delete.
+      ...(getState().outName === "" ? {} : { prev: getState().outName }),
+    });
+    setState({
+      phase: "preview",
+      outName: out.name,
+      outUrl: out.url,
+      outSize: out.size,
       ytTitle: getState().ytTitle || defaultTitle(title),
       ytDescription: getState().ytDescription || LONG_DESCRIPTION_TEMPLATE,
       ytTags: getState().ytTags || LONG_TAGS_DEFAULT,
@@ -2599,16 +2739,16 @@ function renderPreview(): Node[] {
       });
   };
 
-  const long = s.mode === "long";
-  const back = el("button", {
-    className: "btn-gray",
-    textContent: long ? "Edit the stack" : "Frame again",
-  });
-  // Everything the previous phase held is untouched — boxes and marks on the
-  // short path, the part list on the long one — so this lands back on
-  // exactly what the render came from. A bad crop or a wrong order is one
-  // click from a re-render.
-  back.onclick = () => setState({ phase: long ? "stacking" : "framing" });
+  // A genuine three-way, label and target together: each journey's own
+  // phase holds what it left behind (boxes and marks on the short path, the
+  // part list on the long one, the track/picture/speeches on the lofi one),
+  // so this lands back on exactly what the render came from. A bad crop, a
+  // wrong order or a misplaced speech is one click from a re-render.
+  const backLabel =
+    s.mode === "long" ? "Edit the stack" : s.mode === "lofi" ? "Edit the mix" : "Frame again";
+  const backTo = s.mode === "long" ? "stacking" : s.mode === "lofi" ? "lofi" : "framing";
+  const back = el("button", { className: "btn-gray", textContent: backLabel });
+  back.onclick = () => setState({ phase: backTo });
 
   const published = s.ytVideoId !== "";
 
@@ -2869,6 +3009,280 @@ function renderMomentsPanel(): Node[] {
   );
 }
 
+/** The left column during `lofi`: the three pickers and the speech list.
+ *  Modelled on `renderStackPanel` — same column, same overrides of
+ *  `.source`'s `place-items: center`. */
+function renderLofiPanel(): Node[] {
+  const s = getState();
+  const locked = Boolean(s.busy);
+
+  const musicRow = el("div", { className: "lofi-row" });
+  const musicPicker = el("input", { type: "file", accept: "audio/*", disabled: locked });
+  musicPicker.onchange = () => {
+    const file = musicPicker.files?.[0];
+    // Cleared so picking the same file twice fires a second change event.
+    musicPicker.value = "";
+    if (file) void doPickMusic(file);
+  };
+  musicRow.append(
+    el("h3", { textContent: "Track" }),
+    s.music
+      ? el("p", {
+          className: "lofi-fact",
+          textContent: `${s.music.name} — ${mmss(s.music.seconds)}`,
+        })
+      : el("p", { className: "stack-empty", textContent: "Pick one music file." }),
+    musicPicker,
+  );
+
+  const bgRow = el("div", { className: "lofi-row" });
+  const bgPicker = el("input", { type: "file", accept: "image/*", disabled: locked });
+  bgPicker.onchange = () => {
+    const file = bgPicker.files?.[0];
+    bgPicker.value = "";
+    if (file) void doPickBackground(file);
+  };
+  bgRow.append(
+    el("h3", { textContent: "Background" }),
+    s.bg === ""
+      ? el("p", { className: "stack-empty", textContent: "Pick one picture." })
+      : el("img", { className: "lofi-chip", src: `data:image/jpeg;base64,${s.bg}`, alt: s.bgName }),
+    bgPicker,
+  );
+
+  const speechRow = el("div", { className: "lofi-row" });
+  const speechPicker = el("input", {
+    type: "file",
+    accept: "video/mp4",
+    multiple: true,
+    disabled: locked || s.speeches.length >= MAX_SPEECHES,
+  });
+  speechPicker.onchange = () => {
+    const files = [...(speechPicker.files ?? [])];
+    speechPicker.value = "";
+    void doAddSpeeches(files);
+  };
+  // Time-ordered by `at`, not by upload order: the list reads top-to-bottom
+  // the same way the strip reads left-to-right, so removing the one that
+  // plays third means reading the third row rather than hunting for
+  // whichever index it happened to upload at. A speech with no placement
+  // yet (the moment between an upload landing and `place()` completing)
+  // sorts to the end rather than in front of ones already placed.
+  const ordered = [...s.speeches].sort((a, b) => {
+    const atA = s.placements.find((p) => p.id === a.id)?.at ?? Infinity;
+    const atB = s.placements.find((p) => p.id === b.id)?.at ?? Infinity;
+    return atA - atB;
+  });
+  const rows = ordered.map((speech) => {
+    const at = s.placements.find((p) => p.id === speech.id);
+    const drop = el("button", {
+      textContent: "✕",
+      ariaLabel: `Remove ${speech.name}`,
+      disabled: locked,
+    });
+    drop.onclick = () => {
+      // Live state, the rule every handler here follows: the list is written
+      // by quiet updates during a drag, so a snapshot would revert one.
+      setState({ speeches: getState().speeches.filter((x) => x.id !== speech.id) });
+      place();
+    };
+    return el(
+      "div",
+      { className: "lofi-speech" },
+      el("span", { textContent: speech.name }),
+      el("span", {
+        className: "lofi-fact",
+        textContent: at ? `${mmss(at.at)} · ${Math.round(speech.seconds)}s` : `${Math.round(speech.seconds)}s`,
+      }),
+      drop,
+    );
+  });
+  speechRow.append(
+    el("h3", { textContent: `Speeches (${s.speeches.length}/${MAX_SPEECHES})` }),
+    ...(rows.length > 0
+      ? rows
+      : [
+          el("p", {
+            className: "stack-empty",
+            textContent: "Add .mp4 files. They drop into the quiet parts.",
+          }),
+        ]),
+    speechPicker,
+  );
+
+  return [el("h2", { className: "publish-heading", textContent: "Lofi mix" }), musicRow, bgRow, speechRow];
+}
+
+/** Moves one placement, keeping it inside the track and MIN_GAP clear of its
+ *  neighbours. The drag path's bound, not a legality rule — `/api/lofi`
+ *  checks only that speeches fit and do not overlap, so an older body still
+ *  renders. Same asymmetry `moveOut`'s `margin` has against `isValidOut`. */
+function clampPlacement(placements: Placement[], id: string, want: number): Placement[] {
+  const others = placements.filter((p) => p.id !== id);
+  const mine = getState().speeches.find((x) => x.id === id);
+  if (!mine) return placements;
+  let lo = FADE;
+  let hi = lofiSeconds - mine.seconds - FADE;
+  for (const other of others) {
+    const seconds = getState().speeches.find((x) => x.id === other.id)?.seconds ?? 0;
+    if (other.at < want) lo = Math.max(lo, other.at + seconds + MIN_GAP);
+    else hi = Math.min(hi, other.at - MIN_GAP - mine.seconds);
+  }
+  const at = Math.min(Math.max(want, lo), Math.max(lo, hi));
+  return placements.map((p) => (p.id === id ? { ...p, at } : p));
+}
+
+/** Paints the track's envelope across the strip. `bucketAt` with `span` and
+ *  the decoded length equal — the stitch case it exists for cannot happen
+ *  here, and passing both keeps the call honest rather than reaching for the
+ *  `floor(x * buckets / w)` it reduces to. */
+function drawLofiStrip(strip: HTMLElement, canvas: HTMLCanvasElement): void {
+  const env = lofiEnv;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  if (!env || w === 0 || h === 0) return;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  const g = canvas.getContext("2d");
+  if (!g) return;
+  g.scale(dpr, dpr);
+  g.clearRect(0, 0, w, h);
+  g.fillStyle = getComputedStyle(canvas).getPropertyValue("--blue-8").trim() || "#0090ff";
+  const mid = h / 2;
+  let peak = 0;
+  for (const v of env) if (v > peak) peak = v;
+  const gain = peak > 0 ? Math.min(WAVE_GAIN, 1 / peak) : 1;
+  for (let x = 0; x < w; x++) {
+    const b = bucketAt(x, w, lofiSeconds, lofiSeconds, env.length);
+    if (b < 0) continue;
+    const amp = (env[b] ?? 0) * gain * mid;
+    g.fillRect(x, mid - amp, 1, Math.max(1, amp * 2));
+  }
+  // The markers are DOM siblings positioned in %, so they follow a resize on
+  // their own and only the canvas needs repainting here.
+  void strip;
+}
+
+/** The Render button lives in the bar and the fields it is gated on live in
+ *  the panel — two functions, one render pass. The title reaches state
+ *  through a quiet update, so this is flipped in place from `title.oninput`
+ *  rather than waiting on a render, the same rule `stackBtn` follows. */
+let lofiBtn: HTMLButtonElement | null = null;
+
+/** Disconnected and replaced on every render — the bar is rebuilt each time,
+ *  so an observer per built canvas would otherwise accumulate one per
+ *  render for the life of the phase. Mirrors `waveResize`. */
+let lofiResize: ResizeObserver | null = null;
+
+/** The lofi bar: the marker strip, the title and Render. */
+function renderLofiBar(): Node[] {
+  const s = getState();
+  const busy = s.busy !== "";
+
+  const strip = el("div", { className: "lofi-strip" });
+  const canvas = el("canvas", { className: "lofi-wave" });
+  strip.append(canvas);
+
+  const secondsOf = (id: string) => getState().speeches.find((x) => x.id === id)?.seconds ?? 0;
+
+  for (const p of s.placements) {
+    const marker = el("div", { className: "lofi-marker", title: `${mmss(p.at)}` });
+    const width = lofiSeconds > 0 ? (secondsOf(p.id) / lofiSeconds) * 100 : 0;
+    marker.style.left = `${lofiSeconds > 0 ? (p.at / lofiSeconds) * 100 : 0}%`;
+    marker.style.width = `${width}%`;
+    marker.onpointerdown = (e: PointerEvent) => {
+      if (busy) return;
+      marker.setPointerCapture(e.pointerId);
+      const rect = strip.getBoundingClientRect();
+      const grab = e.clientX - rect.left - (p.at / lofiSeconds) * rect.width;
+      marker.onpointermove = (move: PointerEvent) => {
+        const x = move.clientX - rect.left - grab;
+        const want = (x / rect.width) * lofiSeconds;
+        // Quiet: a notifying update per pointer frame would rebuild the very
+        // node being dragged. The canvas is repainted from here directly for
+        // the same reason the framing overlay calls `place()` itself — but
+        // the canvas only ever draws the envelope, which does not depend on
+        // a placement, so the marker's OWN inline position has to be moved
+        // by hand too. Without this the marker sits frozen under the
+        // pointer for the whole drag and only jumps to where it landed once
+        // the trailing `setState` rebuilds the bar — indistinguishable from
+        // a drag that silently does nothing until release.
+        const next = clampPlacement(getState().placements, p.id, want);
+        setQuiet({ placements: next });
+        const mine = next.find((n) => n.id === p.id);
+        if (mine && lofiSeconds > 0) marker.style.left = `${(mine.at / lofiSeconds) * 100}%`;
+        drawLofiStrip(strip, canvas);
+      };
+      marker.onpointerup = () => {
+        marker.onpointermove = null;
+        marker.onpointerup = null;
+        // One notifying update at the end of the drag, so the panel's own
+        // timestamps catch up.
+        setState({ placements: getState().placements });
+      };
+    };
+    strip.append(marker);
+  }
+
+  const title = el("input", {
+    type: "text",
+    placeholder: "Title (names the file)",
+    className: "field-grow",
+    value: s.starterTitle,
+    disabled: busy,
+  });
+
+  const back = el("button", { className: "btn-gray", textContent: "← Back", disabled: busy });
+  // The uploads stay in state, for the stacking bar's reason: stepping back
+  // to pick a different journey must not throw away files already sent.
+  // `outName` is cleared for that bar's OTHER reason — it names a file to
+  // DELETE on the next render, and a short export would otherwise unlink
+  // this journey's output with no error and no badge.
+  back.onclick = () =>
+    setState({
+      phase: "idle",
+      outName: "",
+      outUrl: "",
+      outSize: 0,
+      starterTitle: "",
+      ytTitle: "",
+      ytDescription: "",
+      ytTags: "",
+      ytVideoId: "",
+      ytThumbnail: false,
+    });
+
+  const ready = (live: AppState) =>
+    live.starterTitle.trim() !== "" &&
+    live.music !== null &&
+    live.bg !== "" &&
+    live.speeches.length > 0 &&
+    live.placements.length === live.speeches.length;
+
+  const go = el("button", {
+    className: "btn-solid",
+    textContent: "Render →",
+    disabled: busy || !ready(s),
+  });
+  go.onclick = () => void doLofi();
+  lofiBtn = go;
+
+  // Quiet, and the button flipped in place: the title reaches state through
+  // a quiet update, so without this Render stays disabled until some
+  // unrelated setState happens along — which reads as a broken button rather
+  // than as "type a title first".
+  title.oninput = () => {
+    setQuiet({ starterTitle: title.value });
+    if (lofiBtn) lofiBtn.disabled = Boolean(getState().busy) || !ready(getState());
+  };
+
+  return [
+    el("div", { className: "bar-row" }, strip),
+    el("div", { className: "bar-row" }, title, back, el("div", { className: "bar-end" }, go)),
+  ];
+}
+
 function renderIdle(s: AppState): Node[] {
   const busy = s.busy !== "";
   const input = el("input", {
@@ -2898,6 +3312,17 @@ function renderIdle(s: AppState): Node[] {
   });
   long.onclick = () => setState({ mode: "long", phase: "stacking", error: "" });
 
+  const lofi = el("button", {
+    className: "btn-gray",
+    textContent: "Lofi →",
+    title: "Mix a track, a picture and some speeches into one long video",
+    disabled: busy,
+  });
+  // Claims `mode`, like every other exit from `idle` that reaches `preview`.
+  // Miss it and an ordinary short would publish this journey's classification
+  // — the failure the flag exists to prevent, in reverse.
+  lofi.onclick = () => setState({ mode: "lofi", phase: "lofi", error: "" });
+
   const chat = el("button", {
     className: "btn-gray",
     textContent: "Chat moments →",
@@ -2914,7 +3339,7 @@ function renderIdle(s: AppState): Node[] {
   if (clipList.length > 0) {
     rows.push(el("div", { className: "bar-row" }, renderClipPicker(s)));
   }
-  rows.push(el("div", { className: "bar-row" }, long, chat));
+  rows.push(el("div", { className: "bar-row" }, long, lofi, chat));
   return rows;
 }
 
@@ -2971,9 +3396,11 @@ function render(): void {
     outVideoEl.hidden = s.phase !== "preview";
     if (s.phase !== "preview") outVideoEl.pause();
   }
-  // Only in preview, and only on the long journey: the framing canvas lives
-  // in this same slot and is always 1080x1920.
-  outSlot.classList.toggle("is-wide", s.phase === "preview" && s.mode === "long");
+  // Only in preview, and NOT `=== "long"`: every journey but the short one
+  // renders 16:9, and an enumeration here grows with each new journey. The
+  // framing canvas lives in this same slot on the short path and is always
+  // 1080x1920.
+  outSlot.classList.toggle("is-wide", s.phase === "preview" && s.mode !== "short");
   // The crop-box overlay is positioned against videoEl and, like it, is
   // built once and never torn down on a phase change (see the comment by
   // its declaration) — only hidden, so "Back to trim" doesn't leave it
@@ -2988,6 +3415,7 @@ function render(): void {
 
   publishForm.hidden = s.phase !== "preview";
   stackPanel.hidden = s.phase !== "stacking";
+  lofiPanel.hidden = s.phase !== "lofi";
   momentsPanel.hidden = s.phase !== "moments";
 
   if (s.phase === "idle") barSlot.replaceChildren(...renderIdle(s));
@@ -3001,6 +3429,24 @@ function render(): void {
     // on a quiet keystroke.
     barSlot.replaceChildren(...renderStacking());
     stackPanel.replaceChildren(...renderStackPanel());
+  } else if (s.phase === "lofi") {
+    barSlot.replaceChildren(...renderLofiBar());
+    lofiPanel.replaceChildren(...renderLofiPanel());
+    // The canvas has no size until the bar is actually in the document, so
+    // the first paint happens here rather than inside renderLofiBar — the
+    // same reason drawWave is only ever called from inside its own
+    // ResizeObserver rather than at build time. One observer, replaced per
+    // render: the strip is a new node each time, and an observer per built
+    // canvas would otherwise accumulate one per render for the life of the
+    // phase.
+    const lofiStrip = barSlot.querySelector<HTMLDivElement>(".lofi-strip");
+    const lofiCanvas = barSlot.querySelector<HTMLCanvasElement>(".lofi-wave");
+    lofiResize?.disconnect();
+    if (lofiStrip && lofiCanvas) {
+      drawLofiStrip(lofiStrip, lofiCanvas);
+      lofiResize = new ResizeObserver(() => drawLofiStrip(lofiStrip, lofiCanvas));
+      lofiResize.observe(lofiStrip);
+    }
   } else {
     // Bar first: it assigns publishBtn, which the panel's title handler flips
     // in place on a quiet keystroke.
