@@ -21,6 +21,9 @@ let music = "";
 let speech = "";
 /** The same, silent, for the anullsrc stand-in. */
 let mute = "";
+/** A 1s silent crimson cut-in — short enough to place two of them well under
+ *  2 * FADE apart, for the between-cuts fade-clamp regression test. */
+let bump = "";
 let out = "";
 
 beforeAll(async () => {
@@ -54,6 +57,13 @@ beforeAll(async () => {
     "-v", "error",
     "-f", "lavfi", "-i", "color=c=0x30C030:s=1080x1920:d=2:r=30",
     "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", mute,
+  ]);
+
+  bump = join(dir, "bump.mp4");
+  await run("ffmpeg", [
+    "-v", "error",
+    "-f", "lavfi", "-i", "color=c=0xC03030:s=1080x1920:d=1:r=30",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", bump,
   ]);
 
   out = join(dir, "out.mp4");
@@ -176,5 +186,32 @@ describe("renderLofi", () => {
     const between = await pixelAt(two, 14, 960, 540);
     expect(between.b).toBeGreaterThan(90);
     expect(between.r).toBeLessThan(80);
+  }, 180_000);
+
+  it("clamps each background fade to half the gap between two close cut-ins", async () => {
+    // Two 1s cut-ins 0.6s apart — under 2 * FADE (1.0s), so an unclamped
+    // fade-in after the first (a bare [end, end + FADE] window) and an
+    // unclamped fade-out before the second (a bare [start - FADE, start]
+    // window) would overlap by 0.4s. Chained on the same stream, the
+    // overlap multiplies the two ramps together and the background never
+    // makes it back to full brightness in between — the exact failure this
+    // clamp exists to prevent, distinct from the per-cut `d = min(FADE, dur
+    // / 3)` clamp that bounds a fade against its OWN cut-in's length.
+    //
+    // Split the 0.6s gap in half (0.3s each) and the two ramps meet exactly
+    // at the midpoint with no overlap: the first cut ends at t=6, its
+    // fade-in runs [6, 6.3], the second starts at t=6.6, its fade-out runs
+    // [6.3, 6.6]. t=6.3 lands on a frame boundary at 30fps (189/30), so
+    // sampling there should read the background at full brightness.
+    const close = join(dir, "close.mp4");
+    await renderLofi({
+      image: bg,
+      music,
+      cuts: [{ path: bump, at: 5 }, { path: bump, at: 6.6 }],
+      out: close,
+    });
+    const between = await pixelAt(close, 6.3, 960, 540);
+    expect(between.g).toBeGreaterThan(90);
+    expect(between.b).toBeGreaterThan(90);
   }, 180_000);
 });

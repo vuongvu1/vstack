@@ -160,15 +160,42 @@ export async function renderLofi(opts: {
   // sampled t, including t=0, for a cut at t=12. `enable=` makes each fade a
   // no-op passthrough outside its own [st, st+d], so the two filters can be
   // chained without one undoing the other's untouched frames.
+  // Each fade is also clamped to HALF the room actually available on its own
+  // side — the gap to the previous cut-in's own end (or to the track's
+  // start, for the first) on the way out, and the gap to the next cut-in's
+  // start (or to the track's end, for the last) on the way in. Cuts closer
+  // together than 2 * FADE would otherwise overlap their fade-in and the
+  // neighbour's fade-out on the same stream: chained through `enable=`,
+  // that re-dims a picture the other pair had just restored, and at a small
+  // enough gap the background never returns to full brightness at all.
+  // Splitting the gap in half is the same "two neighbours each give up half
+  // the seam" rule `GUTTER / 2` follows in `src/frame.ts` — both edges give
+  // up an equal share so the two ramps meet exactly, never overlap. A gap of
+  // zero degenerates to no dip at all between that pair, which is correct:
+  // there is no room for one. This is a DIFFERENT clamp from the per-cut
+  // `d = Math.min(FADE, dur / 3)` below, which bounds a fade against its own
+  // cut-in's length rather than against the space around it — collapsing
+  // the two into one would tie the background's transition time to a
+  // property (the speech's duration) that has nothing to do with it.
   const bgFades = cuts
     .map((cut, i) => {
       const dur = probed[i]?.seconds ?? 0;
-      const outAt = Math.max(0, cut.at - FADE);
+      const prevEnd = i > 0 ? (cuts[i - 1]?.at ?? 0) + (probed[i - 1]?.seconds ?? 0) : 0;
+      const nextAt = i < cuts.length - 1 ? (cuts[i + 1]?.at ?? seconds) : seconds;
+      const gapBefore = Math.max(0, cut.at - prevEnd);
+      const gapAfter = Math.max(0, nextAt - (cut.at + dur));
+      const dOut = Math.min(FADE, gapBefore / 2);
+      const dIn = Math.min(FADE, gapAfter / 2);
+      const outAt = cut.at - dOut;
       const inAt = cut.at + dur;
-      return (
-        `fade=t=out:st=${outAt}:d=${FADE}:enable='between(t,${outAt},${outAt + FADE})',` +
-        `fade=t=in:st=${inAt}:d=${FADE}:enable='between(t,${inAt},${inAt + FADE})',`
-      );
+      let f = "";
+      if (dOut > 0) {
+        f += `fade=t=out:st=${outAt}:d=${dOut}:enable='between(t,${outAt},${outAt + dOut})',`;
+      }
+      if (dIn > 0) {
+        f += `fade=t=in:st=${inAt}:d=${dIn}:enable='between(t,${inAt},${inAt + dIn})',`;
+      }
+      return f;
     })
     .join("");
   legs.push(
