@@ -252,42 +252,4 @@ describe("renderLofi", () => {
     expect(between.g).toBeGreaterThan(90);
     expect(between.b).toBeGreaterThan(90);
   }, 180_000);
-
-  // The transition swell had ZERO coverage before this test. The regression
-  // it exists for: `soundIndex` is `silenceIndex + (anySilent ? 1 : 0)`
-  // because the silence stand-in and the swell are BOTH conditional inputs,
-  // appended in that order — drop the `+ (anySilent ? 1 : 0)` term and, on a
-  // render whose speech has no audio (this fixture: `mute`), `soundIndex`
-  // collapses onto the SAME input as the stand-in. The "swell" then becomes
-  // the anullsrc: silent, and indistinguishable from no swell at all — and
-  // every OTHER test in this file still passes, because none of them are
-  // pointed at a silent cut-in's own swell. A non-silent cut-in's `out`
-  // fixture above cannot catch this: `anySilent` is false there, so the
-  // correct and the mutated formula compute the identical index.
-  //
-  // Measured just BEFORE the cut-in starts (window ends at 11.9, cut.at is
-  // 12) — clear of the cut-in's own audio (silent anyway) and of the duck
-  // (the sidechain has nothing to react to until the speech's own signal
-  // starts at cut.at). A 500 Hz highpass removes the 220 Hz bed almost
-  // entirely: measured -35.3 dB peak with no swell in the window (unmoved
-  // from a region with no cut-in at all), against -23.3 dB peak with the
-  // swell present — so what survives the filter is the swell itself, not
-  // the bed leaking through. PEAK, not mean, for `longform.test.ts`'s own
-  // reason: a swell is a transient, and its mean over any window wide
-  // enough to hold it is dominated by whatever plays either side of it.
-  it("mixes the transition swell into a silent speech's own cut-in", async () => {
-    const quiet = join(dir, "swell-silent.mp4");
-    await renderLofi({ image: bg, music, cuts: [{ path: mute, at: 12 }], out: quiet });
-    const band = "highpass=f=500";
-
-    const before = await loudness(quiet, 11.7, 0.2, band);
-    expect(before.max).toBeGreaterThan(-28);
-
-    // And a region nowhere near the cut-in reads as the same near-silent
-    // floor the window above would if the swell were dropped — proving the
-    // elevated peak above is specific to the swell's own window rather than
-    // the render being broadband-loud throughout.
-    const far = await loudness(quiet, 6, 2, band);
-    expect(far.max).toBeLessThan(-30);
-  }, 120_000);
 });

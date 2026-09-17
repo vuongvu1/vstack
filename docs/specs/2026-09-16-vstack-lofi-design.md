@@ -28,6 +28,20 @@
 > cropped; it is accidentally still correct, but for a different reason than
 > the one it states.
 
+> **Amended 2026-09-17**, on the user's call after watching a real render:
+> the lofi journey plays **no transition swell**. `long-form-transition-sound.mp3`
+> stays bundled and stays the LONG journey's asset — `longform.ts` still
+> mixes it over every cut between two compilation parts — but a cut-in here
+> is a voice arriving inside a track that never stops playing, not a chapter
+> break between two unrelated videos, and a swell over it is one sound too
+> many. Everything below about `TRANSITION_PATH`, `TRANSITION_PEAK`,
+> `TRANSITION_GAIN`, the `asplit`/`adelay` fan-out and the swell's own
+> `amix` describes a graph that no longer exists: `[ducked][sm]amix=…
+> duration=first` now produces `[a]` directly. `checkLofi` went with it —
+> it existed only to check that one asset at boot, and this journey now
+> bundles nothing. The dip to black at each cut-in's edges is unchanged;
+> only the sound over it is gone.
+
 Supersedes nothing. It adds a **fourth journey** beside the short one, the
 long one and the chat-moments dead end: `idle → lofi → preview`. A user
 picks one music track, one background image and a handful of speech clips;

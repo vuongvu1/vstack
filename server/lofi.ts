@@ -5,8 +5,6 @@
  *  `MEDIA_DIR` nor `OUT_DIR`, and may read `probeFile` and nothing else. */
 
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { toolError } from "./errors.ts";
 import { probeAudio, probeFile } from "./ffmpeg.ts";
@@ -61,22 +59,6 @@ const DUCK_RATIO = 8;
 const DUCK_ATTACK = 20;
 const DUCK_RELEASE = 400;
 
-/** The swell over each cut-in.
- *
- *  Re-derived here rather than imported from `longform.ts`, which is this
- *  module's SIBLING: a path is not a dependency, and importing across that
- *  line would put a cycle-shaped edge into a layering that is deliberately
- *  acyclic. Same call `longform.ts` itself made against `starter.ts`. */
-const asset = (name: string) => fileURLToPath(new URL(`assets/${name}`, import.meta.url));
-export const TRANSITION_PATH = asset("long-form-transition-sound.mp3");
-
-/** Where the swell peaks inside the asset — it opens on ~0.6s of near
- *  silence, so it is placed by its peak and not by its start. A delay of the
- *  boundary itself would put the swell a second after the cut, over a
- *  picture that has already come back up. */
-export const TRANSITION_PEAK = 1.2;
-const TRANSITION_GAIN = 1.0;
-
 /** One speech, and where its own picture starts in the music's timeline. Its
  *  duration is probed here rather than taken from the caller: the graph's
  *  fades, its `enable=` window and its audio delay all have to agree about
@@ -89,16 +71,6 @@ const TRANSITION_GAIN = 1.0;
  *  sorts before calling this, which is what keeps the one real caller
  *  safe. */
 export type Cut = { path: string; at: number };
-
-/** Boot check for the one asset this journey plays. Hard, like
- *  `checkLongform`'s: a missing file fails a render that is minutes of
- *  encoding away from discovering it. */
-export async function checkLofi(): Promise<void> {
-  if (!existsSync(TRANSITION_PATH)) {
-    console.error(`vstack: bundled asset missing at ${TRANSITION_PATH}.`);
-    process.exit(1);
-  }
-}
 
 /** Renders the picture, the track and the cut-ins into one 1920x1080 file.
  *
@@ -134,13 +106,13 @@ export async function renderLofi(opts: {
 
   const probed = await Promise.all(cuts.map((c) => probeFile(c.path)));
   const anySilent = probed.some((p) => !p.hasAudio);
-  // Positional and conditional, exactly as `stackWide`'s inputs are: image,
-  // music, the cuts, then the stand-in, then the swell. Appending the swell
-  // AFTER the stand-in is what keeps the stand-in's index the arithmetic it
-  // already was.
+  // Positional and conditional, the way `stackWide`'s inputs are: image,
+  // music, the cuts, then the silence stand-in when some cut-in carries no
+  // audio of its own. The stand-in is LAST on purpose — an input added after
+  // it would shift its index and break silent cut-ins only, which is the
+  // failure `server/starter.test.ts` documents for the same arithmetic.
   const firstCut = 2;
   const silenceIndex = firstCut + cuts.length;
-  const soundIndex = silenceIndex + (anySilent ? 1 : 0);
 
   const inputs: string[] = [
     "-loop", "1", "-framerate", String(FPS), "-t", String(seconds), "-i", image,
@@ -148,7 +120,6 @@ export async function renderLofi(opts: {
   ];
   for (const cut of cuts) inputs.push("-i", cut.path);
   if (anySilent) inputs.push("-f", "lavfi", "-i", `anullsrc=r=${RATE}:cl=stereo`);
-  if (cuts.length > 0) inputs.push("-i", TRANSITION_PATH);
 
   const legs: string[] = [];
 
@@ -298,7 +269,7 @@ export async function renderLofi(opts: {
     // track, so the sidechain now runs exactly as long as `[music]` does and
     // the compressor has something to follow all the way to the end.
     //
-    // Only `[sc]` needs this. `[sm]` — the AUDIBLE copy — reaches `[mix]`
+    // Only `[sc]` needs this. `[sm]` — the AUDIBLE copy — reaches the mix
     // through `amix ... duration=first`, which already silence-pads a
     // shorter second input up to its first input's length on its own; once
     // `[ducked]` is the full track length, `[sm]`'s own shortness is handled
@@ -312,25 +283,10 @@ export async function renderLofi(opts: {
     // `duration=first` keeps the programme's length — the music's — so a
     // delayed stream cannot extend the render past the duration the caller
     // has already committed to in the filename.
-    legs.push(`[ducked][sm]amix=inputs=2:normalize=0:duration=first[mix]`);
-
-    const taps = cuts.map((_, i) => `[ts${i}]`).join("");
-    legs.push(`[${soundIndex}:a]asplit=${cuts.length}${taps}`);
-    cuts.forEach((cut, i) => {
-      // Placed by the swell's PEAK, clamped at zero because `adelay` cannot
-      // take a negative offset and a cut-in inside the lead-in would ask for
-      // one. On the way IN only: leaving a cut-in has the voice ending and
-      // the track coming back, and a second swell there is noise.
-      const delay = Math.max(0, Math.round((cut.at - TRANSITION_PEAK) * 1000));
-      legs.push(
-        `[ts${i}]adelay=${delay}:all=1,volume=${TRANSITION_GAIN},` +
-          `aresample=${RATE},${fmt}[tsd${i}]`,
-      );
-    });
-    const delayed = cuts.map((_, i) => `[tsd${i}]`).join("");
-    legs.push(
-      `[mix]${delayed}amix=inputs=${cuts.length + 1}:normalize=0:duration=first[a]`,
-    );
+    // The programme's own length is the music's, so `duration=first` with
+    // `[ducked]` first is what stops a delayed speech extending the render
+    // past the duration the caller has already committed to in the filename.
+    legs.push(`[ducked][sm]amix=inputs=2:normalize=0:duration=first[a]`);
   }
 
   try {

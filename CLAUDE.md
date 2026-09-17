@@ -77,8 +77,9 @@ pnpm youtube-auth  # one-off OAuth setup for publishing (see server/youtube.ts)
 Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH, the speech venv from
 `pnpm tts-setup`, and all five bundled assets in `server/assets/`. The server checks
 all of it at boot and exits with an install hint if any is missing —
-`checkStarter` owns the short journey's four, `checkLongform` the long
-journey's one, and `checkLofi` the lofi journey's one. Nothing
+`checkStarter` owns the short journey's four and `checkLongform` the long
+journey's one. The lofi journey bundles no asset of its own, so it has no
+boot check — it plays the user's own three files and nothing else. Nothing
 here needs macOS `say` any more — the starter screen's voice is VieNeu-TTS,
 and the only remaining macOS dependency is `afplay` in `pnpm voices` and
 `open -R` in `/api/reveal`.
@@ -99,9 +100,9 @@ server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
 server/longform.ts WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK,
                    checkLongform, Trim/MIN_KEPT/detectTrim/keptRange,
                    stackWide (the long journey's one ffmpeg pass)
-server/lofi.ts     WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK, checkLofi,
-                   Cut/renderLofi (the lofi journey's one ffmpeg pass —
-                   overlay, not concat)
+server/lofi.ts     WIDE, FADE, Cut/renderLofi (the lofi journey's one ffmpeg
+                   pass — overlay, not concat). No bundled asset, so no
+                   boot check
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
                    starterDuration, checkStarter, installedVoices,
                    knownVoices, synthesize, speak, prependStarter (the title
@@ -189,10 +190,9 @@ it takes an output path from the caller and needs neither `MEDIA_DIR` nor
 `lofi.ts` sits beside `ffmpeg.ts`, `longform.ts` and `starter.ts` for the
 same reason — every path is the caller's, neither directory is needed — and
 imports `probeFile` and `probeAudio` from `ffmpeg.ts` and nothing else. It
-re-derives `TRANSITION_PATH` and declares its own `FADE` rather than
-importing either from `longform.ts`, which is its SIBLING rather than a
-layer below it — the same call `longform.ts` already made against
-`starter.ts` for `~/.vstack/`. `src/lofi.ts` sits at the very bottom beside
+declares its own `FADE` rather than importing `longform.ts`'s, which is its
+SIBLING rather than a layer below it — the same call `longform.ts` already
+made against `starter.ts` for `~/.vstack/`. `src/lofi.ts` sits at the very bottom beside
 `geometry.ts` and `segments.ts` and imports nothing — a music track's own
 loudness envelope and a speech's own length are enough to place it, with no
 need to reach into `layout.ts`, `custom.ts` or `frame.ts`.
@@ -929,8 +929,7 @@ when the two can silently disagree.
 `enable='between(t,a,b)'`.** A gated step has no attack or release and
 clicks audibly at both edges of every cut-in. `DUCK_THRESHOLD`/`DUCK_RATIO`
 are the compressor's own two parameters — `sidechaincompress` takes no
-target-depth input, so there is deliberately no dB knob here the way
-`TRANSITION_GAIN` is one for the swell. The duck is also what lets `troughs`
+target-depth input, so there is deliberately no dB knob here at all. The duck is also what lets `troughs`
 (above) get away with no quietness threshold at all: it only has to find a
 THIN stretch, because the render itself makes that stretch sound deliberate
 regardless of how thin it is.
@@ -1311,13 +1310,7 @@ catch the `sidechaincompress` truncation bug (above) by a route the
 duration assertion cannot reach — the audio STREAM's own duration via
 `ffprobe -select_streams a:0`, and the bed's loudness well past the last
 speech's end — and a third renders two cut-ins to prove each stays inside
-its own window. A fourth mixes the transition swell into a SILENT cut-in
-(the fixture with no audio of its own) and asserts on the swell's own PEAK,
-above a 500 Hz highpass that removes the sine bed almost entirely — this is
-the one that catches `soundIndex` losing its `+ (anySilent ? 1 : 0)` term,
-which a non-silent cut-in cannot: `anySilent` is false there, so the correct
-formula and the mutated one compute the same input index and every other
-test in the file stays green. Mutation-pinned: dropping the duck, dropping the fades, and
+its own window. Mutation-pinned: dropping the duck, dropping the fades, and
 dropping the 300-3000 Hz band each fail exactly one assertion. Dropping the
 output `-t` was also run and failed nothing — it is provably redundant for
 this graph (the image input's own `-t` already bounds `[bg]`/`[v]`, and two
