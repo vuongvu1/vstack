@@ -115,10 +115,9 @@ server/assets/     starter-music.mp3 (the bed), before-video-start-sound.mp3
                    end_video.mp4 (the outro, concatenated after the clip),
                    long-form-transition-sound.mp3 (the swell over each cut —
                    the LONG journey's asset, owned by longform.ts),
-                   vinyl-crackle.mp3 (the lofi journey's surface noise, owned
-                   by lofi.ts — built from the lead-in grooves of two
-                   public-domain Edison cylinder recordings on Wikimedia
-                   Commons, reversed and speed-varied into a ~12s loop)
+                   vinyl-crackle.mp3 (the lofi journey's surface noise,
+                   owned by lofi.ts — supplied by the user; 3m22s, and AAC
+                   inside a .mp3 name, which ffmpeg sniffs past)
 server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
                    buildSnippet, accessToken, uploadVideo, publishProgress,
                    setThumbnail
@@ -969,18 +968,46 @@ either way, bisect against the whole graph. It is also the effect least
 suited to the material: on singing a wobble reads as a warped record, on
 speech as seasick.
 
-**The crackle is two summed layers, not one gated one.** A bed at
-`CRACKLE_BED` runs the whole render and each cut-in adds a second leg at
-`CRACKLE_BOOST`, faded in and out. A `volume` gated on `enable=` would step
-instead, and a step clicks at both edges — the same reason the duck is a
-compressor rather than a gate. Both layers carry the speech's own
-300-3000 Hz band: a real record's surface noise is broadband, but leaving it
-so puts energy above 6 kHz across the whole render and breaks the
-band-limit assertion, and rolling it off with the voice is truer to what is
-being imitated anyway — one worn-out playback chain, not a clean one with
-noise pasted on. The asset is looped with `-stream_loop -1` and every tap
-`atrim`s its own copy, so the infinite input can never outrun the output's
-own `-t`.
+**The crackle is two summed layers, not one gated one — and they POWER-sum.**
+A bed at `CRACKLE_BED` runs the whole render and each cut-in adds a second
+leg at `CRACKLE_BOOST`, faded in and out. A `volume` gated on `enable=`
+would step instead, and a step clicks at both edges — the same reason the
+duck is a compressor rather than a gate.
+
+Each tap reads a DIFFERENT moment of the asset: the bed runs from its start,
+a boost leg is delayed onto its own cut-in. So the two are uncorrelated
+noise and add as power, not amplitude — equal gains give +3 dB under a
+cut-in, not the +6 dB the numbers look like they promise. Measured at
+exactly +3.0 dB with both at 0.6. To lift by roughly N dB, the boost wants
+`bed * sqrt(10^(N/10) - 1)`.
+
+**The crackle is NOT band-limited, though the voice is, and that asymmetry
+is what makes it audible at all.** Rolling the noise off to the voice's own
+300-3000 Hz sounds principled and is what the first version did. Measured
+against a real track it is also inaudible: the noise sits 34 dB under the
+music below 3 kHz and only 10 dB under it above 3 kHz, so band-limiting
+throws away the only half that could be heard and leaves the rest exactly
+where the music is loudest. Verified by rendering the same demo with the
+crackle gain at zero — identical to 0.1 dB in both mean and peak, i.e. the
+bed was contributing nothing whatsoever. Full spectrum, the same A/B moves
+the >6 kHz band by 5 dB.
+
+The consequence is that the finished mix carries content above 6 kHz, so
+`server/lofi.test.ts`'s band-limit assertion measures the SPEECH's own
+contribution (against its unfiltered source) rather than the whole mix. It
+was only ever about the speech.
+
+**A sparse-pop asset has to be LEVELLED before either gain can hear it.**
+The bundled noise measures a 41 dB crest factor — mean -46.5 dB, peaks
+-5.6 dB. Its mean is what sits under the music and its peaks are what
+decide when it clips, so raising the gain until the bed is audible drives
+the pops through the ceiling first: at the gain needed for parity above
+6 kHz they land at +2 dBFS. `CRACKLE_LEVEL`, a `compand`, lifts the floor
+between pops by ~19 dB and brings the crest to 27 dB, after which a bed
+gain well under unity is both audible and clear of clipping. It costs
+character — a levelled record reads as continuous surface noise rather than
+the occasional pop — and dropping the filter from the two taps is how to
+get the raw asset back.
 
 ## Gotchas that each cost real time
 
@@ -1358,15 +1385,19 @@ catch the `sidechaincompress` truncation bug (above) by a route the
 duration assertion cannot reach — the audio STREAM's own duration via
 `ffprobe -select_streams a:0`, and the bed's loudness well past the last
 speech's end — and a third renders two cut-ins to prove each stays inside
-its own window. A fourth covers the crackle — the bed audible well clear of
-any cut-in, and measurably louder inside one — measured in 1-2.5 kHz, a band
-the fixtures otherwise leave empty, and against the SILENT fixture, because
-a real speech is white noise across that same band and would drown the thing
-under test. Its bed threshold is -28 dB rather than a comfortable floor for
-a reason worth keeping: this band reads about -35 dB with no crackle at all
-(the AAC-encoded sine's own artefacts) and about -17 dB with the bed in
-place, and a looser bound passes with the bed gain at zero — verified, and
-the first version of that assertion did exactly that. Mutation-pinned:
+its own window. A fourth covers the crackle — the bed proven in the band
+above 6 kHz, where nothing else in the fixture lives (the music is a 220 Hz
+sine and the speech is lowpassed at 3 kHz), and the per-cut-in lift proven
+lower down at 1-2.5 kHz, where the boost shows most. Both on PEAK rather
+than mean, which is the opposite of what a bed suggests and is forced by
+the asset: sparse pops whose mean sits BELOW the fixture's own noise floor,
+so a mean-based version of the test could not tell the bed from silence —
+switching the bed off moved it by 0.2 dB. The renders are deterministic, so
+peak is stable here. The lift's bound sits above +3 dB deliberately: the
+two legs are uncorrelated and power-sum, so equal gains alone would give
++3 dB and a looser bound would pass on the boost leg merely existing.
+Mutation-pinned: zeroing the bed gain and zeroing the boost gain each fail
+one of the two. Also mutation-pinned: 
 zeroing the bed gain and zeroing the boost gain each fail one of its two
 assertions. Also mutation-pinned: dropping the duck, dropping the fades, and
 dropping the 300-3000 Hz band each fail exactly one assertion. Dropping the

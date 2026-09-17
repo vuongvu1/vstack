@@ -107,10 +107,38 @@ const asset = (name: string) => fileURLToPath(new URL(`assets/${name}`, import.m
  *  Two gains rather than a gate: the bed plays at `CRACKLE_BED` for the
  *  whole render and each cut-in adds a second leg at `CRACKLE_BOOST`, faded
  *  in and out. A `volume` gated on `enable=` would step, and a step clicks
- *  at both edges — the same reason the duck is a compressor. */
+ *  at both edges — the same reason the duck is a compressor.
+ *
+ *  The two legs POWER-sum, not amplitude-sum, and the difference is not
+ *  academic. Each tap reads a different moment of the asset — the bed runs
+ *  from its start, a boost leg is delayed onto its own cut-in — so the two
+ *  are uncorrelated noise: equal gains give +3 dB under a cut-in, not the
+ *  +6 dB the numbers look like they promise. Measured at exactly +3.0 dB
+ *  when both were 0.6. To lift by roughly N dB the boost wants
+ *  `bed * sqrt(10^(N/10) - 1)`, which is where 0.9 against a 0.6 bed comes
+ *  from: about +5 dB, "a bit louder" rather than a different scene. */
 export const CRACKLE_PATH = asset("vinyl-crackle.mp3");
-const CRACKLE_BED = 0.5;
-const CRACKLE_BOOST = 1.1;
+const CRACKLE_BED = 0.25;
+const CRACKLE_BOOST = 0.55;
+
+/** Levels the noise before either gain sees it, and this is what makes the
+ *  bed audible at all rather than a knob nobody can hear.
+ *
+ *  A crackle recording is sparse pops over near-silence: the asset here
+ *  measures a 41 dB crest factor (mean -46.5, peaks -5.6). Its MEAN is what
+ *  sits under the music, and its PEAKS are what decide when it clips, so
+ *  raising the gain until the bed is heard puts the pops through the
+ *  ceiling first — measured, at the gain needed for parity above 6 kHz the
+ *  peaks land at +2 dBFS. `compand` closes that gap: it lifts the quiet
+ *  floor between pops by about 19 dB and brings the crest to 27 dB, after
+ *  which a bed gain WELL under unity is both audible and clear of clipping.
+ *
+ *  The cost is character, and it is a real one: a levelled record sounds
+ *  more like continuous surface noise and less like the occasional pop.
+ *  Drop this filter from the two taps below to get the raw asset back, and
+ *  expect to hear it only in a quiet passage. */
+const CRACKLE_LEVEL =
+  "compand=attacks=0.01:decays=0.2:points=-70/-35|-30/-18|-10/-10|0/-8";
 
 /** One speech, and where its own picture starts in the music's timeline. Its
  *  duration is probed here rather than taken from the caller: the graph's
@@ -376,25 +404,35 @@ export async function renderLofi(opts: {
     // faded at both edges and delayed onto its own cut. They SUM, so the
     // noise is quiet throughout and lifts under each voice.
     //
-    // Both taps carry the speech's own 300-3000 Hz band. A real record's
-    // surface noise is broadband, but leaving it so would put energy above
-    // 6 kHz across the whole render — and "the mix is band-limited" is an
-    // assertion this suite makes and this feature should not quietly break.
-    // Rolling the noise off with the voice is also what the effect is
-    // imitating: one worn-out playback chain, not a clean one with noise
-    // added.
-    const ckBand = `highpass=f=${SPEECH_HP},lowpass=f=${SPEECH_LP}`;
+    // The crackle plays at FULL SPECTRUM — no band-limiting, unlike the
+    // voice. Rolling it off to 300-3000 Hz the way the voice is rolled off
+    // sounds principled and is what the first version did, but it makes the
+    // crackle inaudible: measured against a real track, the noise sits 34 dB
+    // under the music below 3 kHz and only 10 dB under it above 3 kHz, so
+    // the rolled-off half is the only half that could ever be heard, and
+    // what survives lands exactly where the music is loudest. Verified by
+    // rendering the same demo with the crackle gain at zero: identical to
+    // 0.1 dB in mean AND peak, i.e. the bed was contributing nothing at all.
+    //
+    // The cost is that the finished mix is no longer band-limited above
+    // 6 kHz. That is fine, and the test that used to assert it now measures
+    // the SPEECH's own contribution rather than the whole mix — the speech
+    // is what the band-limit was ever about.
+    //
+    // ponytail: no filtering on the noise whatsoever, not even a rumble
+    // highpass. It is the user's own asset, played as supplied; add one the
+    // day a file with real low-end rumble fights the music.
     const ckTaps = [`[ckbed]`, ...cuts.map((_, i) => `[ckup${i}]`)].join("");
     legs.push(`[${crackleIndex}:a]asplit=${cuts.length + 1}${ckTaps}`);
     legs.push(
-      `[ckbed]atrim=0:${seconds},asetpts=PTS-STARTPTS,${ckBand},` +
+      `[ckbed]atrim=0:${seconds},asetpts=PTS-STARTPTS,${CRACKLE_LEVEL},` +
         `volume=${CRACKLE_BED},aresample=${RATE},${fmt}[bed]`,
     );
     cuts.forEach((cut, i) => {
       const dur = probed[i]?.seconds ?? 0;
       const d = Math.min(FADE, dur / 3);
       legs.push(
-        `[ckup${i}]atrim=0:${dur},asetpts=PTS-STARTPTS,${ckBand},` +
+        `[ckup${i}]atrim=0:${dur},asetpts=PTS-STARTPTS,${CRACKLE_LEVEL},` +
           `volume=${CRACKLE_BOOST},afade=t=in:st=0:d=${d},` +
           `afade=t=out:st=${dur - d}:d=${d},` +
           `adelay=${Math.round(cut.at * 1000)}:all=1,aresample=${RATE},${fmt}[ckb${i}]`,

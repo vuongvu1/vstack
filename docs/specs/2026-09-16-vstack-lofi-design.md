@@ -61,6 +61,17 @@
 > nothing in silence to treat and because filtering silence is what
 > triggered the NaN.
 
+> **Amended 2026-09-18 (second)**, after listening. Three corrections to the
+> amendment above, all found by measuring a render rather than by reasoning:
+> the crackle asset is the USER'S own file, not the Edison-cylinder loop
+> that first shipped; the crackle plays at FULL SPECTRUM rather than
+> band-limited with the voice (rolled off it is provably inaudible — the
+> same render with its gain at zero measured identical to 0.1 dB); and it is
+> levelled with `compand` before either gain, because a 41 dB crest factor
+> means the gain that makes the bed audible is also the gain that clips its
+> pops. The band-limit test now measures the speech's own contribution
+> rather than the whole mix, which is all it was ever about.
+
 Supersedes nothing. It adds a **fourth journey** beside the short one, the
 long one and the chat-moments dead end: `idle → lofi → preview`. A user
 picks one music track, one background image and a handful of speech clips;
