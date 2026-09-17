@@ -15,6 +15,18 @@
 > `DUCK_DB`. `sidechaincompress` takes a threshold and a ratio, not a target
 > depth, so a dB knob would have been a number that named nothing in the
 > graph.
+>
+> **Amended 2026-09-17**, after `c629fba` (a browser-verified defect: a
+> non-16:9 picture stretched to 1920x1080 warped visibly for the whole
+> render, behind every second of it, in a way a 1280x720 thumbnail glanced
+> at once does not). The background is now **cover-cropped** by `renderWide`,
+> not stretched — `src/thumb.ts` splits `decodeBitmap`/`encodeJpeg` out as
+> the shared steps and gives the background its own `increase`+crop drawing
+> distinct from `renderThumb`'s stretch. The "Unlike the background, the
+> thumbnail is stretched rather than cropped" line below was written when
+> *both* were stretched and reads as though the background was always
+> cropped; it is accidentally still correct, but for a different reason than
+> the one it states.
 
 Supersedes nothing. It adds a **fourth journey** beside the short one, the
 long one and the chat-moments dead end: `idle → lofi → preview`. A user
@@ -358,10 +370,25 @@ encodes competing for CPU in the full suite):
 - a frame on a dip is near black,
 - the music's level during a speech is measurably below its level before
   it,
-- the speech's energy above 4 kHz is near zero.
+- the speech's energy above 4 kHz is near zero,
+- the transition swell survives a SILENT cut-in, measured on its own peak
+  above a highpass that removes the bed — the one case that catches the
+  swell's conditional input index losing its silence-stand-in offset, which
+  a non-silent cut-in cannot (the correct and the broken formula agree
+  there).
 
-Mutation-pinned: dropping the duck, dropping `-t`, dropping the fades, and
-reversing the overlay order each fail exactly one of those.
+Mutation-pinned: dropping the duck, dropping the fades, and dropping the
+speech's band-limiting filter each fail exactly one of those. Dropping the
+output `-t` was also run and caught nothing — it is provably redundant for
+this graph (the image input's own `-t` already bounds the video, and two
+chained `amix ... duration=first` stages bound the audio independently of
+it) and is kept for defence in depth against a future graph change, not as
+a guarded invariant. "Reversing the overlay order" was never run.
+
+`src/lofi.test.ts` also covers `clampPlacement`: an ordinary move, each of
+the track's own two bounds, each neighbour's bound, and the drag-past-a-
+neighbour case that leaves no legal position at all, which is refused
+rather than resolved to an illegal `at`.
 
 The route, the panel and the pickers have no tests, like the rest of the
 network and DOM surface.

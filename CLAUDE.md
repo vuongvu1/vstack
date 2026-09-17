@@ -139,8 +139,8 @@ src/frame.ts       GUTTER/CORNER_RADIUS, windowOf/windowsOf, ringOf, maskRgba
 src/starter.ts     TITLE_FONT, drawTitle (title → a canvas), renderTitleArt
                    (that same draw, encoded as a transparent PNG)
 src/thumb.ts       THUMB, renderThumb (any picture → 1280x720 JPEG, stretched),
-                   WIDE_IMAGE, renderWide (the same stretch at 1920x1080 —
-                   the lofi journey's background)
+                   WIDE_IMAGE, renderWide (any picture → 1920x1080 JPEG,
+                   cover-cropped — the lofi journey's background)
 src/state.ts       AppState, setState/setQuiet, save/restore
 src/api.ts         13 fetch wrappers
 src/format.ts      mmss / clock / slugify (shared client + server)
@@ -326,8 +326,8 @@ and blank all fall back, so every stored record and every request written
 before this field existed still works.
 
 **`isOutName` is the one client-supplied path component on the `/out/` side
-of this API** — `/out/<name>`, `/api/reveal`, `/api/publish` and
-`/api/export`'s `prev` all take it.
+of this API** — `/out/<name>`, `/api/reveal`, `/api/publish` and both
+`/api/export`'s and `/api/lofi`'s `prev` all take it.
 Everywhere else on that side the server takes window bounds or an id and
 reconstructs a path itself, so there is nothing to validate. Preview breaks
 that — publish and reveal both name a file that already exists — so the name
@@ -354,6 +354,13 @@ persisted, so a reload between two exports strands the older file; that is
 the accepted cost of not adding a persisted field whose only job is naming a
 file to destroy. Note the pattern is `isOutName`, never something looser —
 this is the one client string in the API that names a file to *delete*.
+`/api/lofi` has the identical `prev` and the identical sweep, after its own
+`rename` and sidecar write — `removeExport` takes a *path*, not the bare
+name `prev` arrives as, so the caller must resolve it through `outPath`
+first the way `/api/export` already does; passing the name through directly
+compiles (both are strings) but resolves against `process.cwd()` instead of
+`OUT_DIR`, and `rm(..., { force: true })` swallows the resulting ENOENT
+silently — the sweep does nothing and no error surfaces.
 
 **Uploads are private and there is no option.** An unaudited YouTube Data API
 project has every `videos.insert` locked to private viewing. `buildSnippet`
@@ -1271,11 +1278,18 @@ the reorder controls (drag and the four arrow buttons alike) have no tests, like
 surface. `server/ffmpeg.test.ts` pins `thumbPath` against `stillPath` —
 that `removeExport` takes both, and that the two names differ at all, which
 is the assertion that fails if anyone ever "simplifies" them into one.
-`src/thumb.ts` is DOM-driven and untested like `src/starter.ts`; it was
-verified in a real browser (a 300x900 source's top band landing across the
-top 80px of a 1280x720 chip, teal edge to edge, so stretched rather than
-cropped) and through a real render. `renderWide` shares the same `drawTo`
-and is verified the same informal way.
+`src/thumb.ts` is DOM-driven and untested like `src/starter.ts`; `renderThumb`
+was verified in a real browser (a 300x900 source's top band landing across
+the top 80px of a 1280x720 chip, teal edge to edge, so stretched rather than
+cropped) and through a real render. `renderWide` shares `decodeBitmap` and
+`encodeJpeg` with `renderThumb` but not its stretch — it cover-crops instead,
+and was verified separately: a portrait source's circle measured 769x769 at
+dead centre of the 1920x1080 output in a real browser, proportion kept and
+edges lost rather than squashed. `drawTo` no longer exists as a single
+shared function; it was split into `decodeBitmap` (the decode both
+rasterisers open with) and `encodeJpeg` (the canvas-to-base64 tail both
+close with), with the drawing step — stretch or cover-crop — left to each
+rasteriser on its own, since that is the one step where they now disagree.
 `src/lofi.test.ts` covers `troughs` exhaustively on the model the other
 bottom modules get: a speech placed inside its one quiet hole, placements
 returned in time order regardless of processing order, `MIN_GAP` held
@@ -1297,8 +1311,25 @@ catch the `sidechaincompress` truncation bug (above) by a route the
 duration assertion cannot reach — the audio STREAM's own duration via
 `ffprobe -select_streams a:0`, and the bed's loudness well past the last
 speech's end — and a third renders two cut-ins to prove each stays inside
-its own window. Mutation-pinned: dropping the duck, dropping `-t`, dropping
-the fades, and reversing the overlay order each fail exactly one assertion.
+its own window. A fourth mixes the transition swell into a SILENT cut-in
+(the fixture with no audio of its own) and asserts on the swell's own PEAK,
+above a 500 Hz highpass that removes the sine bed almost entirely — this is
+the one that catches `soundIndex` losing its `+ (anySilent ? 1 : 0)` term,
+which a non-silent cut-in cannot: `anySilent` is false there, so the correct
+formula and the mutated one compute the same input index and every other
+test in the file stays green. Mutation-pinned: dropping the duck, dropping the fades, and
+dropping the 300-3000 Hz band each fail exactly one assertion. Dropping the
+output `-t` was also run and failed nothing — it is provably redundant for
+this graph (the image input's own `-t` already bounds `[bg]`/`[v]`, and two
+chained `amix ... duration=first` stages bound the audio independently), and
+is kept as defence in depth against a future graph change rather than as a
+guarded invariant; see `task-3-report.md` for the isolated reproduction.
+"Reversing the overlay order" was never run. `src/lofi.test.ts` also covers
+`clampPlacement`: an ordinary move, each of the track's own two bounds, each
+neighbour's bound, and the drag-past-a-neighbour case that leaves no legal
+position — mutation-pinned by reverting the refusal to the old
+`Math.max(lo, hi)` clamp, which lands the placement 19.5s past a 300s
+track's own end and fails only that one test.
 `beforeAll` carries the same explicit 180s timeout `server/longform.test.ts`
 does, for the identical reason — several real encodes competing for CPU in
 the full suite. `server/ffmpeg.test.ts` gains `probeAudio`'s own three
