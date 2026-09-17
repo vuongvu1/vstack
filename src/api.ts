@@ -151,11 +151,19 @@ export type LofiResult = { name: string; url: string; size: number };
 
 /** Renders the track, the picture and the placed speeches into one
  *  1920x1080 file. `music` and every `speeches[].id` are the UUIDs `upload`
- *  returned; `image` is bare base64 JPEG at 1920x1080. */
+ *  returned; `image` is bare base64 JPEG at 1920x1080, cover-cropped by
+ *  `renderWide` — the render's own background, used for every frame outside
+ *  a cut-in. */
 export async function lofi(body: {
   title: string;
   music: string;
   image: string;
+  /** The same picture, re-rasterised at 1280x720 by `renderThumb` — the
+   *  publish thumbnail, same shape as `stack`'s. Required for the same
+   *  reason: there is no frame worth deriving one from, and `image`'s own
+   *  1920x1080 cover-crop is the wrong shape and the wrong file-size budget
+   *  for a 16:9 thumbnail surface. */
+  thumb: string;
   speeches: { id: string; at: number }[];
   /** The previous render's name, so a title edit does not strand the file it
    *  replaces. Omitted on the first render of a session. */

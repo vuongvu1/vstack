@@ -919,10 +919,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.url === "/api/lofi") {
     const raw = await json<Record<string, unknown>>(req);
     const title = readTitle(raw.title, "title");
-    // Required, like the stack's: a lofi video's thumbnail is the background
-    // the user picked, and there is no frame worth deriving one from — every
-    // frame outside a cut-in is that same picture anyway.
+    // `image` is the render's own 1920x1080 cover-cropped background — every
+    // frame outside a cut-in is this picture. `thumb` is the SAME picture
+    // re-rasterised at 1280x720 by the client's `renderThumb`, required like
+    // the stack's for the identical reason: there is no frame worth deriving
+    // a thumbnail from. The two are not interchangeable here — writing
+    // `image` as the `.thumb.jpg` sidecar (the bug this replaced) ships a
+    // detailed 1920x1080 photo into a 16:9 surface sized and quality-budgeted
+    // for 1280x720, which can cross YouTube's 2 MB thumbnail limit and
+    // silently surface as the `thumbnail skipped` badge instead of failing
+    // where the mistake was made.
     const image = jpeg(raw.image, "image");
+    const thumb = jpeg(raw.thumb, "thumb");
     if (!isUploadId(raw.music)) return send(res, 400, { error: "Bad music id." });
     const musicPath = uploadPath(raw.music);
     if (!existsSync(musicPath)) {
@@ -993,13 +1001,13 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       await renderLofi({ image: imageFile, music: musicPath, cuts, out: partial });
       await rename(partial, outFile);
-      await writeFile(thumbPath(outFile), image).catch((err: unknown) => {
+      await writeFile(thumbPath(outFile), thumb).catch((err: unknown) => {
         console.warn(`vstack: could not save the thumbnail beside ${name}:`, err);
       });
       // After the rename and the sidecar, never before: a failed render must
       // leave the render it was replacing intact. Skipped when the name is
       // unchanged, which would unlink the file just written.
-      if (isOutName(raw.prev) && raw.prev !== name) await removeExport(raw.prev);
+      if (isOutName(raw.prev) && raw.prev !== name) await removeExport(outPath(raw.prev));
       const { size, mtimeMs } = statSync(outFile);
       console.warn(`vstack: mixed out/${name} (${Math.round(size / 1e6)} MB)`);
       return send(res, 200, {
