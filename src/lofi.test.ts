@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { BUCKETS_PER_SEC, FADE, MIN_GAP, SKIP_HEAD, SKIP_TAIL, troughs } from "./lofi.ts";
+import { BUCKETS_PER_SEC, FADE, MIN_GAP, SKIP_HEAD, SKIP_TAIL, clampPlacement, troughs } from "./lofi.ts";
+import type { Placement, Speech } from "./lofi.ts";
 
 /** An envelope at `loud` everywhere except inside `holes`, which sit at
  *  `quiet`. Built at BUCKETS_PER_SEC so the tests speak in seconds. */
@@ -138,5 +139,72 @@ describe("troughs", () => {
     // Processing was [long, short] but returned order must be chronological [short, long]
     expect(out[0]?.id).toBe("short");
     expect(out[1]?.id).toBe("long");
+  });
+});
+
+describe("clampPlacement", () => {
+  const speeches: Speech[] = [
+    { id: "a", name: "a.mp4", seconds: 40 },
+    { id: "b", name: "b.mp4", seconds: 40 },
+  ];
+
+  it("moves a placement to an ordinary spot with room on both sides", () => {
+    const placements: Placement[] = [{ id: "a", at: 30 }];
+    const out = clampPlacement(placements, speeches, "a", 100, 300);
+    expect(out.find((p) => p.id === "a")?.at).toBe(100);
+  });
+
+  it("clamps against the track's own start", () => {
+    const placements: Placement[] = [{ id: "a", at: 30 }];
+    const out = clampPlacement(placements, speeches, "a", -50, 300);
+    expect(out.find((p) => p.id === "a")?.at).toBe(FADE);
+  });
+
+  it("clamps against the track's own end", () => {
+    const placements: Placement[] = [{ id: "a", at: 30 }];
+    const out = clampPlacement(placements, speeches, "a", 1000, 300);
+    // 300 - 40 (a's own length) - FADE
+    expect(out.find((p) => p.id === "a")?.at).toBe(300 - 40 - FADE);
+  });
+
+  it("clamps against a neighbour ahead of the drag", () => {
+    // b sits at 200; dragging a rightwards must stop MIN_GAP clear of b's start.
+    const placements: Placement[] = [
+      { id: "a", at: 30 },
+      { id: "b", at: 200 },
+    ];
+    const out = clampPlacement(placements, speeches, "a", 190, 300);
+    expect(out.find((p) => p.id === "a")?.at).toBe(200 - MIN_GAP - 40);
+  });
+
+  it("clamps against a neighbour behind the drag", () => {
+    // b sits at 30; dragging a leftwards must stop MIN_GAP clear of b's own end.
+    const placements: Placement[] = [
+      { id: "a", at: 200 },
+      { id: "b", at: 30 },
+    ];
+    const out = clampPlacement(placements, speeches, "a", 40, 300);
+    expect(out.find((p) => p.id === "a")?.at).toBe(30 + 40 + MIN_GAP);
+  });
+
+  // The bug this function exists to fix. A 300s track, two 40s speeches: a
+  // at 30, b at 259.5 (the right-hand clamp). Dragging a rightwards past b's
+  // own start reclassifies b as "before" (want > b.at), so lo is pushed past
+  // b's own end while hi stays capped by the track's end — an empty interval
+  // with no legal position left. The old code resolved this to `lo`, landing
+  // 19.5s past the end of a 300s track; refusing the move must leave a's
+  // placement exactly where it was instead.
+  it("refuses a drag that leaves no legal position, keeping the placement where it was", () => {
+    const placements: Placement[] = [
+      { id: "a", at: 30 },
+      { id: "b", at: 259.5 },
+    ];
+    const out = clampPlacement(placements, speeches, "a", 280, 300);
+    expect(out).toEqual(placements);
+  });
+
+  it("returns the placements unchanged for an id it does not know", () => {
+    const placements: Placement[] = [{ id: "a", at: 30 }];
+    expect(clampPlacement(placements, speeches, "ghost", 100, 300)).toBe(placements);
   });
 });

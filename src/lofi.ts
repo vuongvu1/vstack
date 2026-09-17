@@ -153,3 +153,42 @@ export function troughs(
   placements.sort((a, b) => a.at - b.at);
   return { placements };
 }
+
+/** Moves one placement, keeping it inside the track and MIN_GAP clear of its
+ *  neighbours. The drag path's bound, not a legality rule — `/api/lofi`
+ *  checks only that speeches fit and do not overlap, so an older body still
+ *  renders. Same asymmetry `moveOut`'s `margin` has against `isValidOut`.
+ *
+ *  Refuses the move — returns `placements` unchanged — when the feasible
+ *  interval is empty (`hi < lo`), rather than clamping into one of the two
+ *  bounds. `hi < lo` is reachable by an ordinary drag: a neighbour is
+ *  classified "before" or "after" by the raw `want`, not by where the
+ *  dragged marker currently sits, so dragging far enough past a neighbour
+ *  can ask for a window past the end of the track (or, dragging the other
+ *  way, before its start) with no legal position left at all. Resolving
+ *  that to either bound anyway would emit an `at` the route rejects — the
+ *  one place a constructor produced something its own validator refuses,
+ *  backwards from every other pair in this codebase. Leaving the placement
+ *  where it was is the same answer `editMark` gives a doomed range: refuse
+ *  rather than invent an illegal one. */
+export function clampPlacement(
+  placements: Placement[],
+  speeches: Speech[],
+  id: string,
+  want: number,
+  seconds: number,
+): Placement[] {
+  const others = placements.filter((p) => p.id !== id);
+  const mine = speeches.find((x) => x.id === id);
+  if (!mine) return placements;
+  let lo = FADE;
+  let hi = seconds - mine.seconds - FADE;
+  for (const other of others) {
+    const otherSeconds = speeches.find((x) => x.id === other.id)?.seconds ?? 0;
+    if (other.at < want) lo = Math.max(lo, other.at + otherSeconds + MIN_GAP);
+    else hi = Math.min(hi, other.at - MIN_GAP - mine.seconds);
+  }
+  if (hi < lo) return placements;
+  const at = Math.min(Math.max(want, lo), hi);
+  return placements.map((p) => (p.id === id ? { ...p, at } : p));
+}

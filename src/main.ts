@@ -23,7 +23,7 @@ import {
   YT_TITLE_MAX,
   defaultTitle,
 } from "./defaults.ts";
-import { clock, mmss, parseTimestamp } from "./format.ts";
+import { clock, parseTimestamp } from "./format.ts";
 import {
   DEFAULT_LAYOUT_ID,
   LAYOUTS,
@@ -32,8 +32,7 @@ import {
   ratioOf,
   resolveLayout,
 } from "./layout.ts";
-import { BUCKETS_PER_SEC, FADE, MIN_GAP, troughs } from "./lofi.ts";
-import type { Placement } from "./lofi.ts";
+import { BUCKETS_PER_SEC, clampPlacement, troughs } from "./lofi.ts";
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
@@ -1502,6 +1501,15 @@ async function doStack(): Promise<void> {
 async function doPickMusic(file: File): Promise<void> {
   await guard("Reading the track…", async () => {
     const { env, seconds } = await decodeTrack(file);
+    // `api.upload`'s own `duration` (the server's `ffprobe` reading of the
+    // same file) is discarded here — two measurements of one track, not a
+    // bug. `seconds` from `decodeTrack` is what the envelope `env` was
+    // built against, so it has to stay the axis `troughs` and
+    // `clampPlacement` both measure in; probing again server-side is what
+    // lets `/api/lofi` bound cuts against a number it trusts independently
+    // of the client. `FADE`'s slack absorbs the usual decoder-delay gap
+    // between the two; only a VBR file with a missing or bad Xing header
+    // can drift far enough to matter, and only at the track's own edge.
     const { id } = await api.upload(file, true);
     lofiEnv = env;
     lofiSeconds = seconds;
@@ -1582,6 +1590,7 @@ async function doLofi(): Promise<void> {
       title,
       music: music.id,
       image: getState().bg,
+      thumb: getState().thumb,
       speeches: getState().placements.map((p) => ({ id: p.id, at: p.at })),
       // In-memory, like the export's: a reload between two renders strands
       // the older file, which is the accepted cost of not persisting a field
@@ -3029,7 +3038,7 @@ function renderLofiPanel(): Node[] {
     s.music
       ? el("p", {
           className: "lofi-fact",
-          textContent: `${s.music.name} — ${mmss(s.music.seconds)}`,
+          textContent: `${s.music.name} — ${clock(s.music.seconds)}`,
         })
       : el("p", { className: "stack-empty", textContent: "Pick one music file." }),
     musicPicker,
@@ -3092,7 +3101,7 @@ function renderLofiPanel(): Node[] {
       el("span", { textContent: speech.name }),
       el("span", {
         className: "lofi-fact",
-        textContent: at ? `${mmss(at.at)} · ${Math.round(speech.seconds)}s` : `${Math.round(speech.seconds)}s`,
+        textContent: at ? `${clock(at.at)} · ${Math.round(speech.seconds)}s` : `${Math.round(speech.seconds)}s`,
       }),
       drop,
     );
@@ -3111,25 +3120,6 @@ function renderLofiPanel(): Node[] {
   );
 
   return [el("h2", { className: "publish-heading", textContent: "Lofi mix" }), musicRow, bgRow, speechRow];
-}
-
-/** Moves one placement, keeping it inside the track and MIN_GAP clear of its
- *  neighbours. The drag path's bound, not a legality rule — `/api/lofi`
- *  checks only that speeches fit and do not overlap, so an older body still
- *  renders. Same asymmetry `moveOut`'s `margin` has against `isValidOut`. */
-function clampPlacement(placements: Placement[], id: string, want: number): Placement[] {
-  const others = placements.filter((p) => p.id !== id);
-  const mine = getState().speeches.find((x) => x.id === id);
-  if (!mine) return placements;
-  let lo = FADE;
-  let hi = lofiSeconds - mine.seconds - FADE;
-  for (const other of others) {
-    const seconds = getState().speeches.find((x) => x.id === other.id)?.seconds ?? 0;
-    if (other.at < want) lo = Math.max(lo, other.at + seconds + MIN_GAP);
-    else hi = Math.min(hi, other.at - MIN_GAP - mine.seconds);
-  }
-  const at = Math.min(Math.max(want, lo), Math.max(lo, hi));
-  return placements.map((p) => (p.id === id ? { ...p, at } : p));
 }
 
 /** Paints the track's envelope across the strip. `bucketAt` with `span` and
@@ -3187,7 +3177,7 @@ function renderLofiBar(): Node[] {
   const secondsOf = (id: string) => getState().speeches.find((x) => x.id === id)?.seconds ?? 0;
 
   for (const p of s.placements) {
-    const marker = el("div", { className: "lofi-marker", title: `${mmss(p.at)}` });
+    const marker = el("div", { className: "lofi-marker", title: `${clock(p.at)}` });
     const width = lofiSeconds > 0 ? (secondsOf(p.id) / lofiSeconds) * 100 : 0;
     marker.style.left = `${lofiSeconds > 0 ? (p.at / lofiSeconds) * 100 : 0}%`;
     marker.style.width = `${width}%`;
@@ -3208,7 +3198,7 @@ function renderLofiBar(): Node[] {
         // pointer for the whole drag and only jumps to where it landed once
         // the trailing `setState` rebuilds the bar — indistinguishable from
         // a drag that silently does nothing until release.
-        const next = clampPlacement(getState().placements, p.id, want);
+        const next = clampPlacement(getState().placements, getState().speeches, p.id, want, lofiSeconds);
         setQuiet({ placements: next });
         const mine = next.find((n) => n.id === p.id);
         if (mine && lofiSeconds > 0) marker.style.left = `${(mine.at / lofiSeconds) * 100}%`;
