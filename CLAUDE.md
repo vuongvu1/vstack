@@ -46,7 +46,14 @@ and `/api/stack`'s body takes a required `thumb` on top of `ids` + `title`, plus
 nothing and adds a dead-end lookup beside the two journeys: a finished
 livestream's chat replay, scored into the fifteen moments it reacted hardest
 to. It writes no `segments`, fetches no video and reaches no other phase —
-the result is a list of `youtu.be/<id>?t=` links the user copies out. No
+the result is a list of `youtu.be/<id>?t=` links the user copies out, plus
+`docs/specs/2026-09-16-vstack-lofi-design.md`, which supersedes nothing and
+adds a FOURTH journey beside the short one, the long one and the
+chat-moments dead end: `idle` → `lofi` → `preview`, where a music track, a
+background picture and up to `MAX_SPEECHES` (8) speech clips become one
+1920x1080 video, each speech cut into a quiet stretch of the music,
+band-limited and ducked under it. It shares `preview`, `/out/`, the publish
+panel and `/api/upload` with the long journey and nothing else. No
 spec covers the speech engine: every one of them
 describes macOS `say` and its `Linh` voice, which this codebase no longer
 uses at all (see "the voice" below).
@@ -60,7 +67,7 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 367 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 394 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -71,7 +78,7 @@ Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH, the speech venv from
 `pnpm tts-setup`, and all five bundled assets in `server/assets/`. The server checks
 all of it at boot and exits with an install hint if any is missing —
 `checkStarter` owns the short journey's four, `checkLongform` the long
-journey's one. Nothing
+journey's one, and `checkLofi` the lofi journey's one. Nothing
 here needs macOS `say` any more — the starter screen's voice is VieNeu-TTS,
 and the only remaining macOS dependency is `afplay` in `pnpm voices` and
 `open -R` in `/api/reveal`.
@@ -84,7 +91,7 @@ server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
                    outName/outPath, isOutName, stillPath/thumbPath/
                    removeExport,
                    UPLOADS_DIR/uploadPath, isUploadId,
-                   probeFile, ConcatPart/
+                   probeFile, probeAudio, ConcatPart/
                    concatClips, buildFilter, assertBoxes, exportClip,
                    firstFrame,
                    reportCache
@@ -92,6 +99,9 @@ server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
 server/longform.ts WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK,
                    checkLongform, Trim/MIN_KEPT/detectTrim/keptRange,
                    stackWide (the long journey's one ffmpeg pass)
+server/lofi.ts     WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK, checkLofi,
+                   Cut/renderLofi (the lofi journey's one ffmpeg pass —
+                   overlay, not concat)
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
                    starterDuration, checkStarter, installedVoices,
                    knownVoices, synthesize, speak, prependStarter (the title
@@ -114,11 +124,13 @@ server/ytdlp.ts    videoIdFrom, probe, fetchWindow, parseClipName, listClips
 server/chat.ts     ChatMsg/Moment, BIN/WIN/LAG/TOP/MIN_GAP/SKIP_HEAD,
                    fetchChat (chat replay -> media/<id>/chat.json),
                    parseChat, peaks (the scorer)
-server/index.ts    13 routes (12 POST + GET /out/<name>), serveOut range
+server/index.ts    15 routes (14 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
                    totalDuration, keepRanges, editMark
+src/lofi.ts        Speech/Placement, BUCKETS_PER_SEC/MIN_GAP/SKIP_HEAD/
+                   SKIP_TAIL, troughs (the detector — longest speech first)
 src/layout.ts      nine layout presets, cellsOf, ratioOf, defaultBoxes
 src/custom.ts      CustomBox, MAX_CUSTOM/MIN_OUT_SIDE, outRatio, clampOut/
                    moveOut/resizeOut, resnapCrop, isValidOut/isValidCustom,
@@ -126,15 +138,17 @@ src/custom.ts      CustomBox, MAX_CUSTOM/MIN_OUT_SIDE, outRatio, clampOut/
 src/frame.ts       GUTTER/CORNER_RADIUS, windowOf/windowsOf, ringOf, maskRgba
 src/starter.ts     TITLE_FONT, drawTitle (title → a canvas), renderTitleArt
                    (that same draw, encoded as a transparent PNG)
-src/thumb.ts       THUMB, renderThumb (any picture → 1280x720 JPEG, stretched)
+src/thumb.ts       THUMB, renderThumb (any picture → 1280x720 JPEG, stretched),
+                   WIDE_IMAGE, renderWide (the same stretch at 1920x1080 —
+                   the lofi journey's background)
 src/state.ts       AppState, setState/setQuiet, save/restore
-src/api.ts         12 fetch wrappers
+src/api.ts         13 fetch wrappers
 src/format.ts      mmss / clock / slugify (shared client + server)
 src/player.ts      YT IFrame API wrapper + trim strip
 src/editor.ts      box drag/resize overlay (crops over the <video>, pieces'
                    `out` rects over the <canvas>); returns { place, stop }
 src/preview.ts     canvas composite rAF loop, plus the thumbnail overpaint
-src/main.ts        persistent shell, phase machine, all six phases
+src/main.ts        persistent shell, phase machine, all seven phases
 media/             clip cache (gitignored)
 media/uploads/     long-form parts, one <uuid>.mp4 per upload (gitignored)
 ~/Desktop/vstack/  finished shorts, plus a vertical .jpg still beside each
@@ -172,20 +186,34 @@ because it needs `MEDIA_DIR`, which is why the mask path is passed into
 `longform.ts` sits beside `ffmpeg.ts` and `starter.ts`, not above either —
 it takes an output path from the caller and needs neither `MEDIA_DIR` nor
 `OUT_DIR`, and it imports `probeFile` from `ffmpeg.ts` and nothing else.
+`lofi.ts` sits beside `ffmpeg.ts`, `longform.ts` and `starter.ts` for the
+same reason — every path is the caller's, neither directory is needed — and
+imports `probeFile` and `probeAudio` from `ffmpeg.ts` and nothing else. It
+re-derives `TRANSITION_PATH` and declares its own `FADE` rather than
+importing either from `longform.ts`, which is its SIBLING rather than a
+layer below it — the same call `longform.ts` already made against
+`starter.ts` for `~/.vstack/`. `src/lofi.ts` sits at the very bottom beside
+`geometry.ts` and `segments.ts` and imports nothing — a music track's own
+loudness envelope and a speech's own length are enough to place it, with no
+need to reach into `layout.ts`, `custom.ts` or `frame.ts`.
 `chat.ts` sits above `ffmpeg.ts` beside `mask.ts` — it needs `MEDIA_DIR` for
 its cache and imports nothing else, deliberately not `ytdlp.ts`, so
 `videoIdFrom` stays the one trust boundary that decides whether a subprocess
 spawns.
 
-Six phases: five of them in two journeys that share the last one: `idle` (URL) →
+Seven phases: six of them across three journeys that share the last one, plus
+one dead end: `idle` (URL) →
 `trimming` (YouTube iframe, mark start/end, no download) → `framing` (real
 `<video>` of the fetched window, crop boxes, canvas composite, export) →
 `preview` (the finished file played back on the right, with the upload's
 title/description/tags in a panel on the left where the framing `<video>`
 was — it has nothing left to say once the export exists) is the short
-journey, and `idle` → `stacking` → `preview` is the long one. `publishForm`
-is a child of `sourceSlot`, not a third `.stage` column, and `stackPanel` is
-another beside it, under the same rule — `sourceSlot` itself is never
+journey, `idle` → `stacking` → `preview` is the long one, and `idle` →
+`lofi` → `preview` is the third — a music track, a background picture and
+up to `MAX_SPEECHES` speech clips become one 1920x1080 render. `publishForm`
+is a child of `sourceSlot`, not a third `.stage` column, `stackPanel` is
+another beside it, and `lofiPanel` is a third, all under the same rule —
+`sourceSlot` itself is never
 hidden: that would put the YouTube iframe's ancestor into `display:none`,
 and only its children are ever toggled. Export no longer downloads: it writes
 `<OUT_DIR>/<slug>-<mmss>-<mmss>.mp4`, saves the opening frame beside it as a
@@ -216,8 +244,8 @@ player while leaving a paused one paused, so a bare seek preserves whatever the
 user was already doing, and a nudge is reached from a pause the user already
 took.
 
-`idle` → `moments` → `idle` is a third way out of `idle` and a dead end,
-sharing no phase with either journey.
+`idle` → `moments` → `idle` is a fourth way out of `idle` and a dead end,
+sharing no phase with any journey.
 
 ## Invariants — breaking these is silent, not loud
 
@@ -583,6 +611,13 @@ to prevent, in reverse — and its `← Back` button on `preview` jumps to
 `stacking` instead of `framing`. Found in review, not by a test (fixed in
 commit `b7fe004`) — `state.test.ts` only exercises `save()`/`restore()`,
 which never touch `mode` at all, so nothing pins the three call sites down.
+`"lofi"` is a fourth value now, claimed by the `Lofi →` button the same way
+`"long"` is claimed, and it is what pushed the wide-slot test and `preview`'s
+`← Back` target from a two-way branch to a three-way one — the exact
+enumeration growth this invariant warns about, arriving on schedule. The
+wide-slot test reads `s.mode !== "short"` rather than adding a third arm, for
+the reason `src/main.ts`'s own comment at that line gives: an enumeration
+there grows with every journey, and "not the short journey" does not.
 
 **`#shorts` is what classifies an upload, so `buildSnippet` must not force
 it.** The flag is optional and defaults to `true`, which is what keeps every
@@ -764,6 +799,134 @@ strictest.** `isOutName` validates a name the client chose; `/api/export`'s
 a UUID the *server* minted, so there is nothing legitimate a client can send
 that it does not match. The original filename never crosses the wire at all
 — the client keeps it purely for display.
+
+**The lofi render's duration is the music's, by construction — nothing
+sums.** `renderLofi` composites the picture (`-loop 1`) and every cut-in
+onto the music's own timeline with `overlay`, closed by one `-t <music
+seconds>`, rather than concatenating an image leg, N speech legs and a
+return-to-image leg. Concat would put back exactly the arithmetic the long
+journey's dip-rather-than-`xfade` decision already exists to avoid: every
+leg's length would feed the next leg's offset, the final image leg would
+have to absorb whatever rounding was left over so the picture still ends
+when the music does, and `outName`'s `mmss` — built from the probed music
+length — could come to name a file a different length than the one on disk.
+Overlay makes that disagreement structurally impossible: no leg's length is
+ever fed anywhere.
+
+**`troughs` places the LONGEST speech first, never in input order.** A long
+speech has strictly fewer legal windows than a short one. `src/lofi.test.ts`
+pins the case that makes this concrete: a 30s hole that is the only place a
+20s speech fits, and a 12s hole a 6s speech also fits — placing speeches in
+script order lets the short one claim the roomier 30s hole first (it scores
+quieter there), stranding the long one with nowhere left. The failure is not
+an error, it is a render with a speech silently missing from it. Mutation-
+tested by sorting on input order instead of length.
+
+**A speech that fits nowhere refuses BY NAME, with no least-bad fallback.**
+`troughs` has no quietness threshold at all — every candidate window is
+scored purely by which is quietest, because the duck (below) makes even a
+merely adequate trough sound deliberate, so a threshold would only buy a
+new failure mode: a dense track where nothing places at all. What it does
+refuse outright is geometry — no window inside `[SKIP_HEAD, seconds -
+SKIP_TAIL]` that clears `MIN_GAP` from every speech already placed — and
+there the error names the speech and its length rather than picking the
+least-bad window anyway. A silently misplaced speech is indistinguishable
+from a working render until someone watches the output, the failure class
+this codebase treats as cardinal everywhere else.
+
+**`probeFile` is the wrong prober for a music track, and "has a video
+stream" is the wrong fix.** `probeFile` demands a video stream and throws
+`ffprobe found no video stream in …` on a plain audio file — the correct
+throw for a long-form part, the wrong one for a music upload. Flipping the
+check to "does it have a video stream" would then be fooled the other way:
+an mp3 carrying cover art reports one video stream, describing a thumbnail
+rather than a picture to render. `probeAudio` asks a narrower question
+instead — a duration from `format`, gated on some stream reporting
+`codec_type: "audio"` — which is right on both sides. `/api/upload-audio` is
+a second URL rather than a query flag for the reason every other route
+split in this codebase already exists: `server/index.ts` routes on exact
+`req.url` equality, so `/api/upload?audio=1` would simply miss the
+`/api/upload` branch rather than reaching a flag inside it.
+
+**A cut-in is padded to its own start with `tpad` and gated with `enable=`,
+never shifted with a bare `setpts`.** `overlay`'s second input needs a frame
+at every timestamp the base stream produces; `setpts=PTS-STARTPTS+at/TB`
+alone offsets the footage's existing frames without manufacturing any to
+fill the gap before `at`, so `overlay` would starve for input until the real
+footage arrives. `tpad=start_duration=<at>` synthesises black frames to fill
+exactly that gap; they are never drawn, because the outer
+`enable='between(t,at,at+dur)'` keeps the whole leg off until the real
+footage starts. `ponytail:` `tpad` pushes `at * FPS` synthesised frames
+through the entire chain — free to make, not free to push through — so a
+long track with many cut-ins is where a bare `setpts` offset should be
+reached for instead, re-checking `server/lofi.test.ts`'s timing assertions
+when it is.
+
+**Every background `fade` around a cut-in is scoped with its own
+`enable='between(t,…)'`, and that scoping is a correctness fix, not
+decoration.** `fade` does not pass frames through untouched outside its own
+window — it multiplies EVERY frame it sees by its ramp factor, so an
+unscoped `fade=t=in:st=X` reads every frame with `pts < X` as factor 0
+(black), not "unmodified". Chained after an earlier `fade=out` on the same
+`[bg]` stream — one pair per cut-in — that blacking reaches back over frames
+the first filter had already left alone: confirmed empirically, the
+unscoped chain sampled all-16 (black) at every `t` tried, including `t=0`,
+for a single cut at `t=12`. `enable=` turns each fade into a no-op
+passthrough outside its own `[st, st+d]`, which is what lets N chained pairs
+read as N independent dips instead of one fade the stream never recovers
+from.
+
+Each fade's own duration is also clamped to HALF the gap actually available
+on its side — the room to the previous cut-in's end (or the track's start)
+going out, the room to the next cut-in's start (or the track's end) coming
+in — never a flat `FADE`. Two cut-ins closer together than `2 * FADE` would
+otherwise overlap their fade-out and the neighbour's fade-in on the same
+stream; chained through `enable=`, that re-dims a picture the other pair had
+just restored, and at a small enough gap the background never returns to
+full brightness between them at all. Splitting the gap in half is the same
+"two neighbours each give up half the seam" rule `GUTTER / 2` follows in
+`src/frame.ts`. This is a DIFFERENT clamp from the per-cut-in `d =
+min(FADE, dur / 3)`, which bounds a speech's OWN fade against its OWN
+duration — collapsing the two would tie the background's transition time to
+a property of the speech that has nothing to do with it. `server/lofi.test.ts`
+pins the half-gap clamp with two 1s cut-ins 0.6s apart, sampled at the exact
+frame-boundary midpoint where the two ramps should meet with no overlap.
+
+**`sidechaincompress` is a FRAMESYNC filter: its output ends when its
+SHORTEST input ends, not its longest — and not by `amix`'s own `duration=`
+rule.** The duck's sidechain, `[sc]`, is a copy of the speech mix — a few
+seconds long, ending at the last speech's own end — so every real render
+ducked correctly and then went silent for good: `[ducked]` died there, and
+the closing `amix … duration=first` faithfully inherited that truncated
+length from its first input. The container and the video track ran the
+FULL music length throughout; only the audio stream itself went quiet
+early, silently. `apad=whole_dur=<seconds>` — the same `seconds` the graph
+already probed from the track — pads `[sc]` and only `[sc]`, the
+compressor's control input, never `[sm]`, the audible copy, which already
+reaches its `amix … duration=first` the ordinary way every other short
+stream in this graph does.
+
+This is the worst bug the feature shipped with, and it is worth recording
+*why* the render's own "exactly the music's duration" test could not have
+caught it: that assertion reads `probeFile`'s CONTAINER duration
+(`format.duration`), which stayed a faithful ~30s throughout — the container
+and the video track were never wrong, only the audio stream nested inside
+them. The regression test instead reads the AUDIO STREAM's own duration via
+`ffprobe -select_streams a:0`, plus a behavioural loudness check well past
+the last speech's end, in the same band the duck test already measures.
+Removing the `apad` fails both of those and nothing else — proof that a
+structural "right length" check is not a substitute for a behavioural one
+when the two can silently disagree.
+
+**The duck is a `sidechaincompress`, not a `volume` gated on
+`enable='between(t,a,b)'`.** A gated step has no attack or release and
+clicks audibly at both edges of every cut-in. `DUCK_THRESHOLD`/`DUCK_RATIO`
+are the compressor's own two parameters — `sidechaincompress` takes no
+target-depth input, so there is deliberately no dB knob here the way
+`TRANSITION_GAIN` is one for the swell. The duck is also what lets `troughs`
+(above) get away with no quietness threshold at all: it only has to find a
+THIN stretch, because the render itself makes that stretch sound deliberate
+regardless of how thin it is.
 
 ## Gotchas that each cost real time
 
@@ -1014,7 +1177,7 @@ single-user tool; not something to fix here.
 
 ## Testing posture
 
-`geometry.ts`, `layout.ts`, `custom.ts` and `segments.ts` are the modules with exhaustive coverage, deliberately — their bugs are silent. `src/custom.test.ts` covers `clampOut`/`moveOut`/`resizeOut`'s even-snapping, `resizeOut`'s `MIN_OUT_SIDE` floor and frame bounds from every anchor corner, `clampOut`'s and `resnapCrop`'s idempotence under a repeated re-snap (`resnapCrop`'s also keeping the ratio exact), and `isValidOut`/`isValidCustom` against everything `clampOut`/`defaultCustom` can emit and everything illegal. `src/segments.test.ts` covers `editMark` (the carry, its length preservation and its `duration` clamp — all three mutation-tested by disabling the carry — plus both refusals and the un-aimed/aimed split), `normalize` (idempotent, sorts, clamps, drops empties, merges overlaps), `isValidSegments` against everything `normalize` emits and everything illegal (empty, over `MAX_SEGMENTS`, unsorted, overlapping, `end <= start`, out of bounds, non-finite, non-array, `null`), `totalDuration` against a known set, and `keepRanges` against the identity, a middle hole, cuts flush to and overhanging either bound, a cut covering the range, cuts wholly outside it, several cuts, and back-to-back cuts (no zero-length keep — an empty leg is an ffmpeg error). `layout.test.ts` asserts the nine presets tile 1080×1920 exactly, that only the three documented cell shapes occur, and that `defaultBoxes` returns per-cell-valid boxes: a mis-tiled layout survives preview and only shows up as a seam in an exported clip. `server/ffmpeg.test.ts` shells out to real ffmpeg and asserts output pixels; it is the only thing proving the preview/export agreement from the ffmpeg side — now including the border, via white pixels in the seam and at a corner cut's diagonal against the source's colour just inside a piece, now including a real export with one floating piece straddling a cell seam, asserting the piece's own colour survives the seam, the ring around it is white, and the stack's colour resumes just past the ring, and a second with TWO overlapping pieces cropped from different colour bands, which is the only end-to-end proof that the mask's walk is z-aware (the upper piece's nub and the upper half of its ring both land over the lower piece's window and read as that piece's own colour if it is not) — and now a real two-range `concatClips`, asserting the output's duration is the parts' sum and that a frame sampled from each half carries that part's own colour cropped from a different colour band, with the leg ordering mutation-tested (reversing the concat's input order fails the second sample), plus a part with no audio stood in with `anullsrc`, plus a non-square-SAR part, since a SAR mismatch is the failure `concat` is most likely to hit and it fails opaquely (`Nothing was written into output file`) rather than picking a side. `frame.test.ts` covers the window insets (every internal seam and frame margin
+`geometry.ts`, `layout.ts`, `custom.ts`, `segments.ts` and `src/lofi.ts` are the modules with exhaustive coverage, deliberately — their bugs are silent. `src/custom.test.ts` covers `clampOut`/`moveOut`/`resizeOut`'s even-snapping, `resizeOut`'s `MIN_OUT_SIDE` floor and frame bounds from every anchor corner, `clampOut`'s and `resnapCrop`'s idempotence under a repeated re-snap (`resnapCrop`'s also keeping the ratio exact), and `isValidOut`/`isValidCustom` against everything `clampOut`/`defaultCustom` can emit and everything illegal. `src/segments.test.ts` covers `editMark` (the carry, its length preservation and its `duration` clamp — all three mutation-tested by disabling the carry — plus both refusals and the un-aimed/aimed split), `normalize` (idempotent, sorts, clamps, drops empties, merges overlaps), `isValidSegments` against everything `normalize` emits and everything illegal (empty, over `MAX_SEGMENTS`, unsorted, overlapping, `end <= start`, out of bounds, non-finite, non-array, `null`), `totalDuration` against a known set, and `keepRanges` against the identity, a middle hole, cuts flush to and overhanging either bound, a cut covering the range, cuts wholly outside it, several cuts, and back-to-back cuts (no zero-length keep — an empty leg is an ffmpeg error). `layout.test.ts` asserts the nine presets tile 1080×1920 exactly, that only the three documented cell shapes occur, and that `defaultBoxes` returns per-cell-valid boxes: a mis-tiled layout survives preview and only shows up as a seam in an exported clip. `server/ffmpeg.test.ts` shells out to real ffmpeg and asserts output pixels; it is the only thing proving the preview/export agreement from the ffmpeg side — now including the border, via white pixels in the seam and at a corner cut's diagonal against the source's colour just inside a piece, now including a real export with one floating piece straddling a cell seam, asserting the piece's own colour survives the seam, the ring around it is white, and the stack's colour resumes just past the ring, and a second with TWO overlapping pieces cropped from different colour bands, which is the only end-to-end proof that the mask's walk is z-aware (the upper piece's nub and the upper half of its ring both land over the lower piece's window and read as that piece's own colour if it is not) — and now a real two-range `concatClips`, asserting the output's duration is the parts' sum and that a frame sampled from each half carries that part's own colour cropped from a different colour band, with the leg ordering mutation-tested (reversing the concat's input order fails the second sample), plus a part with no audio stood in with `anullsrc`, plus a non-square-SAR part, since a SAR mismatch is the failure `concat` is most likely to hit and it fails opaquely (`Nothing was written into output file`) rather than picking a side. `frame.test.ts` covers the window insets (every internal seam and frame margin
 exactly one gutter, adjacency decided on the *cells* because every pair of
 windows has a positive gap) and the mask's alpha, including the assertion that
 a window's square corner is opaque — the one that fails if `CORNER_RADIUS`
@@ -1111,7 +1274,40 @@ is the assertion that fails if anyone ever "simplifies" them into one.
 `src/thumb.ts` is DOM-driven and untested like `src/starter.ts`; it was
 verified in a real browser (a 300x900 source's top band landing across the
 top 80px of a 1280x720 chip, teal edge to edge, so stretched rather than
-cropped) and through a real render.
+cropped) and through a real render. `renderWide` shares the same `drawTo`
+and is verified the same informal way.
+`src/lofi.test.ts` covers `troughs` exhaustively on the model the other
+bottom modules get: a speech placed inside its one quiet hole, placements
+returned in time order regardless of processing order, `MIN_GAP` held
+between two speeches sharing one long hole, `SKIP_HEAD`/`SKIP_TAIL` at
+their boundaries, the `2 * FADE` room reserved around a speech (arithmetic
+enough to assert the exact placed position), a no-fit refusal naming the
+speech, stability across repeated calls, and the longest-first ordering
+test itself — a hole only the long speech fits and a hole only the short
+one fits, built so that placing the short one first strands the long one.
+`server/lofi.test.ts` shells real ffmpeg against a synthetic fixture (a
+teal background, a 220 Hz sine bed, a crimson-over-white-noise "speech",
+and a short silent "bump" for the fade-clamp case) and asserts pixels and
+dB: the output is 1920x1080 and within half a second of the music's own
+length, the background and the speech pixels show where each should, a
+cut-in's edge dips to near black, the music measurably ducks under the
+speech in its own 220 Hz band, and the speech's own energy above 6 kHz is
+suppressed relative to its unfiltered source. Two tests exist purely to
+catch the `sidechaincompress` truncation bug (above) by a route the
+duration assertion cannot reach — the audio STREAM's own duration via
+`ffprobe -select_streams a:0`, and the bed's loudness well past the last
+speech's end — and a third renders two cut-ins to prove each stays inside
+its own window. Mutation-pinned: dropping the duck, dropping `-t`, dropping
+the fades, and reversing the overlay order each fail exactly one assertion.
+`beforeAll` carries the same explicit 180s timeout `server/longform.test.ts`
+does, for the identical reason — several real encodes competing for CPU in
+the full suite. `server/ffmpeg.test.ts` gains `probeAudio`'s own three
+cases (a real duration, `probeFile` rejecting the same file, and a file
+with no audio stream rejected in turn) and `state.test.ts` gains the lofi
+fields' persistence exclusion, mutation-tested the way the long-form
+fields' already is. The `/api/lofi` route, the panel, and the waveform's
+draggable markers have no tests, like the rest of the network and DOM
+surface.
 
 DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by design — vitest runs `environment: "node"` here and those behaviours are verified by hand.
 
@@ -1232,7 +1428,9 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
   updates via `setQuiet`, so both buttons are toggled from inside its
   `oninput` rather than by a render.
 - `~/Desktop/vstack/` grows without eviction, two files per export (the
-  `.mp4` and its vertical `.jpg`). Nothing prunes it — deliberately the
+  `.mp4` and its vertical `.jpg`) — or, for a long-form or lofi render, the
+  `.mp4` and a `<name>.thumb.jpg` sidecar instead, the picked picture rather
+  than a derived frame. Nothing prunes either shape — deliberately the
   user's to clear, which is why it sits on the Desktop rather than in the
   repo.
 - Publishing needs `~/.vstack/youtube-client.json` (a **Desktop app** OAuth
@@ -1290,7 +1488,14 @@ pixels.
 Deliberate: re-rendering a stack after a title fix must not mean
 re-uploading a gigabyte. `listClips` cannot reach it — it walks per-video
 directories and matches `CLIP_RE`, and a UUID at the top level is neither.
-`reportCache` counts it, so the boot log shows it growing.
+`reportCache` counts it, so the boot log shows it growing. The lofi journey
+grows the same directory the same way, from a second door: its speeches
+land as `<uuid>.mp4` through the same `/api/upload` route a long-form part
+does, and its music lands there too, as `<uuid>.mp4` through
+`/api/upload-audio` — ffmpeg dispatches on content rather than the `.mp4`
+extension, so a music upload needs no naming exception anywhere in
+`ffmpeg.ts`. Re-rendering a lofi mix after a title or marker fix is the same
+argument against eviction, doubled.
 
 **`/api/upload` destroys the socket past `UPLOAD_MAX_BYTES` rather than
 answering.** Replying politely means having read the whole body first, which
