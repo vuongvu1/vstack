@@ -72,6 +72,33 @@
 > pops. The band-limit test now measures the speech's own contribution
 > rather than the whole mix, which is all it was ever about.
 
+> **Amended 2026-09-18 (third)**, on the user's call: a speech is now
+> **audio only**, and the whole cut-in is gone. A speech may be uploaded as
+> an audio file or as a video one indifferently — if it carries pictures,
+> they are discarded. The background picture holds the frame from t=0 to the
+> end of the track, and the only thing a speech does is arrive in the mix.
+>
+> Everything below about the cut-in's picture describes a graph that no
+> longer exists: the letterbox over a blurred copy of itself, the `tpad`
+> padding to each speech's own start, the `enable=`-gated `overlay` chain,
+> the dip to black at each speech's edges and the half-gap clamp on those
+> dips are all removed. So is the `anullsrc` stand-in: a speech is probed
+> with **`probeAudio`** on both sides of the wire now (the client uploads it
+> through `/api/upload-audio`, the route re-probes it there), so a file with
+> no audio stream is refused at upload rather than rendered as a silent
+> stretch. The video track is one still frame, so there is nothing left to
+> synchronise and nothing to stand in for.
+>
+> `FADE` survives, doing less: it is the crackle boost's own ramp and the
+> room `troughs` reserves at each edge of a placement. The audio chain —
+> the band-limit, `acrusher`, the duck, the crackle's two layers — is
+> untouched. `server/lofi.test.ts` lost its two picture-of-the-speech
+> assertions, its dip assertion and its half-gap-clamp test, and gained
+> three: the background is still the background at seven sampled instants
+> including both edges of a speech (mutation-pinned by re-adding the
+> overlay), two audio-only .m4a speeches land in their own windows, and a
+> speech with no audio stream is refused.
+
 Supersedes nothing. It adds a **fourth journey** beside the short one, the
 long one and the chat-moments dead end: `idle → lofi → preview`. A user
 picks one music track, one background image and a handful of speech clips;

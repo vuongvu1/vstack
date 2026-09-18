@@ -86,9 +86,11 @@ async function post(path: string, body: unknown): Promise<Response> {
 
 export type UploadResult = { id: string; duration: number; width: number; height: number };
 
-/** Sends one file's raw bytes to `/api/upload`, or `/api/upload-audio` for a
- *  music track — the server routes on exact `req.url` equality, so this is
- *  a flag on the wrapper rather than a query string on the URL.
+/** Sends one file's raw bytes to `/api/upload`, or `/api/upload-audio` when
+ *  only the audio matters — a music track, or a lofi speech, which is mixed
+ *  into the track and never shown. The server routes on exact `req.url`
+ *  equality, so this is a flag on the wrapper rather than a query string on
+ *  the URL.
  *
  *  Not `post`: the body is the file itself, not JSON. `multipart/form-data`
  *  would need a parser on the other end that this dependency-free server
@@ -110,8 +112,9 @@ export async function upload(file: File, audio = false): Promise<UploadResult> {
     );
   }
   // The content type is informational — the server reads the bytes, not the
-  // header — but sending `video/mp4` for a music track would be a lie in
-  // the one place a future reader would trust.
+  // header — but sending `video/mp4` for a music track, or for a speech
+  // that may well be an .mp3, would be a lie in the one place a future
+  // reader would trust.
   const res = await send(audio ? "/api/upload-audio" : "/api/upload", {
     method: "POST",
     headers: { "content-type": audio ? "application/octet-stream" : "video/mp4" },

@@ -2,14 +2,14 @@
  *
  *  Sits BESIDE `ffmpeg.ts`, `longform.ts` and `starter.ts` rather than above
  *  any of them: it takes every path from the caller, needs neither
- *  `MEDIA_DIR` nor `OUT_DIR`, and may read `probeFile` and nothing else. */
+ *  `MEDIA_DIR` nor `OUT_DIR`, and may read `probeAudio` and nothing else. */
 
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { toolError } from "./errors.ts";
-import { probeAudio, probeFile } from "./ffmpeg.ts";
+import { probeAudio } from "./ffmpeg.ts";
 
 const run = promisify(execFile);
 
@@ -21,24 +21,21 @@ const FPS = 30;
 const RATE = 44100;
 const CRF = "20";
 
-/** How long the dip at each edge of a cut-in takes.
+/** How long each edge of a speech's own ramp takes — the crackle boost's
+ *  fade in and out, and the room `src/lofi.ts` reserves around every speech
+ *  it places.
  *
- *  The client's `src/lofi.ts` declares the same 0.5s and reserves `2 * FADE`
- *  around every speech it places. The two are deliberately NOT shared —
- *  they sit on opposite sides of the client/server line, the same split
- *  `src/preview.ts` and `server/starter.ts` already live with — so
- *  `server/lofi.test.ts` and `src/lofi.test.ts` each pin the value. Change
- *  one and change the other. */
+ *  It used to be the dip to black at each edge of a cut-in as well. There is
+ *  no cut-in any more: a speech contributes AUDIO ONLY, the background
+ *  picture holds the frame for the whole render, and nothing in the video
+ *  fades. See `renderLofi`.
+ *
+ *  The client's `src/lofi.ts` declares the same 0.5s. The two are
+ *  deliberately NOT shared — they sit on opposite sides of the client/server
+ *  line, the same split `src/preview.ts` and `server/starter.ts` already
+ *  live with — so `server/lofi.test.ts` and `src/lofi.test.ts` each pin the
+ *  value. Change one and change the other. */
 export const FADE = 0.5;
-
-/** The blur behind a cut-in's letterbox, computed at 480x270 and stretched
- *  back up. Same value and same reasoning as `longform.ts`'s: the upscale
- *  supplies most of the softening, and a gblur over a 1920x3413 intermediate
- *  costs roughly fifty times as much for a picture whose entire purpose is
- *  to be out of focus. */
-const BLUR_SIGMA = 12;
-const BG_W = 480;
-const BG_H = 270;
 
 /** The speech's own band. An AM-radio 300-3000 Hz is the whole "lofi
  *  effect" — it is what makes a clean recording sit inside the mix instead
@@ -61,7 +58,7 @@ const DUCK_RATIO = 8;
 const DUCK_ATTACK = 20;
 const DUCK_RELEASE = 400;
 
-/** The "vinyl record" treatment on a cut-in's own voice, and the surface
+/** The "vinyl record" treatment on a speech's own voice, and the surface
  *  noise under the whole mix.
  *
  *  Three effects, and the ORDER of the first two inside the speech chain is
@@ -72,11 +69,13 @@ const DUCK_RELEASE = 400;
  *  assertion reads as the failure it is.
  *
  *  `mode=lin`, never `mode=log`. Log-mode quantisation takes a logarithm of
- *  the sample, and a cut-in with no audio of its own is fed DIGITAL SILENCE
- *  by the `anullsrc` stand-in — log(0) is -inf, the NaN reaches the AAC
- *  encoder, and the render dies with `Error submitting audio frame to the
- *  encoder: Invalid argument`, which names neither this filter nor silence.
- *  Every test using the silent fixture failed on exactly that.
+ *  the sample, and a recording that runs to digital silence hands it a zero
+ *  — log(0) is -inf, the NaN reaches the AAC encoder, and the render dies
+ *  with `Error submitting audio frame to the encoder: Invalid argument`,
+ *  which names neither this filter nor the silence. Every test using a
+ *  silent fixture failed on exactly that, back when a silent cut-in was
+ *  something this graph had to stand in for; `server/lofi.test.ts` still
+ *  renders a digitally silent speech to keep the linear mode honest.
  *
  *  There is deliberately NO pitch wobble, though the effect this imitates
  *  has one. `vibrato` emits NaN inside this graph: isolated on the same
@@ -105,14 +104,14 @@ const asset = (name: string) => fileURLToPath(new URL(`assets/${name}`, import.m
  *  which is what makes it read as POPS rather than as hiss.
  *
  *  Two gains rather than a gate: the bed plays at `CRACKLE_BED` for the
- *  whole render and each cut-in adds a second leg at `CRACKLE_BOOST`, faded
+ *  whole render and each speech adds a second leg at `CRACKLE_BOOST`, faded
  *  in and out. A `volume` gated on `enable=` would step, and a step clicks
  *  at both edges — the same reason the duck is a compressor.
  *
  *  The two legs POWER-sum, not amplitude-sum, and the difference is not
  *  academic. Each tap reads a different moment of the asset — the bed runs
- *  from its start, a boost leg is delayed onto its own cut-in — so the two
- *  are uncorrelated noise: equal gains give +3 dB under a cut-in, not the
+ *  from its start, a boost leg is delayed onto its own speech — so the two
+ *  are uncorrelated noise: equal gains give +3 dB under a speech, not the
  *  +6 dB the numbers look like they promise. Measured at exactly +3.0 dB
  *  when both were 0.6. To lift by roughly N dB the boost wants
  *  `bed * sqrt(10^(N/10) - 1)`, which is where 0.9 against a 0.6 bed comes
@@ -140,17 +139,20 @@ const CRACKLE_BOOST = 0.39;
 const CRACKLE_LEVEL =
   "compand=attacks=0.01:decays=0.2:points=-70/-35|-30/-18|-10/-10|0/-8";
 
-/** One speech, and where its own picture starts in the music's timeline. Its
- *  duration is probed here rather than taken from the caller: the graph's
- *  fades, its `enable=` window and its audio delay all have to agree about
- *  it, and one prober is how they stay agreed.
+/** One speech, and where its VOICE enters the music's timeline. Its duration
+ *  is probed here rather than taken from the caller: the crackle boost's
+ *  fades and the audio delay have to agree about it, and one prober is how
+ *  they stay agreed.
  *
- *  `renderLofi` requires an array of `Cut`s in ASCENDING `at` order — the
- *  half-gap fade clamp indexes each cut's own neighbours (`cuts[i - 1]`,
- *  `cuts[i + 1]`) to find the gap on either side, and an unsorted array
- *  hands it the wrong neighbour rather than failing loudly. `/api/lofi`
- *  sorts before calling this, which is what keeps the one real caller
- *  safe. */
+ *  `path` may be an audio file or a video one. Only its audio is ever read —
+ *  a speech is mixed into the track, never shown — so `probeAudio` is the
+ *  prober on both sides of that, and a file with no audio stream is refused
+ *  by it rather than rendered as a silent gap nobody notices.
+ *
+ *  Order does not matter here: every leg is delayed onto its own `at` and
+ *  nothing indexes a neighbour. `/api/lofi` still sorts before calling,
+ *  because its own "two speeches overlap" check compares each entry with the
+ *  one before it. */
 export type Cut = { path: string; at: number };
 
 /** Boot check for the one asset this journey bundles. Hard, like
@@ -163,24 +165,30 @@ export async function checkLofi(): Promise<void> {
   }
 }
 
-/** Renders the picture, the track and the cut-ins into one 1920x1080 file.
+/** Renders the picture and the track, with every speech mixed into the
+ *  track, as one 1920x1080 file.
  *
- *  OVERLAY, not concat, and that is the load-bearing choice: the output's
- *  duration is the music's by construction (`-t`), so nothing sums, no leg's
- *  length feeds a later leg's offset, and the name `/api/lofi` builds from
- *  that duration cannot come to describe a different file. A concat of image
- *  legs and speech legs would put all of that arithmetic back.
+ *  THE PICTURE IS THE WHOLE VIDEO. A speech contributes audio and nothing
+ *  else: it is never shown, never overlaid, and the background does not dip,
+ *  fade or move while one plays. An uploaded speech may therefore be an
+ *  audio file or a video file indifferently — if it carries pictures, they
+ *  are discarded here.
  *
- *  Each speech is padded to its own start with `tpad` rather than shifted
- *  with `setpts`, and gated with `enable=`. The padding frames are black and
- *  are never drawn, because `enable=` is false while they pass; what it buys
- *  is that `overlay`'s second input always has a frame, which a bare `setpts`
- *  offset does not guarantee.
+ *  That is a deliberate reversal. This graph used to letterbox each speech
+ *  over a blurred copy of itself, `tpad` it to its own start, gate it with
+ *  `enable=` and dip the background to black on either side of it. All of it
+ *  is gone, along with the `anullsrc` stand-in a silent cut-in needed: the
+ *  video track is now one still frame from t=0 to the end, so there is
+ *  nothing to synchronise, nothing to fade and nothing to stand in for.
+ *  Re-adding any of it means re-reading the two invariants that machinery
+ *  carried (the `enable`-scoped fades and their half-gap clamp) in this
+ *  file's history — both were correctness fixes, not decoration, and neither
+ *  is obvious from the code that replaced them.
  *
- *  ponytail: `tpad` synthesises `at * FPS` black frames per cut-in — free to
- *  make, not free to push through the chain. Switch to a `setpts` offset if
- *  a long track with many cut-ins ever makes the encode drag, and re-check
- *  the timing assertions in `server/lofi.test.ts` when you do. */
+ *  The output's duration is still the music's by construction (`-t` plus the
+ *  image input's own), so nothing sums, no leg's length feeds a later leg's
+ *  offset, and the name `/api/lofi` builds from that duration cannot come to
+ *  describe a different file. */
 export async function renderLofi(opts: {
   image: string;
   music: string;
@@ -195,26 +203,25 @@ export async function renderLofi(opts: {
   const { seconds } = await probeAudio(music);
   if (!(seconds > 0)) throw new Error(`Could not read a duration from ${music}.`);
 
-  const probed = await Promise.all(cuts.map((c) => probeFile(c.path)));
-  const anySilent = probed.some((p) => !p.hasAudio);
-  // Positional and conditional, the way `stackWide`'s inputs are: image,
-  // music, the cuts, then the silence stand-in when some cut-in carries no
-  // audio of its own. The stand-in is LAST on purpose — an input added after
-  // it would shift its index and break silent cut-ins only, which is the
-  // failure `server/starter.test.ts` documents for the same arithmetic.
+  // `probeAudio` on a speech too, for the same reason it is used on the
+  // track: a speech may be a bare audio file, which `probeFile` refuses
+  // outright, and its pictures are not wanted even when it has them. It also
+  // makes "has an audio stream" the trust boundary — a file with none throws
+  // here rather than rendering as a silent stretch nobody notices until they
+  // watch the output.
+  const probed = await Promise.all(cuts.map((c) => probeAudio(c.path)));
+  // Positional, the way `stackWide`'s inputs are: image, music, the
+  // speeches, the crackle. There is no conditional input left in this graph
+  // — the `anullsrc` stand-in went with the cut-in it stood in for — so the
+  // arithmetic is now flat.
   const firstCut = 2;
-  const silenceIndex = firstCut + cuts.length;
-  // AFTER the stand-in, never before it: an input inserted above that index
-  // shifts it and breaks silent cut-ins only, which is the failure
-  // `server/starter.test.ts` documents for this same arithmetic.
-  const crackleIndex = silenceIndex + (anySilent ? 1 : 0);
+  const crackleIndex = firstCut + cuts.length;
 
   const inputs: string[] = [
     "-loop", "1", "-framerate", String(FPS), "-t", String(seconds), "-i", image,
     "-i", music,
   ];
   for (const cut of cuts) inputs.push("-i", cut.path);
-  if (anySilent) inputs.push("-f", "lavfi", "-i", `anullsrc=r=${RATE}:cl=stereo`);
   // Looped rather than trimmed to length here: the asset is ~12s and a track
   // is minutes. Every tap below `atrim`s its own copy, and the output's own
   // `-t` bounds the lot, so the infinite input can never outrun the render.
@@ -222,103 +229,14 @@ export async function renderLofi(opts: {
 
   const legs: string[] = [];
 
-  // The base picture, cover-cropped so it fills the frame edge to edge, with
-  // one fade pair per cut-in chained onto it, each scoped to its own window
-  // with `enable=`.
-  //
-  // The scoping is load-bearing, not decoration: `fade` doesn't merely ramp
-  // and hold within its own window, it multiplies by its ramp factor at
-  // EVERY frame it sees — a bare `fade=t=in:st=X` blacks out every frame
-  // with pts < X, unconditionally, because "before the fade" is factor 0
-  // rather than "unmodified". Chained after an earlier `fade=out`, that
-  // blacking reaches back over frames the first filter had already left
-  // alone, and even a single cut then wipes the whole picture before it.
-  // Confirmed empirically: the unscoped chain read all-16 (black) at every
-  // sampled t, including t=0, for a cut at t=12. `enable=` makes each fade a
-  // no-op passthrough outside its own [st, st+d], so the two filters can be
-  // chained without one undoing the other's untouched frames.
-  // Each fade is also clamped to HALF the room actually available on its own
-  // side — the gap to the previous cut-in's own end (or to the track's
-  // start, for the first) on the way out, and the gap to the next cut-in's
-  // start (or to the track's end, for the last) on the way in. Cuts closer
-  // together than 2 * FADE would otherwise overlap their fade-in and the
-  // neighbour's fade-out on the same stream: chained through `enable=`,
-  // that re-dims a picture the other pair had just restored, and at a small
-  // enough gap the background never returns to full brightness at all.
-  // Splitting the gap in half is the same "two neighbours each give up half
-  // the seam" rule `GUTTER / 2` follows in `src/frame.ts` — both edges give
-  // up an equal share so the two ramps meet exactly, never overlap. A gap of
-  // zero degenerates to no dip at all between that pair, which is correct:
-  // there is no room for one. This is a DIFFERENT clamp from the per-cut
-  // `d = Math.min(FADE, dur / 3)` below, which bounds a fade against its own
-  // cut-in's length rather than against the space around it — collapsing
-  // the two into one would tie the background's transition time to a
-  // property (the speech's duration) that has nothing to do with it.
-  const bgFades = cuts
-    .map((cut, i) => {
-      const dur = probed[i]?.seconds ?? 0;
-      const prevEnd = i > 0 ? (cuts[i - 1]?.at ?? 0) + (probed[i - 1]?.seconds ?? 0) : 0;
-      const nextAt = i < cuts.length - 1 ? (cuts[i + 1]?.at ?? seconds) : seconds;
-      const gapBefore = Math.max(0, cut.at - prevEnd);
-      const gapAfter = Math.max(0, nextAt - (cut.at + dur));
-      const dOut = Math.min(FADE, gapBefore / 2);
-      const dIn = Math.min(FADE, gapAfter / 2);
-      const outAt = cut.at - dOut;
-      const inAt = cut.at + dur;
-      let f = "";
-      if (dOut > 0) {
-        f += `fade=t=out:st=${outAt}:d=${dOut}:enable='between(t,${outAt},${outAt + dOut})',`;
-      }
-      if (dIn > 0) {
-        f += `fade=t=in:st=${inAt}:d=${dIn}:enable='between(t,${inAt},${inAt + dIn})',`;
-      }
-      return f;
-    })
-    .join("");
+  // The whole video track: the picture, cover-cropped so it fills the frame
+  // edge to edge, held from t=0 to the end. No fades and no overlays — a
+  // speech is audio, so there is nothing for the picture to get out of the
+  // way of.
   legs.push(
     `[0:v]scale=${WIDE.w}:${WIDE.h}:force_original_aspect_ratio=increase,` +
-      `crop=${WIDE.w}:${WIDE.h},fps=${FPS},setsar=1,${bgFades}format=yuv420p[bg]`,
+      `crop=${WIDE.w}:${WIDE.h},fps=${FPS},setsar=1,format=yuv420p[v]`,
   );
-
-  cuts.forEach((cut, i) => {
-    const idx = firstCut + i;
-    const dur = probed[i]?.seconds ?? 0;
-    // Clamped so a pathologically short cut-in cannot have its fade-in
-    // overlap its fade-out, which multiplies to a clip that never reaches
-    // full brightness. Same clamp, same reason, as `stackWide`'s.
-    const d = Math.min(FADE, dur / 3);
-    legs.push(
-      `[${idx}:v]split=2[cbg${i}][cfg${i}]`,
-      `[cbg${i}]scale=${BG_W}:${BG_H}:force_original_aspect_ratio=increase,` +
-        `crop=${BG_W}:${BG_H},gblur=sigma=${BLUR_SIGMA},` +
-        `scale=${WIDE.w}:${WIDE.h},setsar=1[cbgz${i}]`,
-      // `decrease`, never a fixed height: an upload is whatever file the user
-      // picked, and a cut-in wider than 16:9 would overflow the frame.
-      `[cfg${i}]scale=${WIDE.w}:${WIDE.h}:force_original_aspect_ratio=decrease:` +
-        `force_divisible_by=2,setsar=1[cfgz${i}]`,
-      // floor(x/2)*2 on both axes: `force_divisible_by=2` makes the fitted
-      // size even, not the centring offset, and an overlay at an odd offset
-      // in yuv420p lands on a half-chroma-sample boundary.
-      `[cbgz${i}][cfgz${i}]overlay=floor((W-w)/4)*2:floor((H-h)/4)*2,fps=${FPS},` +
-        `setpts=PTS-STARTPTS,fade=t=in:st=0:d=${d},fade=t=out:st=${dur - d}:d=${d},` +
-        `tpad=start_duration=${cut.at},format=yuv420p[cut${i}]`,
-    );
-  });
-
-  // Chained overlays, each gated to its own window. `eof_action=pass` and
-  // `repeatlast=0` are what stop a finished cut-in's last frame sticking over
-  // the rest of the track.
-  let base = "[bg]";
-  cuts.forEach((cut, i) => {
-    const dur = probed[i]?.seconds ?? 0;
-    const label = i === cuts.length - 1 ? "[v]" : `[ov${i}]`;
-    legs.push(
-      `${base}[cut${i}]overlay=0:0:eof_action=pass:repeatlast=0:` +
-        `enable='between(t,${cut.at},${cut.at + dur})'${label}`,
-    );
-    base = label;
-  });
-  if (cuts.length === 0) legs.push(`[bg]null[v]`);
 
   const fmt = `aformat=sample_fmts=fltp:channel_layouts=stereo`;
   legs.push(`[1:a]aresample=${RATE},${fmt}[music]`);
@@ -328,38 +246,34 @@ export async function renderLofi(opts: {
   } else {
     cuts.forEach((cut, i) => {
       const dur = probed[i]?.seconds ?? 0;
-      // `atrim` matters only for the stand-in, which carries no `-t` of its
-      // own and would otherwise run for the length of the whole track.
+      // `atrim` bounds a speech whose container runs longer than its own
+      // audio — a video file whose picture outlasts its sound is the
+      // ordinary case, since `dur` here is the CONTAINER's duration.
       //
       // ponytail: no `afade` at this hard `atrim` edge. A speech recording
-      // is near-silent at its own end and the video is dipping to black over
-      // the same instant, which covers most of it — but a genuine click is
-      // possible on a recording that does not fade out on its own. Add
-      // `afade=t=out:st=${dur - d}:d=${d}` (the same `d` the video's own
-      // local fade uses, `Math.min(FADE, dur / 3)`) the day a real render
-      // audibly clicks; not added now because tuning it needs a recording to
-      // listen to, not a synthetic fixture.
-      // The vinyl treatment runs only on a cut-in that HAS audio. A silent
-      // one is standing in with `anullsrc`, and there is nothing in digital
-      // silence to band-limit, wobble or bit-crush — the leg exists only to
-      // keep the mix's input count right and give the sidechain something to
-      // follow.
+      // is usually near-silent at its own end, but a genuine click is
+      // possible on one that does not fade out on its own — and nothing
+      // covers it any more, now that the video no longer dips to black over
+      // the same instant. Add `afade=t=out:st=${dur - d}:d=${d}` (the `d`
+      // the crackle boost's own fades use, `Math.min(FADE, dur / 3)`) the
+      // day a real render audibly clicks; not added now because tuning it
+      // needs a recording to listen to, not a synthetic fixture.
       //
-      // This is a correctness fix, not a saving. `vibrato` fed pure silence
-      // emits NaN, which propagates through the mix to the AAC encoder and
-      // kills the render with `Error submitting audio frame to the encoder:
-      // Invalid argument` — a message naming neither this filter nor the
-      // silence that triggered it. Bisected out of a real failure; every
-      // test using the silent fixture died on it and no other test did.
-      const voice = probed[i]?.hasAudio === true;
-      const src = voice ? `${firstCut + i}:a` : `${silenceIndex}:a`;
-      const vinyl = voice
-        ? `highpass=f=${SPEECH_HP},` +
-          `acrusher=bits=${CRUSH_BITS}:mode=lin:mix=${CRUSH_MIX},` +
-          `lowpass=f=${SPEECH_LP},volume=${SPEECH_GAIN},`
-        : "";
+      // The vinyl treatment runs on every speech, unconditionally. It used
+      // to be skipped on a cut-in with no audio of its own, which was fed
+      // digital silence by an `anullsrc` stand-in — and that skip was a
+      // correctness fix rather than a saving, because some filters emit NaN
+      // on a zero signal and the NaN reaches the AAC encoder as `Error
+      // submitting audio frame to the encoder: Invalid argument`. There is
+      // no stand-in any more: `probeAudio` above refuses a file with no
+      // audio stream, so every leg here carries a real recording. A
+      // recording that happens to BE silent still reaches these filters, so
+      // the `mode=lin` rule on `acrusher` stays load-bearing.
       legs.push(
-        `[${src}]atrim=0:${dur},asetpts=PTS-STARTPTS,${vinyl}` +
+        `[${firstCut + i}:a]atrim=0:${dur},asetpts=PTS-STARTPTS,` +
+          `highpass=f=${SPEECH_HP},` +
+          `acrusher=bits=${CRUSH_BITS}:mode=lin:mix=${CRUSH_MIX},` +
+          `lowpass=f=${SPEECH_LP},volume=${SPEECH_GAIN},` +
           `adelay=${Math.round(cut.at * 1000)}:all=1,aresample=${RATE},${fmt}[sp${i}]`,
       );
     });
@@ -377,7 +291,7 @@ export async function renderLofi(opts: {
     // its SHORTER input ends, not when the longer one does — unlike `amix`,
     // which has its own `duration=` option and silence-pads a short input up
     // to the target length. `[sc]` is only as long as the last speech, so
-    // without this pad `[ducked]` died at the last cut-in's own end and the
+    // without this pad `[ducked]` died at the last speech's own end and the
     // final `amix ... duration=first` faithfully inherited that truncated
     // length from its first input: the container and video ran the full
     // track, but the music itself went silent partway through. `apad`'s
@@ -400,8 +314,8 @@ export async function renderLofi(opts: {
     // delayed stream cannot extend the render past the duration the caller
     // has already committed to in the filename.
     // The crackle, in two layers so its level can change without a step.
-    // One tap is the bed, trimmed to the track; one per cut-in is the boost,
-    // faded at both edges and delayed onto its own cut. They SUM, so the
+    // One tap is the bed, trimmed to the track; one per speech is the boost,
+    // faded at both edges and delayed onto its own speech. They SUM, so the
     // noise is quiet throughout and lifts under each voice.
     //
     // The crackle plays at FULL SPECTRUM — no band-limiting, unlike the

@@ -51,9 +51,12 @@ the result is a list of `youtu.be/<id>?t=` links the user copies out, plus
 adds a FOURTH journey beside the short one, the long one and the
 chat-moments dead end: `idle` → `lofi` → `preview`, where a music track, a
 background picture and up to `MAX_SPEECHES` (8) speech clips become one
-1920x1080 video, each speech cut into a quiet stretch of the music,
-band-limited and ducked under it. It shares `preview`, `/out/`, the publish
-panel and `/api/upload` with the long journey and nothing else. No
+1920x1080 video, each speech mixed into a quiet stretch of the music,
+band-limited and ducking it. A speech is AUDIO ONLY — it may be uploaded
+as an audio file or a video one, and a video one's picture is discarded.
+It shares `preview`, `/out/`, the publish panel and `media/uploads/` with
+the long journey and nothing else — the long journey's parts arrive on
+`/api/upload`, every one of the lofi journey's on `/api/upload-audio`. No
 spec covers the speech engine: every one of them
 describes macOS `say` and its `Linh` voice, which this codebase no longer
 uses at all (see "the voice" below).
@@ -67,7 +70,7 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 394 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 400 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -100,7 +103,8 @@ server/longform.ts WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK,
                    checkLongform, Trim/MIN_KEPT/detectTrim/keptRange,
                    stackWide (the long journey's one ffmpeg pass)
 server/lofi.ts     WIDE, FADE, CRACKLE_PATH, checkLofi, Cut/renderLofi (the
-                   lofi journey's one ffmpeg pass — overlay, not concat)
+                   lofi journey's one ffmpeg pass — a still picture for the
+                   whole track, with every speech mixed in as AUDIO ONLY)
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
                    starterDuration, checkStarter, installedVoices,
                    knownVoices, synthesize, speak, prependStarter (the title
@@ -809,18 +813,40 @@ a UUID the *server* minted, so there is nothing legitimate a client can send
 that it does not match. The original filename never crosses the wire at all
 — the client keeps it purely for display.
 
+**A lofi speech is AUDIO ONLY, and the picture never moves.** A speech is
+mixed into the track and is never shown: no overlay, no letterbox, no dip,
+no fade. The video track is one `-loop 1` still frame from t=0 to the end,
+which is why an uploaded speech may be an audio file or a video one
+indifferently — a video one's pictures are discarded here.
+
+This reversed an earlier design, and what it deleted is worth knowing about
+before anyone puts it back. The cut-in used to be letterboxed over a blurred
+copy of itself, `tpad`ded to its own start, gated with
+`enable='between(t,at,at+dur)'`, and surrounded by a dip to black on the
+background. Three of those carried invariants that were *correctness fixes
+found the hard way*, and none of them is inferrable from the code that
+replaced them: `tpad` rather than a bare `setpts` (because `overlay`'s
+second input must have a frame at every base timestamp, and a `setpts`
+offset manufactures none); every background `fade` scoped with its own
+`enable=` (because `fade` multiplies EVERY frame it sees by its ramp factor,
+so chained unscoped pairs blacked the picture from t=0 — measured all-16 at
+every sampled `t` for a single cut at `t=12`); and each fade clamped to HALF
+the gap available on its own side (because two cut-ins closer than
+`2 * FADE` overlapped their ramps and the background never returned to
+full). Reinstating any of the picture machinery means reinstating all three.
+Read them in `server/lofi.ts`'s history before writing a line.
+
 **The lofi render's duration is the music's, by construction — nothing
-sums.** `renderLofi` composites the picture (`-loop 1`) and every cut-in
-onto the music's own timeline with `overlay`, closed by one `-t <music
-seconds>`, rather than concatenating an image leg, N speech legs and a
-return-to-image leg. Concat would put back exactly the arithmetic the long
-journey's dip-rather-than-`xfade` decision already exists to avoid: every
-leg's length would feed the next leg's offset, the final image leg would
-have to absorb whatever rounding was left over so the picture still ends
-when the music does, and `outName`'s `mmss` — built from the probed music
-length — could come to name a file a different length than the one on disk.
-Overlay makes that disagreement structurally impossible: no leg's length is
-ever fed anywhere.
+sums.** The image input carries its own `-t <music seconds>` and the output
+carries a second one; no leg's length is fed anywhere. Concatenating an
+image leg, N speech legs and a return-to-image leg would put back exactly
+the arithmetic the long journey's dip-rather-than-`xfade` decision already
+exists to avoid: every leg's length would feed the next leg's offset, the
+final image leg would have to absorb whatever rounding was left over so the
+picture still ends when the music does, and `outName`'s `mmss` — built from
+the probed music length — could come to name a file a different length than
+the one on disk. This graph makes that disagreement structurally
+impossible.
 
 **`troughs` places the LONGEST speech first, never in input order.** A long
 speech has strictly fewer legal windows than a short one. `src/lofi.test.ts`
@@ -857,49 +883,15 @@ split in this codebase already exists: `server/index.ts` routes on exact
 `req.url` equality, so `/api/upload?audio=1` would simply miss the
 `/api/upload` branch rather than reaching a flag inside it.
 
-**A cut-in is padded to its own start with `tpad` and gated with `enable=`,
-never shifted with a bare `setpts`.** `overlay`'s second input needs a frame
-at every timestamp the base stream produces; `setpts=PTS-STARTPTS+at/TB`
-alone offsets the footage's existing frames without manufacturing any to
-fill the gap before `at`, so `overlay` would starve for input until the real
-footage arrives. `tpad=start_duration=<at>` synthesises black frames to fill
-exactly that gap; they are never drawn, because the outer
-`enable='between(t,at,at+dur)'` keeps the whole leg off until the real
-footage starts. `ponytail:` `tpad` pushes `at * FPS` synthesised frames
-through the entire chain — free to make, not free to push through — so a
-long track with many cut-ins is where a bare `setpts` offset should be
-reached for instead, re-checking `server/lofi.test.ts`'s timing assertions
-when it is.
-
-**Every background `fade` around a cut-in is scoped with its own
-`enable='between(t,…)'`, and that scoping is a correctness fix, not
-decoration.** `fade` does not pass frames through untouched outside its own
-window — it multiplies EVERY frame it sees by its ramp factor, so an
-unscoped `fade=t=in:st=X` reads every frame with `pts < X` as factor 0
-(black), not "unmodified". Chained after an earlier `fade=out` on the same
-`[bg]` stream — one pair per cut-in — that blacking reaches back over frames
-the first filter had already left alone: confirmed empirically, the
-unscoped chain sampled all-16 (black) at every `t` tried, including `t=0`,
-for a single cut at `t=12`. `enable=` turns each fade into a no-op
-passthrough outside its own `[st, st+d]`, which is what lets N chained pairs
-read as N independent dips instead of one fade the stream never recovers
-from.
-
-Each fade's own duration is also clamped to HALF the gap actually available
-on its side — the room to the previous cut-in's end (or the track's start)
-going out, the room to the next cut-in's start (or the track's end) coming
-in — never a flat `FADE`. Two cut-ins closer together than `2 * FADE` would
-otherwise overlap their fade-out and the neighbour's fade-in on the same
-stream; chained through `enable=`, that re-dims a picture the other pair had
-just restored, and at a small enough gap the background never returns to
-full brightness between them at all. Splitting the gap in half is the same
-"two neighbours each give up half the seam" rule `GUTTER / 2` follows in
-`src/frame.ts`. This is a DIFFERENT clamp from the per-cut-in `d =
-min(FADE, dur / 3)`, which bounds a speech's OWN fade against its OWN
-duration — collapsing the two would tie the background's transition time to
-a property of the speech that has nothing to do with it. `server/lofi.test.ts`
-pins the half-gap clamp with two 1s cut-ins 0.6s apart, sampled at the exact
-frame-boundary midpoint where the two ramps should meet with no overlap.
+A lofi SPEECH goes through that same route and that same prober, and for a
+second reason on top of the first. It may be a bare recording with no video
+stream, which `probeFile` refuses outright — but `probeAudio` is also the
+gate that keeps a *silent* video out of the list. A speech contributes
+nothing but audio now, so one with none can only add a silent stretch to a
+render that never shows it: invisible until someone listens to the whole
+thing. Refusing at upload is the loud version of that failure. The graph
+used to carry an `anullsrc` stand-in for exactly this input; it does not any
+more, which also removes the one conditional input index `renderLofi` had.
 
 **`sidechaincompress` is a FRAMESYNC filter: its output ends when its
 SHORTEST input ends, not its longest — and not by `amix`'s own `duration=`
@@ -929,16 +921,15 @@ when the two can silently disagree.
 
 **The duck is a `sidechaincompress`, not a `volume` gated on
 `enable='between(t,a,b)'`.** A gated step has no attack or release and
-clicks audibly at both edges of every cut-in. `DUCK_THRESHOLD`/`DUCK_RATIO`
+clicks audibly at both edges of every speech. `DUCK_THRESHOLD`/`DUCK_RATIO`
 are the compressor's own two parameters — `sidechaincompress` takes no
 target-depth input, so there is deliberately no dB knob here at all. The duck is also what lets `troughs`
 (above) get away with no quietness threshold at all: it only has to find a
 THIN stretch, because the render itself makes that stretch sound deliberate
 regardless of how thin it is.
 
-**The vinyl treatment runs on a cut-in's voice and never on the silence
-stand-in, and `acrusher` sits BEFORE the lowpass.** Two orderings, both
-silent if wrong.
+**`acrusher` sits BEFORE the lowpass, and it is `mode=lin`.** Two settings,
+both silent if wrong.
 
 `acrusher` is a bit-reducer, so it manufactures aliasing all the way up to
 Nyquist. Placed before `lowpass=3000` that grit is rolled off with
@@ -946,16 +937,16 @@ everything else; placed after, the render simply stops being band-limited,
 which `server/lofi.test.ts`'s above-6 kHz assertion reads as the failure it
 is.
 
-The skip on silence is a correctness fix rather than a saving. A cut-in
-with no audio of its own is fed digital silence by the `anullsrc` stand-in,
-and there is nothing in silence to band-limit or crush — but more than
-that, filtering it is what BREAKS the render. Some filters emit NaN on a
-zero signal, it propagates through every mix downstream, and the AAC
-encoder dies with `Error submitting audio frame to the encoder: Invalid
-argument` — a message naming neither the filter nor the silence. Every test
-using the silent fixture failed on exactly that and no other test did,
-which is the shape this failure always takes: it looks like an encoder
-problem and it is an input problem.
+`mode=lin` is what survives a zero sample. Some filters emit NaN on a zero
+signal — log-mode quantisation takes a logarithm of it — and the NaN
+propagates through every mix downstream until the AAC encoder dies with
+`Error submitting audio frame to the encoder: Invalid argument`, a message
+naming neither the filter nor the silence. That is the shape this failure
+always takes: it looks like an encoder problem and it is an input problem.
+The treatment runs on EVERY speech now, unconditionally — there is no
+silence stand-in left to skip it for — and a real recording can still run
+to digital silence, so `server/lofi.test.ts` renders a speech whose audio
+stream is nothing but zeroes to keep the linear mode honest.
 
 **There is deliberately no pitch wobble, though the effect being imitated
 has one.** `vibrato` is clean on these fixtures in isolation, at every
@@ -969,15 +960,15 @@ suited to the material: on singing a wobble reads as a warped record, on
 speech as seasick.
 
 **The crackle is two summed layers, not one gated one — and they POWER-sum.**
-A bed at `CRACKLE_BED` runs the whole render and each cut-in adds a second
+A bed at `CRACKLE_BED` runs the whole render and each speech adds a second
 leg at `CRACKLE_BOOST`, faded in and out. A `volume` gated on `enable=`
 would step instead, and a step clicks at both edges — the same reason the
 duck is a compressor rather than a gate.
 
 Each tap reads a DIFFERENT moment of the asset: the bed runs from its start,
-a boost leg is delayed onto its own cut-in. So the two are uncorrelated
+a boost leg is delayed onto its own speech. So the two are uncorrelated
 noise and add as power, not amplitude — equal gains give +3 dB under a
-cut-in, not the +6 dB the numbers look like they promise. Measured at
+speech, not the +6 dB the numbers look like they promise. Measured at
 exactly +3.0 dB with both at 0.6. To lift by roughly N dB, the boost wants
 `bed * sqrt(10^(N/10) - 1)`.
 
@@ -1374,21 +1365,33 @@ speech, stability across repeated calls, and the longest-first ordering
 test itself — a hole only the long speech fits and a hole only the short
 one fits, built so that placing the short one first strands the long one.
 `server/lofi.test.ts` shells real ffmpeg against a synthetic fixture (a
-teal background, a 220 Hz sine bed, a crimson-over-white-noise "speech",
-and a short silent "bump" for the fade-clamp case) and asserts pixels and
-dB: the output is 1920x1080 and within half a second of the music's own
-length, the background and the speech pixels show where each should, a
-cut-in's edge dips to near black, the music measurably ducks under the
-speech in its own 220 Hz band, and the speech's own energy above 6 kHz is
-suppressed relative to its unfiltered source. Two tests exist purely to
-catch the `sidechaincompress` truncation bug (above) by a route the
-duration assertion cannot reach — the audio STREAM's own duration via
-`ffprobe -select_streams a:0`, and the bed's loudness well past the last
-speech's end — and a third renders two cut-ins to prove each stays inside
-its own window. A fourth covers the crackle — the bed proven in the band
-above 6 kHz, where nothing else in the fixture lives (the music is a 220 Hz
-sine and the speech is lowpassed at 3 kHz), and the per-cut-in lift proven
-lower down at 1-2.5 kHz, where the boost shows most. Both on PEAK rather
+teal background, a 220 Hz sine bed, a crimson-over-white-noise VIDEO
+"speech", a 1200 Hz AUDIO-ONLY .m4a speech, a speech whose audio stream is
+digital silence, and a video with no audio stream at all) and asserts
+pixels and dB: the output is 1920x1080 and within half a second of the
+music's own length, the music measurably ducks under the speech in its own
+220 Hz band, and the speech's own energy above 6 kHz is suppressed relative
+to its unfiltered source.
+
+The picture assertion is the one this feature turns on, and it is
+deliberately a sweep rather than a sample: the background must still be the
+background at SEVEN instants — before, at both edges of the speech, mid-
+speech, just after, and near the end. The fixture's speech is solid crimson,
+so any overlay reads red and any reinstated dip reads near-black, and the
+two edges are where both show first. Mutation-pinned by putting the old
+`tpad` + `enable=` overlay chain back, which fails it at `t=12`. Two tests
+exist purely to catch the `sidechaincompress` truncation bug (above) by a
+route the duration assertion cannot reach — the audio STREAM's own duration
+via `ffprobe -select_streams a:0`, and the bed's loudness well past the last
+speech's end. A further three cover the audio-only path end to end (two
+.m4a speeches found again in a narrow 1200 Hz bandpass inside their own
+windows and not between them), the refusal of a speech with no audio stream,
+and a speech that is digital silence rendering at all — the last standing in
+for `acrusher`'s `mode=lin`, now that no stand-in branch skips the filters
+for it. Another covers the crackle — the bed proven in the band above 6 kHz,
+where nothing else in the fixture lives (the music is a 220 Hz sine and the
+speech is silence), and the per-speech lift proven lower down at 1-2.5 kHz,
+where the boost shows most. Both on PEAK rather
 than mean, which is the opposite of what a bed suggests and is forced by
 the asset: sparse pops whose mean sits BELOW the fixture's own noise floor,
 so a mean-based version of the test could not tell the bed from silence —
@@ -1397,16 +1400,15 @@ peak is stable here. The lift's bound sits above +3 dB deliberately: the
 two legs are uncorrelated and power-sum, so equal gains alone would give
 +3 dB and a looser bound would pass on the boost leg merely existing.
 Mutation-pinned: zeroing the bed gain and zeroing the boost gain each fail
-one of the two. Also mutation-pinned: 
-zeroing the bed gain and zeroing the boost gain each fail one of its two
-assertions. Also mutation-pinned: dropping the duck, dropping the fades, and
-dropping the 300-3000 Hz band each fail exactly one assertion. Dropping the
+one of its two assertions. Also mutation-pinned: dropping the duck and
+dropping the 300-3000 Hz band each fail exactly one assertion, and
+reinstating the speech overlay fails the picture sweep. Dropping the
 output `-t` was also run and failed nothing — it is provably redundant for
-this graph (the image input's own `-t` already bounds `[bg]`/`[v]`, and two
+this graph (the image input's own `-t` already bounds `[v]`, and two
 chained `amix ... duration=first` stages bound the audio independently), and
 is kept as defence in depth against a future graph change rather than as a
 guarded invariant; see `task-3-report.md` for the isolated reproduction.
-"Reversing the overlay order" was never run. `src/lofi.test.ts` also covers
+`src/lofi.test.ts` also covers
 `clampPlacement`: an ordinary move, each of the track's own two bounds, each
 neighbour's bound, and the drag-past-a-neighbour case that leaves no legal
 position — mutation-pinned by reverting the refusal to the old
@@ -1602,12 +1604,12 @@ Deliberate: re-rendering a stack after a title fix must not mean
 re-uploading a gigabyte. `listClips` cannot reach it — it walks per-video
 directories and matches `CLIP_RE`, and a UUID at the top level is neither.
 `reportCache` counts it, so the boot log shows it growing. The lofi journey
-grows the same directory the same way, from a second door: its speeches
-land as `<uuid>.mp4` through the same `/api/upload` route a long-form part
-does, and its music lands there too, as `<uuid>.mp4` through
-`/api/upload-audio` — ffmpeg dispatches on content rather than the `.mp4`
-extension, so a music upload needs no naming exception anywhere in
-`ffmpeg.ts`. Re-rendering a lofi mix after a title or marker fix is the same
+grows the same directory the same way, from a second door: both its music
+and its speeches land as `<uuid>.mp4` through `/api/upload-audio`, whatever
+they actually are — ffmpeg dispatches on content rather than the `.mp4`
+extension, so an .mp3 in a `.mp4` name needs no exception anywhere in
+`ffmpeg.ts`, and neither does the `.mp3` name the crackle asset wears over
+AAC. Re-rendering a lofi mix after a title or marker fix is the same
 argument against eviction, doubled.
 
 **`/api/upload` destroys the socket past `UPLOAD_MAX_BYTES` rather than

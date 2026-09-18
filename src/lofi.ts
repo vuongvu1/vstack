@@ -8,23 +8,33 @@
  *  `ytdlp.ts` already reaches across for `geometry.ts`'s `PAD`. */
 
 /** One uploaded speech, as the panel knows it. `seconds` is what
- *  `/api/upload` probed; `name` is the local filename, for the error
- *  message and the list row only. */
+ *  `/api/upload-audio` probed; `name` is the local filename, for the error
+ *  message and the list row only.
+ *
+ *  A speech may be an audio file or a video one, and the distinction never
+ *  reaches this module: only its audio is ever rendered, so all a placement
+ *  needs is how long it runs. */
 export type Speech = { id: string; name: string; seconds: number };
 
-/** Where one speech's own picture starts, in the music's timeline. The dip
- *  to black that precedes it runs `FADE` earlier. */
+/** Where one speech's voice enters the music's timeline. */
 export type Placement = { id: string; at: number };
 
 export type TroughResult = { placements: Placement[] } | { error: string };
 
-/** How long the dip at each edge of a cut-in takes.
+/** How much room a speech is given at each of its own edges.
  *
  *  The same 0.5s `longform.ts` uses, and declared here rather than shared
  *  for the same reason its BLUR_SIGMA is not shared with `starter.ts`: these
  *  sit on opposite sides of the client/server line, and one constant for two
  *  transitions means tuning either one moves the other. `server/lofi.ts`
- *  declares its own copy; `server/lofi.test.ts` pins the value. */
+ *  declares its own copy; `server/lofi.test.ts` pins the value.
+ *
+ *  It used to be the dip to black on either side of a cut-in, which is why
+ *  it is reserved rather than merely respected. There is no cut-in any more
+ *  — a speech is mixed in as audio and the picture never moves — so what it
+ *  buys now is breathing room at each edge of the voice and the length of
+ *  the crackle boost's own fades. Kept because a placement flush against
+ *  the track's own start or end still reads as an accident. */
 export const FADE = 0.5;
 
 /** The envelope's resolution. Four buckets a second is fine enough to find
@@ -118,8 +128,8 @@ export function troughs(
     .sort((a, b) => b.speech.seconds - a.speech.seconds || a.i - b.i);
 
   for (const { speech } of order) {
-    // The dips at both edges are part of the room this speech needs, not
-    // extra on top of it.
+    // The breathing room at both edges is part of what this speech needs,
+    // not extra on top of it.
     const need = speech.seconds + 2 * FADE;
     const lo = SKIP_HEAD;
     const hi = seconds - SKIP_TAIL - need;

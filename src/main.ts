@@ -1439,7 +1439,12 @@ async function doUpload(files: File[]): Promise<void> {
     }
     for (const [i, file] of files.entries()) {
       setState({ busy: `Uploading ${i + 1}/${files.length}…` });
-      const { id, duration } = await api.upload(file);
+      // Uploaded through the AUDIO route, the same one the music track
+      // takes: a speech may be a bare recording with no video stream at
+      // all, which `/api/upload`'s `probeFile` refuses outright. It is also
+      // the check that keeps a silent video out of the list — it can only
+      // contribute silence to the mix, and the render would never say so.
+      const { id, duration } = await api.upload(file, true);
       // Live state, not a snapshot: each iteration appends to what the
       // previous one wrote.
       setState({ parts: [...getState().parts, { id, name: file.name, duration }] });
@@ -1549,7 +1554,12 @@ async function doAddSpeeches(files: File[]): Promise<void> {
     }
     for (const [i, file] of files.entries()) {
       setState({ busy: `Uploading ${i + 1}/${files.length}…` });
-      const { id, duration } = await api.upload(file);
+      // Uploaded through the AUDIO route, the same one the music track
+      // takes: a speech may be a bare recording with no video stream at
+      // all, which `/api/upload`'s `probeFile` refuses outright. It is also
+      // the check that keeps a silent video out of the list — it can only
+      // contribute silence to the mix, and the render would never say so.
+      const { id, duration } = await api.upload(file, true);
       // Live state, not a snapshot: each iteration appends to what the
       // previous one wrote.
       setState({
@@ -3060,9 +3070,15 @@ function renderLofiPanel(): Node[] {
   );
 
   const speechRow = el("div", { className: "lofi-row" });
+  // Audio OR video, because only a speech's audio is ever rendered — the
+  // picture of a talking head is discarded by `renderLofi`, so demanding an
+  // .mp4 would make the user wrap a voice recording in one for nothing.
+  // Still a hint rather than a gate: the server's `probeAudio` is what
+  // decides, and it asks the only question that matters (does ffmpeg find
+  // an audio stream in these bytes) rather than trusting an extension.
   const speechPicker = el("input", {
     type: "file",
-    accept: "video/mp4",
+    accept: "audio/*,video/*",
     multiple: true,
     disabled: locked || s.speeches.length >= MAX_SPEECHES,
   });
@@ -3113,7 +3129,7 @@ function renderLofiPanel(): Node[] {
       : [
           el("p", {
             className: "stack-empty",
-            textContent: "Add .mp4 files. They drop into the quiet parts.",
+            textContent: "Add audio or video files. Only the sound is used, and it drops into the quiet parts.",
           }),
         ]),
     speechPicker,

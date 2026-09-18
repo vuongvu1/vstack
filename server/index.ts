@@ -967,7 +967,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // end of the track, which ffmpeg renders as a graph that fails minutes
     // in rather than as an error anyone can read.
     const { seconds: musicLength } = await probeAudio(musicPath);
-    const lengths = await Promise.all(cuts.map((c) => probeFile(c.path)));
+    // `probeAudio` on a speech as well as on the track: a speech is mixed in
+    // as AUDIO ONLY — its pictures, if it has any, are never rendered — so a
+    // bare .mp3 is as legitimate here as an .mp4, and `probeFile` refuses the
+    // first outright. It is also the gate that keeps a file with no audio
+    // stream out of a render it could only contribute silence to.
+    const lengths = await Promise.all(cuts.map((c) => probeAudio(c.path)));
     for (const [i, cut] of cuts.entries()) {
       const dur = lengths[i]?.seconds ?? 0;
       if (cut.at + dur > musicLength) {
