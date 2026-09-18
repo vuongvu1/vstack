@@ -118,8 +118,8 @@ const asset = (name: string) => fileURLToPath(new URL(`assets/${name}`, import.m
  *  `bed * sqrt(10^(N/10) - 1)`, which is where 0.9 against a 0.6 bed comes
  *  from: about +5 dB, "a bit louder" rather than a different scene. */
 export const CRACKLE_PATH = asset("vinyl-crackle.mp3");
-const CRACKLE_BED = 0.25;
-const CRACKLE_BOOST = 0.55;
+const CRACKLE_BED = 0.18;
+const CRACKLE_BOOST = 0.39;
 
 /** Levels the noise before either gain sees it, and this is what makes the
  *  bed audible at all rather than a knob nobody can hear.
