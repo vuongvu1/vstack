@@ -113,12 +113,20 @@ const asset = (name: string) => fileURLToPath(new URL(`assets/${name}`, import.m
  *  from its start, a boost leg is delayed onto its own speech — so the two
  *  are uncorrelated noise: equal gains give +3 dB under a speech, not the
  *  +6 dB the numbers look like they promise. Measured at exactly +3.0 dB
- *  when both were 0.6. To lift by roughly N dB the boost wants
- *  `bed * sqrt(10^(N/10) - 1)`, which is where 0.9 against a 0.6 bed comes
- *  from: about +5 dB, "a bit louder" rather than a different scene. */
+ *  when both were 0.6. To lift the POWER by roughly N dB the boost wants
+ *  `bed * sqrt(10^(N/10) - 1)`.
+ *
+ *  The PEAK moves by a different rule, and that is the one the test reads.
+ *  A peak is whichever leg's loudest pop happens to land there rather than
+ *  a sum of two, so it tracks `20 * log10(boost / bed)` — 3.8 dB at the
+ *  current pair, against 5.3 dB of power. Measured on the synthetic fixture
+ *  at +3.6 dB peak and +1.4 dB mean. Tuning by ear moves the power; tuning
+ *  against `server/lofi.test.ts` moves the peak, and its bound sits at
+ *  +3 dB, so this pair clears it by 0.6 dB and a further cut to the boost
+ *  fails that test before it stops being audible. */
 export const CRACKLE_PATH = asset("vinyl-crackle.mp3");
 const CRACKLE_BED = 0.18;
-const CRACKLE_BOOST = 0.39;
+const CRACKLE_BOOST = 0.28;
 
 /** Levels the noise before either gain sees it, and this is what makes the
  *  bed audible at all rather than a knob nobody can hear.

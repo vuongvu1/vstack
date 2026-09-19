@@ -313,6 +313,14 @@ describe("renderLofi", () => {
     // legs read different moments of the asset, so they are uncorrelated and
     // POWER-sum — equal gains would give +3 dB, and the bound sits above
     // that so it cannot pass on the boost leg merely existing at bed level.
+    //
+    // The margin is thin on purpose and worth knowing before retuning: a
+    // PEAK is whichever leg's loudest pop lands in the window rather than a
+    // sum, so it tracks `20 * log10(CRACKLE_BOOST / CRACKLE_BED)` and the
+    // current pair measures +3.6 dB here. Quietening the boost much further
+    // fails this assertion before the boost stops being audible — which is
+    // the right way round, but it means a failure here is a signal to think
+    // about the bound rather than to nudge it.
     const band = "bandpass=f=1700:width_type=h:width=1500";
     const bed = await loudness(crackly, 5, 2, band);
     // Inside the boost's own fades: the speech runs [12, 14] and the leg
