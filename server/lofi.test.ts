@@ -5,7 +5,14 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { probeFile } from "./ffmpeg.ts";
-import { FADE, LOGO_RECT, SPIN_SECONDS, renderLofi } from "./lofi.ts";
+import {
+  FADE,
+  LOGO_RECT,
+  SPIN_SECONDS,
+  VIZ_BAR,
+  VIZ_RECT,
+  renderLofi,
+} from "./lofi.ts";
 
 const run = promisify(execFile);
 
@@ -133,15 +140,42 @@ async function pixelAt(path: string, t: number, x: number, y: number, width = 19
 /** A rectangle of one frame, decoded to raw RGB. Used to compare the logo's
  *  corner across time — a single pixel cannot tell a rotation from noise,
  *  and the whole frame is dominated by the background that never changes. */
-async function boxAt(path: string, t: number, x: number, y: number, side: number) {
+async function regionAt(
+  path: string, t: number, x: number, y: number, w: number, h: number,
+) {
   const { stdout } = await run(
     "ffmpeg",
     ["-v", "error", "-ss", String(t), "-i", path, "-frames:v", "1",
-     "-vf", `crop=${side}:${side}:${x}:${y}`,
+     "-vf", `crop=${w}:${h}:${x}:${y}`,
      "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
     { encoding: "buffer", maxBuffer: 64 << 20 },
   );
   return stdout as unknown as Buffer;
+}
+
+const boxAt = (path: string, t: number, x: number, y: number, side: number) =>
+  regionAt(path, t, x, y, side, side);
+
+/** Mean brightness over the columns of a region that satisfy `keep`.
+ *
+ *  Column-wise rather than whole-region because that is the only way to see
+ *  the GAPS: a band with no gaps and a band with them have similar overall
+ *  means, and differ entirely in how that brightness is distributed across
+ *  each bar's slot. */
+function columnMean(
+  buf: Buffer, w: number, h: number, keep: (x: number) => boolean,
+): number {
+  let sum = 0;
+  let n = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!keep(x)) continue;
+      const i = (y * w + x) * 3;
+      sum += ((buf[i] ?? 0) + (buf[i + 1] ?? 0) + (buf[i + 2] ?? 0)) / 3;
+      n++;
+    }
+  }
+  return n === 0 ? 0 : sum / n;
 }
 
 /** Mean absolute per-channel difference between two equal-sized boxes.
@@ -466,6 +500,96 @@ describe("renderLofi", () => {
     // pure encoder noise — against 15-20 for any other angle, so this bound
     // is nowhere near either side. A 20s period fails here.
     expect(boxDiff(zero, await at(SPIN_SECONDS))).toBeLessThan(6);
+  }, 120_000);
+
+  // Same split as the mark's, and for the same reason: the pixel tests crop
+  // at `VIZ_RECT`, so they follow it wherever it goes. The band's PLACE is
+  // arithmetic.
+  it("spans the full width along the bottom", () => {
+    expect(VIZ_RECT.x).toBe(0);
+    expect(VIZ_RECT.w).toBe(WIDE_W);
+    expect(VIZ_RECT.y + VIZ_RECT.h).toBe(WIDE_H);
+    // A third of the frame, give or take — the bound is loose because this
+    // is a taste setting, but a band taller than half the frame or thinner
+    // than a tenth is a mistake rather than a retune.
+    expect(VIZ_RECT.h).toBeGreaterThan(WIDE_H / 10);
+    expect(VIZ_RECT.h).toBeLessThan(WIDE_H / 2);
+
+    // There IS a gap, by construction. This belongs here rather than in the
+    // pixel test below for a reason worth keeping: that test classifies
+    // columns with this same `fill`, so widening a bar to its whole slot
+    // makes it call every column a bar and none a gap — it then compares a
+    // full set against an EMPTY one and passes. Measured: it did. The
+    // constant has to be checked somewhere it cannot also be the ruler.
+    expect(VIZ_BAR.fill).toBeGreaterThan(VIZ_BAR.slot * 0.4);
+    expect(VIZ_BAR.fill).toBeLessThan(VIZ_BAR.slot * 0.9);
+  });
+
+  // Sampled over the band's BOTTOM 120px rather than all 360 of it, and the
+  // thresholds are small on purpose. Bars are lit from the bottom and thin
+  // out upward, so averaged over the whole band their contribution is +0.9
+  // over the flat background — real, but too close to the noise to assert
+  // on. Over the bottom 120 it is +2.5, which is the same signal measured
+  // where it lives. Every number below was measured on this fixture.
+  const BAND_SAMPLE = 120;
+  const FLAT = (0x10 + 0x80 + 0x80) / 3;
+
+  it("draws bars in the band and leaves the rest of the frame alone", async () => {
+    const { x, y, w, h } = VIZ_RECT;
+    const band = await regionAt(out, 4, x, y + h - BAND_SAMPLE, w, BAND_SAMPLE);
+    // +2.5 measured; the bound is well under it and well over the +0.0 a
+    // render with no visualiser gives.
+    expect(columnMean(band, w, BAND_SAMPLE, () => true)).toBeGreaterThan(FLAT + 1.5);
+
+    // The strip directly ABOVE the band carries no bars, which is what makes
+    // this "along the bottom" rather than "somewhere in the frame". Stated
+    // as "no brighter than the background" rather than "equal to it":
+    // libx264 decodes the flat teal about 0.7 under its source value, and
+    // that rounding is not what this test is about.
+    const above = await regionAt(out, 4, x, y - 200, w, 150);
+    expect(columnMean(above, w, 150, () => true)).toBeLessThan(FLAT + 0.5);
+  }, 120_000);
+
+  it("leaves a gap between neighbouring bars", async () => {
+    // `gifsync`'s bars fill 70% of their slot. Measured here: lit columns
+    // sit +3.8 over the background and gap columns -0.6, i.e. the gaps are
+    // background to within chroma-subsampling noise. Dropping the masking
+    // expression makes the two equal.
+    const { x, y, w, h } = VIZ_RECT;
+    const band = await regionAt(out, 4, x, y + h - BAND_SAMPLE, w, BAND_SAMPLE);
+    const isBar = (c: number) => c % VIZ_BAR.slot < VIZ_BAR.fill;
+    // Both sets non-empty, or the comparison below is vacuous — see the
+    // geometry test above for the mutation that made it so.
+    const cols = Array.from({ length: w }, (_, c) => c);
+    expect(cols.filter(isBar).length).toBeGreaterThan(0);
+    expect(cols.filter((c) => !isBar(c)).length).toBeGreaterThan(0);
+
+    const inBar = columnMean(band, w, BAND_SAMPLE, isBar);
+    const inGap = columnMean(band, w, BAND_SAMPLE, (c) => !isBar(c));
+    expect(inBar - FLAT).toBeGreaterThan(2);
+    expect(inGap - FLAT).toBeLessThan(1);
+  }, 120_000);
+
+  it("follows the whole mix, not just the music", async () => {
+    // THE reason the visualiser is split off the finished audio rather than
+    // off `[music]`. The fixture's music is a 220 Hz sine, so the upper
+    // bars have nothing to show; its speech is white noise, so while that
+    // plays they light up. Measured in the band's own right half, which is
+    // where the high frequencies land.
+    //
+    // Tapping `[music]` instead leaves this half unchanged throughout, and
+    // no other assertion here would notice.
+    const { y, w, h } = VIZ_RECT;
+    const half = w / 2;
+    const band = (t: number) => regionAt(out, t, half, y + h - BAND_SAMPLE, half, BAND_SAMPLE);
+    const quiet = await band(5);
+    // The speech runs [12, 15]; sampled in the middle of it.
+    const loud = await band(13.5);
+    // Measured at +0.2 quiet against +18.6 under the speech, so the bound
+    // has an order of magnitude of room on both sides.
+    expect(columnMean(loud, half, BAND_SAMPLE, () => true)).toBeGreaterThan(
+      columnMean(quiet, half, BAND_SAMPLE, () => true) + 8,
+    );
   }, 120_000);
 
   // The crackle bed and its per-speech boost, each measured in the band that

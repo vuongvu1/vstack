@@ -131,6 +131,24 @@
 > Its ffmpeg input is appended LAST, after the crackle, so no existing index
 > moves.
 
+> **Amended 2026-09-20 (sixth)**: a band of **frequency bars** runs along
+> the bottom of every lofi render — full width, a third of the frame tall —
+> and the spinning mark grew to 300px. The bars are modelled on the
+> visualiser in the user's own `gifsync` project (48 bars, white at 0.85,
+> each filling 70% of its slot) but drawn by ffmpeg rather than a canvas.
+>
+> Two findings are recorded as invariants in CLAUDE.md. `showcqt`, not
+> `showfreqs`: linear bin spacing puts everything in the left quarter on
+> real music, and no amplitude scale fixes it. And the bars are fed by an
+> `asplit` of the FINISHED mix rather than of `[music]`, so they react to
+> the speech and the crackle too. A third is a performance note with the
+> same shape as the starter screen's: the per-pixel expression that cuts the
+> gaps runs at 480px wide and is scaled up, not at 1920, which is a
+> sixteenth of the evaluations for identical output.
+>
+> The visualiser roughly quadruples the render's video cost (measured 9.7s
+> against 2.4s for a 60s track), which is still small beside the encode.
+
 Supersedes nothing. It adds a **fourth journey** beside the short one, the
 long one and the chat-moments dead end: `idle → lofi → preview`. A user
 picks one music track, one background image and a handful of speech clips;

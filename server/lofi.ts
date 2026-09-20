@@ -171,7 +171,7 @@ export const LOGO_PATH = asset("lofi-video-logo.png");
  *  worse every time someone enlarged the mark. Bounding the box makes the guarantee
  *  angle-independent, and costs only that the upright mark sits
  *  `(LOGO_BOX - LOGO_SIZE) / 2` further in than the number suggests. */
-const LOGO_SIZE = 240;
+const LOGO_SIZE = 300;
 const LOGO_MARGIN = 40;
 
 /** One full turn, in seconds. Exported so `server/lofi.test.ts` samples the
@@ -188,8 +188,8 @@ export const SPIN_SECONDS = 10;
  *  inscribed circle — worst at 45 degrees, and invisible at 0 and 90, which
  *  is exactly the sort of defect that looks fine in the one frame anybody
  *  checks. Padding to the diagonal FIRST and rotating inside that is what
- *  makes every angle safe: at the current 240, 240 * sqrt(2) = 339.4, so
- *  the box is 340.
+ *  makes every angle safe: at the current 300, 300 * sqrt(2) = 424.3, so
+ *  the box is 426.
  *
  *  Derived rather than written down so the two cannot drift apart, and
  *  rounded UP to an even number because it feeds the overlay offsets
@@ -204,10 +204,50 @@ const even = (v: number) => Math.floor(v / 2) * 2;
 const LOGO_X = even(WIDE.w - LOGO_MARGIN - LOGO_BOX);
 const LOGO_Y = even(LOGO_MARGIN);
 
+/** The frequency bars along the bottom, drawn from the render's own finished
+ *  mix — music, speech and crackle together, not the music alone.
+ *
+ *  `showcqt` rather than `showfreqs`, and the difference is visible rather
+ *  than academic. `showfreqs` spaces bins LINEARLY in frequency, so on music
+ *  the bass owns the left quarter and the right two-thirds is a flat line —
+ *  measured on the bundled track, every amplitude scale tried (`log`,
+ *  `sqrt`, `cbrt`, with and without a treble tilt) gave the same descending
+ *  ramp. `showcqt` is constant-Q: its bins are musical intervals, so the
+ *  spectrum a listener hears as "spread out" looks spread out.
+ *
+ *  `ascale`'s sibling knob here is `bar_g`, the bar gamma, and `minamp` is
+ *  NOT an alternative — `showfreqs` caps it at 1e-6, so the visible dynamic
+ *  range cannot be narrowed from that end at all. The frequency range is
+ *  clipped to `VIZ_LO`..`VIZ_HI` because a lofi track has almost nothing
+ *  above 7 kHz and the default runs to 20 kHz, spending a third of the
+ *  width on silence. */
+const VIZ_HEIGHT = 360;
+const VIZ_BARS = 48;
+const VIZ_ALPHA = 0.85;
+const VIZ_GAMMA = 5;
+const VIZ_LO = 55;
+const VIZ_HI = 7040;
+
+/** How much of each bar's slot the bar itself fills — `gifsync`'s own
+ *  `bw * 0.7`, which is where the 48 bars and the white-at-0.85 come from
+ *  too. Expressed as a count of columns rather than a fraction because it
+ *  is spent as one, see `renderLofi`. */
+const VIZ_COLS = 10;
+const VIZ_FILL = 7;
+
 /** Where the spinning box lands, exported for the same reason
  *  `SPIN_SECONDS` is: the test crops exactly this rect out of a real render,
  *  and a second copy of the arithmetic would drift the day the mark moves. */
 export const LOGO_RECT = { x: LOGO_X, y: LOGO_Y, side: LOGO_BOX };
+
+/** The band the bars occupy, and one bar's slot inside it — exported for
+ *  the test to crop and to classify columns, same reason as `LOGO_RECT`.
+ *  `fill` is the lit part of a slot; the rest is the gap. */
+export const VIZ_RECT = { x: 0, y: WIDE.h - VIZ_HEIGHT, w: WIDE.w, h: VIZ_HEIGHT };
+export const VIZ_BAR = {
+  slot: WIDE.w / VIZ_BARS,
+  fill: (WIDE.w / VIZ_BARS) * (VIZ_FILL / VIZ_COLS),
+};
 
 /** One speech, and where its VOICE enters the music's timeline. Its duration
  *  is probed here rather than taken from the caller: the crackle boost's
@@ -412,17 +452,58 @@ export async function renderLofi(opts: {
       `pad=${LOGO_BOX}:${LOGO_BOX}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,` +
       `rotate=a=2*PI*t/${SPIN_SECONDS}:c=none[logo]`,
   );
-  // `format=yuv420p` AFTER the overlay rather than on `[bgx]` before it: the
-  // blend has to happen somewhere that can represent the mark's alpha, and
-  // compositing into a subsampled plane first throws away the colour
-  // resolution the edges need.
-  legs.push(`[bgx][logo]overlay=${LOGO_X}:${LOGO_Y}:format=auto,format=yuv420p[v]`);
+  // The frequency bars, full width along the bottom, drawn from the mix the
+  // viewer actually hears (`[aviz]`, split off the finished audio below).
+  //
+  // Rendered at `VIZ_BARS` COLUMNS and scaled up, which is what makes them
+  // discrete bars rather than a continuous spectrum: one source column
+  // becomes one bar, and `flags=neighbor` is load-bearing — any other
+  // scaler interpolates the steps into a smooth ridge.
+  //
+  // The gaps between bars come from a per-pixel expression, and WHERE it
+  // runs is the whole performance story. Masking at the final 1920 wide
+  // costs 14s per minute of render, measured: 19.9s against a 5.7s
+  // no-mask baseline, the same lesson `SCREEN_FILTER` records for the
+  // starter screen. So the bars are widened to `VIZ_COLS` columns each
+  // first (480 px), the expression zeroes `VIZ_COLS - VIZ_FILL` of every
+  // ten there, and the result is scaled the rest of the way. Identical
+  // output — verified frame against frame — for a sixteenth of the
+  // evaluations: 9.7s against 19.9s.
+  //
+  // The alpha is `max(r,g,b)` rather than `r`: `showcqt` tints its bars by
+  // pitch class, so keying on the red channel alone would make a blue bar
+  // vanish. The colour is thrown away and replaced with white anyway — the
+  // tint is `gifsync`'s white-at-0.85, not `showcqt`'s rainbow.
+  const gap =
+    `geq=r=255:g=255:b=255:` +
+    `a='if(lt(mod(X\,${VIZ_COLS})\,${VIZ_FILL})\,` +
+    `max(r(X\,Y)\,max(g(X\,Y)\,b(X\,Y)))\,0)'`;
+  legs.push(
+    `[aviz]showcqt=s=${VIZ_BARS}x${VIZ_HEIGHT}:sono_h=0:bar_g=${VIZ_GAMMA}:` +
+      `count=6:basefreq=${VIZ_LO}:endfreq=${VIZ_HI}:fps=${FPS}[vzraw]`,
+  );
+  legs.push(
+    `[vzraw]scale=${VIZ_BARS * VIZ_COLS}:${VIZ_HEIGHT}:flags=neighbor,format=rgba,` +
+      `${gap},scale=${WIDE.w}:${VIZ_HEIGHT}:flags=neighbor,` +
+      `colorchannelmixer=aa=${VIZ_ALPHA}[viz]`,
+  );
+
+  // Bars first, mark second, so the mark is topmost. They do not overlap
+  // today — the bars own the bottom third and the mark the top-right
+  // corner — so the order is insurance rather than a rule.
+  //
+  // `format=yuv420p` comes AFTER both overlays rather than on `[bgx]`
+  // before them: the blends have to happen somewhere that can represent
+  // alpha, and compositing into a subsampled plane first throws away the
+  // colour resolution the mark's edges need.
+  legs.push(`[bgx][viz]overlay=0:${WIDE.h - VIZ_HEIGHT}:format=auto[vbars]`);
+  legs.push(`[vbars][logo]overlay=${LOGO_X}:${LOGO_Y}:format=auto,format=yuv420p[v]`);
 
   const fmt = `aformat=sample_fmts=fltp:channel_layouts=stereo`;
   legs.push(`[1:a]aresample=${RATE},${fmt}[music]`);
 
   if (cuts.length === 0) {
-    legs.push(`[music]anull[a]`);
+    legs.push(`[music]anull[amix]`);
   } else {
     cuts.forEach((cut, i) => {
       const dur = probed[i]?.seconds ?? 0;
@@ -539,9 +620,16 @@ export async function renderLofi(opts: {
     // committed to in the filename.
     legs.push(
       `[ducked][sm][bed]${ckLegs}amix=inputs=${3 + cuts.length}:` +
-        `normalize=0:duration=first[a]`,
+        `normalize=0:duration=first[amix]`,
     );
   }
+
+  // The bars read the FINISHED mix, which is why this split is here rather
+  // than off `[music]` further up: a visualiser that ignored the speech and
+  // the crackle would sit still through the one moment in the render a
+  // viewer is most likely to be watching it. `[a]` is what gets mapped; the
+  // second tap is video's problem.
+  legs.push(`[amix]asplit=2[a][aviz]`);
 
   try {
     await run(

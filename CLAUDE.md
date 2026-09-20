@@ -55,8 +55,8 @@ background picture and up to `MAX_SPEECHES` (8) speech clips become one
 band-limited and ducking it. A speech is AUDIO ONLY — it may be uploaded
 as an audio file or a video one, and a video one's picture is discarded.
 The background may be a still OR an animated GIF, looped for as long as
-the track runs, and a bundled mark spins in the top-right corner of every
-one of them.
+the track runs; a bundled mark spins in the top-right corner of every one
+of them, and a band of frequency bars runs along the bottom.
 It shares `preview`, `/out/`, the publish panel and `media/uploads/` with
 the long journey and nothing else — the long journey's parts arrive on
 `/api/upload`, every one of the lofi journey's on `/api/upload-audio`. No
@@ -73,7 +73,7 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 405 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 409 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -106,7 +106,8 @@ server/longform.ts WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK,
                    checkLongform, Trim/MIN_KEPT/detectTrim/keptRange,
                    stackWide (the long journey's one ffmpeg pass)
 server/lofi.ts     WIDE, FADE, CRACKLE_PATH, LOGO_PATH/LOGO_RECT/
-                   SPIN_SECONDS, checkLofi, Cut/renderLofi (the
+                   SPIN_SECONDS, VIZ_RECT/VIZ_BAR, checkLofi,
+                   Cut/renderLofi (the
                    lofi journey's one ffmpeg pass — one background, still
                    or a looped GIF, for the whole track, with every speech
                    mixed in as AUDIO ONLY)
@@ -949,6 +950,43 @@ The mark is bundled and unconditional — there is no way to turn it off and
 no upload behind it, the same posture the crackle takes. Its input is
 appended LAST, after the crackle, so no existing index shifts.
 
+**The frequency bars read the FINISHED mix, and `showcqt` is not
+interchangeable with `showfreqs`.** The band along the bottom is fed by an
+`asplit` of the render's own output audio — music, speech and crackle
+together — not by `[music]`. Tapping the music leaves the bars still through
+the one moment a viewer is most likely to be looking at them, and no
+structural check would notice; `server/lofi.test.ts` measures the band's
+right half under the speech (+18.6 over background, against +0.2 without).
+
+`showfreqs` spaces its bins LINEARLY in frequency, so on music the bass owns
+the left quarter and the rest is a flat line. Measured on the bundled track,
+every amplitude scale it offers — `log`, `sqrt`, `cbrt`, with and without a
+treble tilt — gave the same descending ramp, and `minamp` cannot rescue it
+because the filter caps that option at 1e-6. `showcqt` is constant-Q, so its
+bins are musical intervals and the spectrum looks as spread out as it
+sounds. `bar_g` is the gamma that decides how much of the width stays
+alive.
+
+**A per-pixel expression belongs at the SMALLEST size that still produces
+the right picture, and the bars are the second place this has bitten.** The
+gaps between bars come from a `geq` masking alternate columns. Run at the
+final 1920 wide it costs 14s per minute of render — measured, 19.9s against
+a 5.7s no-mask baseline, which made the mask four times more expensive than
+the `showcqt` transform it was decorating. The bars are therefore widened to
+`VIZ_COLS` columns each (480px), masked there, and scaled the rest of the
+way with `flags=neighbor`: byte-identical output for a sixteenth of the
+evaluations, 9.7s against 19.9s. Same lesson `SCREEN_FILTER` records for the
+starter screen, which computes its band in the frame-extraction pass rather
+than over every frame of the composite.
+
+Two smaller details of that leg are load-bearing. `flags=neighbor` on BOTH
+scales — any interpolating scaler turns the discrete bars into a smooth
+ridge, which is the thing `showcqt` at 48 columns exists to avoid. And the
+alpha is keyed on `max(r,g,b)`, not `r`: `showcqt` tints its bars by pitch
+class, so keying on red alone would make a blue bar vanish. The colour is
+replaced with white anyway — the look is `gifsync`'s white-at-0.85, not
+`showcqt`'s rainbow.
+
 **`troughs` places the LONGEST speech first, never in input order.** A long
 speech has strictly fewer legal windows than a short one. `src/lofi.test.ts`
 pins the case that makes this concrete: a 30s hole that is the only place a
@@ -1490,7 +1528,24 @@ speech's end. A further three cover the audio-only path end to end (two
 windows and not between them), the refusal of a speech with no audio stream,
 and a speech that is digital silence rendering at all — the last standing in
 for `acrusher`'s `mode=lin`, now that no stand-in branch skips the filters
-for it. Three cover the spinning mark. Its POSITION is asserted as arithmetic on
+for it. Four cover the frequency bars, and the SPLIT between the arithmetic one
+and the pixel ones is the whole lesson — twice over. The band's place (full
+width, bottom-anchored) and the bar/gap ratio are asserted on the exported
+`VIZ_RECT`/`VIZ_BAR`, because the pixel tests crop at `VIZ_RECT` and
+CLASSIFY COLUMNS with `VIZ_BAR.fill`. Widening a bar to fill its whole slot
+therefore made the gap test compare a full set of columns against an empty
+one and pass — measured, it did — so the geometry is now checked where it
+cannot also be the ruler, and the pixel test asserts both column sets are
+non-empty before comparing them. The three pixel tests then cover: bars
+present in the band and none above it, lit columns +3.8 over the background
+against gaps at -0.6, and the band's right half reacting to the speech.
+Sampled over the band's BOTTOM 120px rather than all 360 — bars thin out
+upward, so over the whole band their contribution is +0.9, too close to the
+noise to assert on. Five mutations pinned: dropping the overlay, moving the
+band to the top, removing the gap mask, and tapping `[music]` instead of the
+mix each fail exactly one.
+
+Three cover the spinning mark. Its POSITION is asserted as arithmetic on
 the exported `LOGO_RECT` — the four gaps to the frame's edges, small on two
 adjacent sides and at least four times larger on the other two — and that
 split from the pixel test is a lesson rather than a style: the pixel test
