@@ -117,6 +117,20 @@
 > `image` and `bgId` are mutually exclusive; `thumb` is required either way
 > and is a still JPEG either way.
 
+> **Amended 2026-09-20 (fifth)**: every lofi render now carries a **spinning
+> mark** in the top-right corner — `server/assets/lofi-video-logo.png`, a
+> seventh bundled asset, turning once every 10 seconds for the whole track.
+> It is unconditional: no upload behind it and no way to switch it off, the
+> same posture the crackle takes, and `checkLofi` now guards both files.
+>
+> The geometry has two traps, both recorded as an invariant in CLAUDE.md
+> because both look right in the one frame anybody checks: `rotate` shears
+> off whatever leaves its input-sized box, so the mark is padded to its own
+> diagonal first; and the margin insets that padded box rather than the mark,
+> or the clearance collapses to 10px at 45 degrees while 0 and 90 look fine.
+> Its ffmpeg input is appended LAST, after the crackle, so no existing index
+> moves.
+
 Supersedes nothing. It adds a **fourth journey** beside the short one, the
 long one and the chat-moments dead end: `idle → lofi → preview`. A user
 picks one music track, one background image and a handful of speech clips;

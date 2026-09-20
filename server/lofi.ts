@@ -147,6 +147,65 @@ const CRACKLE_BOOST = 0.28;
 const CRACKLE_LEVEL =
   "compand=attacks=0.01:decays=0.2:points=-70/-35|-30/-18|-10/-10|0/-8";
 
+/** The spinning mark in the top-right corner, bundled rather than uploaded.
+ *
+ *  It is in EVERY lofi render and there is no way to turn it off, which is
+ *  the same posture the crackle takes: this journey's look is the feature,
+ *  not a set of options. `checkLofi` fails the boot if it is missing, for
+ *  the reason every other bundled asset does — a render discovers it minutes
+ *  of encoding in. */
+export const LOGO_PATH = asset("lofi-video-logo.png");
+
+/** How wide the mark is drawn, and how far the SPINNING BOX sits from the
+ *  frame's edges. Aspect is preserved (`decrease`), so a non-square
+ *  replacement fits inside this box rather than stretching to it.
+ *
+ *  The margin bounds the box rather than the upright mark, and that is a
+ *  correction rather than a preference. Measured the other way round — the
+ *  margin describing the mark's own edge — the clearance is only
+ *  `LOGO_MARGIN - (LOGO_BOX - LOGO_SIZE) / 2` at 45 degrees, which was 10px
+ *  on a 1920 frame: an outstretched arm all but touching the edge for a
+ *  quarter of every turn, and full clearance at 0 and 90 where anybody
+ *  checking a single frame would look. Bounding the box makes the guarantee
+ *  angle-independent, and costs only that the upright mark sits
+ *  `(LOGO_BOX - LOGO_SIZE) / 2` further in than the number suggests. */
+const LOGO_SIZE = 180;
+const LOGO_MARGIN = 40;
+
+/** One full turn, in seconds. Exported so `server/lofi.test.ts` samples the
+ *  render at real multiples of it rather than at a second copy of the
+ *  number — the test's whole job is proving the period, and a duplicated
+ *  constant would move with it. */
+export const SPIN_SECONDS = 10;
+
+/** The square the mark rotates INSIDE, and it must be at least the mark's
+ *  own diagonal or the corners are sheared off at 45 degrees.
+ *
+ *  `rotate` renders into a box of the input's size unless told otherwise, so
+ *  a 180px square turning inside a 180px box loses everything past the
+ *  inscribed circle — worst at 45 degrees, and invisible at 0 and 90, which
+ *  is exactly the sort of defect that looks fine in the one frame anybody
+ *  checks. Padding to the diagonal FIRST and rotating inside that is what
+ *  makes every angle safe: 180 * sqrt(2) = 254.6, so the box is 256.
+ *
+ *  Derived rather than written down so the two cannot drift apart, and
+ *  rounded UP to an even number because it feeds the overlay offsets
+ *  below. */
+const LOGO_BOX = Math.ceil((LOGO_SIZE * Math.SQRT2) / 2) * 2;
+
+/** Both offsets are floored to even, for the reason a custom box's `out` is:
+ *  an `overlay` at an odd offset in yuv420p lands on a half-chroma-sample
+ *  boundary. `LOGO_BOX` is even too, so the box's far edges land even
+ *  as well. */
+const even = (v: number) => Math.floor(v / 2) * 2;
+const LOGO_X = even(WIDE.w - LOGO_MARGIN - LOGO_BOX);
+const LOGO_Y = even(LOGO_MARGIN);
+
+/** Where the spinning box lands, exported for the same reason
+ *  `SPIN_SECONDS` is: the test crops exactly this rect out of a real render,
+ *  and a second copy of the arithmetic would drift the day the mark moves. */
+export const LOGO_RECT = { x: LOGO_X, y: LOGO_Y, side: LOGO_BOX };
+
 /** One speech, and where its VOICE enters the music's timeline. Its duration
  *  is probed here rather than taken from the caller: the crackle boost's
  *  fades and the audio delay have to agree about it, and one prober is how
@@ -163,13 +222,15 @@ const CRACKLE_LEVEL =
  *  one before it. */
 export type Cut = { path: string; at: number };
 
-/** Boot check for the one asset this journey bundles. Hard, like
+/** Boot check for the assets this journey bundles. Hard, like
  *  `checkLongform`'s: a missing file fails a render that is minutes of
  *  encoding away from discovering it. */
 export async function checkLofi(): Promise<void> {
-  if (!existsSync(CRACKLE_PATH)) {
-    console.error(`vstack: bundled asset missing at ${CRACKLE_PATH}.`);
-    process.exit(1);
+  for (const path of [CRACKLE_PATH, LOGO_PATH]) {
+    if (!existsSync(path)) {
+      console.error(`vstack: bundled asset missing at ${path}.`);
+      process.exit(1);
+    }
   }
 }
 
@@ -225,6 +286,10 @@ async function frameCount(path: string): Promise<number> {
  *  file's history — both were correctness fixes, not decoration, and neither
  *  is obvious from the code that replaced them.
  *
+ *  One thing is drawn OVER the background: the bundled mark, spinning in
+ *  the top-right corner for the whole render. It is not a speech and not an
+ *  option — see `LOGO_PATH`.
+ *
  *  The background MAY MOVE. It is a still picture in the ordinary case and
  *  an animated one (a GIF) when the user picked one, looped for as long as
  *  the track runs. Nothing downstream of the input changes between the two —
@@ -266,6 +331,12 @@ export async function renderLofi(opts: {
   // arithmetic is now flat.
   const firstCut = 2;
   const crackleIndex = firstCut + cuts.length;
+  // APPENDED LAST, after the crackle, which is the rule every input in this
+  // graph has followed since the `anullsrc` stand-in taught it: an index
+  // inserted above an existing one shifts that one silently. Nothing here is
+  // conditional — the logo is bundled and always drawn — so the arithmetic
+  // stays flat.
+  const logoIndex = crackleIndex + 1;
 
   // The two input forms are NOT interchangeable, in either direction, and
   // picking the wrong one does not fail politely.
@@ -294,6 +365,12 @@ export async function renderLofi(opts: {
   // is minutes. Every tap below `atrim`s its own copy, and the output's own
   // `-t` bounds the lot, so the infinite input can never outrun the render.
   inputs.push("-stream_loop", "-1", "-i", CRACKLE_PATH);
+  // `-loop 1` and NOT `-stream_loop -1`, the same fork the background takes
+  // and for the same measured reason: `-stream_loop` on a one-frame input
+  // spins without ever emitting a frame. `-framerate` is what makes the
+  // `rotate` expression's `t` advance at the rate the encoder expects, since
+  // the spin is a function of the frame's own timestamp.
+  inputs.push("-loop", "1", "-framerate", String(FPS), "-t", String(seconds), "-i", LOGO_PATH);
 
   const legs: string[] = [];
 
@@ -308,8 +385,35 @@ export async function renderLofi(opts: {
   // into the constant rate the encoder wants.
   legs.push(
     `[0:v]scale=${WIDE.w}:${WIDE.h}:force_original_aspect_ratio=increase,` +
-      `crop=${WIDE.w}:${WIDE.h},fps=${FPS},setsar=1,format=yuv420p[v]`,
+      `crop=${WIDE.w}:${WIDE.h},fps=${FPS},setsar=1[bgx]`,
   );
+
+  // The mark, spinning once every `SPIN_SECONDS` in the top-right corner.
+  //
+  // Four filters and the ORDER of the middle two is the load-bearing part.
+  // `format=rgba` first, because `rotate`'s `c=none` fills the corners it
+  // sweeps with TRANSPARENCY and there is nowhere to put that without an
+  // alpha channel — on an opaque input the same filter fills with black and
+  // the mark arrives inside a hard square. `pad` BEFORE `rotate`, because
+  // `rotate` renders into a box the size of its input and anything past the
+  // inscribed circle is sheared off; padding to the diagonal first is what
+  // gives every angle room. The pad colour is `0x00000000` — transparent
+  // black, not black — for the same reason the format comes first.
+  //
+  // `a=2*PI*t/SPIN` is an expression over the frame's own timestamp rather
+  // than a frame counter, so the spin is real seconds and does not change if
+  // `FPS` ever does.
+  legs.push(
+    `[${logoIndex}:v]format=rgba,` +
+      `scale=${LOGO_SIZE}:${LOGO_SIZE}:force_original_aspect_ratio=decrease,` +
+      `pad=${LOGO_BOX}:${LOGO_BOX}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,` +
+      `rotate=a=2*PI*t/${SPIN_SECONDS}:c=none[logo]`,
+  );
+  // `format=yuv420p` AFTER the overlay rather than on `[bgx]` before it: the
+  // blend has to happen somewhere that can represent the mark's alpha, and
+  // compositing into a subsampled plane first throws away the colour
+  // resolution the edges need.
+  legs.push(`[bgx][logo]overlay=${LOGO_X}:${LOGO_Y}:format=auto,format=yuv420p[v]`);
 
   const fmt = `aformat=sample_fmts=fltp:channel_layouts=stereo`;
   legs.push(`[1:a]aresample=${RATE},${fmt}[music]`);

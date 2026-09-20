@@ -5,9 +5,14 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { probeFile } from "./ffmpeg.ts";
-import { FADE, renderLofi } from "./lofi.ts";
+import { FADE, LOGO_RECT, SPIN_SECONDS, renderLofi } from "./lofi.ts";
 
 const run = promisify(execFile);
+
+/** The render's own shape, for the corner assertions below. Not imported
+ *  from `WIDE` because this file already hardcodes 1920 in `pixelAt`. */
+const WIDE_W = 1920;
+const WIDE_H = 1080;
 
 let dir = "";
 /** A flat teal background picture — the render's ONLY picture. */
@@ -123,6 +128,32 @@ async function pixelAt(path: string, t: number, x: number, y: number, width = 19
   const buf = stdout as unknown as Buffer;
   const i = (y * width + x) * 3;
   return { r: buf[i] ?? 0, g: buf[i + 1] ?? 0, b: buf[i + 2] ?? 0 };
+}
+
+/** A rectangle of one frame, decoded to raw RGB. Used to compare the logo's
+ *  corner across time — a single pixel cannot tell a rotation from noise,
+ *  and the whole frame is dominated by the background that never changes. */
+async function boxAt(path: string, t: number, x: number, y: number, side: number) {
+  const { stdout } = await run(
+    "ffmpeg",
+    ["-v", "error", "-ss", String(t), "-i", path, "-frames:v", "1",
+     "-vf", `crop=${side}:${side}:${x}:${y}`,
+     "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+    { encoding: "buffer", maxBuffer: 64 << 20 },
+  );
+  return stdout as unknown as Buffer;
+}
+
+/** Mean absolute per-channel difference between two equal-sized boxes.
+ *
+ *  The scale that matters here was measured on a real render: two samples of
+ *  the SAME orientation differ by 1.6 (libx264 being lossy, nothing more),
+ *  and any two different orientations of this mark differ by 15 to 20. The
+ *  thresholds below sit in that gap with room on both sides. */
+function boxDiff(a: Buffer, b: Buffer): number {
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += Math.abs((a[i] ?? 0) - (b[i] ?? 0));
+  return sum / a.length;
 }
 
 /** Whether a sample is the teal background picture. Every frame of every
@@ -366,6 +397,76 @@ describe("renderLofi", () => {
     expect(isBackground(await pixelAt(out, 0.2, 960, 540))).toBe(true);
     expect(isBackground(await pixelAt(out, 25.7, 960, 540))).toBe(true);
   });
+
+  // TWO assertions, and the split is the point. The pixel test below crops
+  // at `LOGO_RECT`, so it proves the mark is wherever that constant says —
+  // move the constant and the test's own aim moves with it, which is exactly
+  // what happened: putting the logo at the LEFT edge passed the pixel test
+  // outright. The corner is therefore asserted as arithmetic on the rect
+  // itself, where nothing can follow it.
+  it("puts the logo rect in the top-right corner", () => {
+    const { x, y, side } = LOGO_RECT;
+    // Stated as the four GAPS rather than as "x is past the midpoint",
+    // which a mark parked at x=1000 would also satisfy. A corner is a small
+    // gap on two adjacent sides and a large one on the other two.
+    const gap = {
+      left: x,
+      right: WIDE_W - (x + side),
+      top: y,
+      bottom: WIDE_H - (y + side),
+    };
+    expect(gap.right).toBeLessThan(120);
+    expect(gap.top).toBeLessThan(120);
+    expect(gap.left).toBeGreaterThan(gap.right * 4);
+    expect(gap.bottom).toBeGreaterThan(gap.top * 4);
+    // Wholly inside the frame — a negative gap means ffmpeg is clipping the
+    // very corners the padding exists to protect.
+    expect(gap.right).toBeGreaterThanOrEqual(0);
+    expect(gap.top).toBeGreaterThanOrEqual(0);
+    // Even on both axes: an overlay at an odd offset in yuv420p lands on a
+    // half-chroma-sample boundary.
+    expect(x % 2).toBe(0);
+    expect(y % 2).toBe(0);
+  });
+
+  it("draws the mark in that rect and nowhere else", async () => {
+    const { x, y, side } = LOGO_RECT;
+    const corner = await boxAt(out, 4, x, y, side);
+    const flat = Buffer.alloc(corner.length);
+    // The fixture background is flat teal, so a box with nothing drawn in it
+    // is a constant. Filling a reference with that exact colour turns "is
+    // anything here" into a number.
+    for (let i = 0; i < flat.length; i += 3) {
+      flat[i] = 0x10;
+      flat[i + 1] = 0x80;
+      flat[i + 2] = 0x80;
+    }
+    expect(boxDiff(corner, flat)).toBeGreaterThan(10);
+
+    // And the MIRRORED box on the left is untouched, which is what makes
+    // this a corner assertion rather than an "is it anywhere" one. Dropping
+    // the overlay's x offset to 0 fails here rather than above.
+    const mirrored = await boxAt(out, 4, WIDE_W - x - side, y, side);
+    expect(boxDiff(mirrored, flat)).toBeLessThan(2);
+  }, 120_000);
+
+  it(`turns once every ${SPIN_SECONDS}s`, async () => {
+    const { x, y, side } = LOGO_RECT;
+    const at = (t: number) => boxAt(out, t, x, y, side);
+    const zero = await at(0);
+
+    // A quarter turn and a half turn must both look different. The HALF turn
+    // is the one that pins the period: at SPIN_SECONDS / 2 a mark spinning
+    // twice as fast would be back at its starting angle and match, so
+    // without this sample a 5s period passes every other assertion here.
+    expect(boxDiff(zero, await at(SPIN_SECONDS / 4))).toBeGreaterThan(10);
+    expect(boxDiff(zero, await at(SPIN_SECONDS / 2))).toBeGreaterThan(10);
+
+    // And a full turn brings it back. Measured at 1.6 on a real render —
+    // pure encoder noise — against 15-20 for any other angle, so this bound
+    // is nowhere near either side. A 20s period fails here.
+    expect(boxDiff(zero, await at(SPIN_SECONDS))).toBeLessThan(6);
+  }, 120_000);
 
   // The crackle bed and its per-speech boost, each measured in the band that
   // can actually see it — and on PEAK, because this asset is sparse pops

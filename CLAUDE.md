@@ -55,7 +55,8 @@ background picture and up to `MAX_SPEECHES` (8) speech clips become one
 band-limited and ducking it. A speech is AUDIO ONLY — it may be uploaded
 as an audio file or a video one, and a video one's picture is discarded.
 The background may be a still OR an animated GIF, looped for as long as
-the track runs.
+the track runs, and a bundled mark spins in the top-right corner of every
+one of them.
 It shares `preview`, `/out/`, the publish panel and `media/uploads/` with
 the long journey and nothing else — the long journey's parts arrive on
 `/api/upload`, every one of the lofi journey's on `/api/upload-audio`. No
@@ -72,7 +73,7 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 402 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 405 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -80,10 +81,10 @@ pnpm youtube-auth  # one-off OAuth setup for publishing (see server/youtube.ts)
 ```
 
 Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH, the speech venv from
-`pnpm tts-setup`, and all six bundled assets in `server/assets/`. The server checks
+`pnpm tts-setup`, and all seven bundled assets in `server/assets/`. The server checks
 all of it at boot and exits with an install hint if any is missing —
 `checkStarter` owns the short journey's four, `checkLongform` the long
-journey's one, and `checkLofi` the lofi journey's one. Nothing
+journey's one, and `checkLofi` the lofi journey's two. Nothing
 here needs macOS `say` any more — the starter screen's voice is VieNeu-TTS,
 and the only remaining macOS dependency is `afplay` in `pnpm voices` and
 `open -R` in `/api/reveal`.
@@ -104,7 +105,8 @@ server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
 server/longform.ts WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK,
                    checkLongform, Trim/MIN_KEPT/detectTrim/keptRange,
                    stackWide (the long journey's one ffmpeg pass)
-server/lofi.ts     WIDE, FADE, CRACKLE_PATH, checkLofi, Cut/renderLofi (the
+server/lofi.ts     WIDE, FADE, CRACKLE_PATH, LOGO_PATH/LOGO_RECT/
+                   SPIN_SECONDS, checkLofi, Cut/renderLofi (the
                    lofi journey's one ffmpeg pass — one background, still
                    or a looped GIF, for the whole track, with every speech
                    mixed in as AUDIO ONLY)
@@ -124,7 +126,10 @@ server/assets/     starter-music.mp3 (the bed), before-video-start-sound.mp3
                    the LONG journey's asset, owned by longform.ts),
                    vinyl-crackle.mp3 (the lofi journey's surface noise,
                    owned by lofi.ts — supplied by the user; 3m22s, and AAC
-                   inside a .mp3 name, which ffmpeg sniffs past)
+                   inside a .mp3 name, which ffmpeg sniffs past),
+                   lofi-video-logo.png (the mark that spins in the lofi
+                   journey's top-right corner — also lofi.ts's, 360x360
+                   RGBA, supplied by the user)
 server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
                    buildSnippet, accessToken, uploadVideo, publishProgress,
                    setThumbnail
@@ -906,6 +911,43 @@ written before the field existed is exact.
 path it is the GIF's own first frame, since a publish thumbnail is a still
 whatever the render does.
 
+**The spinning mark pads to its DIAGONAL before it rotates, and the margin
+bounds that padded box rather than the mark.** Two geometry mistakes, both
+of which look correct in the frame anybody checks.
+
+`rotate` renders into a box the size of its input, so a 180px square turning
+inside a 180px box loses every corner past the inscribed circle — worst at
+45 degrees and perfect at 0 and 90. `pad` to `LOGO_BOX` (the diagonal,
+rounded up to even and DERIVED from `LOGO_SIZE` so the two cannot drift)
+comes first, and `rotate` then has room at every angle.
+
+`LOGO_MARGIN` then insets that padded box, not the mark. Margining the mark
+instead leaves only `LOGO_MARGIN - (LOGO_BOX - LOGO_SIZE) / 2` of real
+clearance at 45 degrees — measured at 10px on a 1920 frame, an outstretched
+arm all but touching the edge for a quarter of every turn while 0 and 90
+looked fine. Bounding the box makes the clearance angle-independent and
+costs only that the upright mark sits 38px further in than the number
+suggests.
+
+Three more details of that leg are load-bearing. `format=rgba` comes BEFORE
+`rotate`, because `c=none` fills the swept corners with transparency and an
+opaque input has nowhere to put it — the mark then arrives inside a hard
+black square. The pad colour is `0x00000000`, transparent black rather than
+black, for the same reason. And `format=yuv420p` moves to AFTER the
+overlay: compositing alpha into an already-subsampled plane throws away the
+colour resolution the mark's edges need.
+
+The angle is `a=2*PI*t/SPIN_SECONDS` — an expression over the frame's own
+timestamp, not a frame counter — so one turn is ten real seconds and stays
+ten if `FPS` ever changes. `server/lofi.test.ts` samples a quarter turn, a
+HALF turn and a full turn: the half turn is the one that pins the period,
+because a mark spinning twice as fast is back at its starting angle there
+and passes every other assertion.
+
+The mark is bundled and unconditional — there is no way to turn it off and
+no upload behind it, the same posture the crackle takes. Its input is
+appended LAST, after the crackle, so no existing index shifts.
+
 **`troughs` places the LONGEST speech first, never in input order.** A long
 speech has strictly fewer legal windows than a short one. `src/lofi.test.ts`
 pins the case that makes this concrete: a 30s hole that is the only place a
@@ -1447,7 +1489,23 @@ speech's end. A further three cover the audio-only path end to end (two
 windows and not between them), the refusal of a speech with no audio stream,
 and a speech that is digital silence rendering at all — the last standing in
 for `acrusher`'s `mode=lin`, now that no stand-in branch skips the filters
-for it. Two more cover the background's own fork. The GIF one samples the render at
+for it. Three cover the spinning mark. Its POSITION is asserted as arithmetic on
+the exported `LOGO_RECT` — the four gaps to the frame's edges, small on two
+adjacent sides and at least four times larger on the other two — and that
+split from the pixel test is a lesson rather than a style: the pixel test
+crops AT `LOGO_RECT`, so moving the constant moves the test's own aim, and
+a first version that only checked pixels passed with the logo parked at the
+left edge. The pixel test then proves the mark is actually drawn in that
+rect (against a flat-colour reference) and that the mirrored rect on the
+left is untouched. The SPIN test compares a 256px crop across time, because
+one pixel cannot tell a rotation from noise: two samples of the same
+orientation differ by 1.6 (libx264 being lossy) against 15-20 for any two
+different angles, so the thresholds sit in a ten-fold gap. Five mutations
+are pinned — freezing the angle, halving the period, and moving the mark
+left, down or to the centre each fail exactly one of the two, and dropping
+the overlay fails the pixel one.
+
+Two more cover the background's own fork. The GIF one samples the render at
 six instants and names the colour it expects at each, three of them PAST
 the GIF's own 1.5s end (the period is 1.5s, so the colour at `t` is decided
 by `t % 1.5`) — sampling only inside the first period would pass on a
