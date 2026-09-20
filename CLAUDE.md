@@ -915,19 +915,20 @@ whatever the render does.
 bounds that padded box rather than the mark.** Two geometry mistakes, both
 of which look correct in the frame anybody checks.
 
-`rotate` renders into a box the size of its input, so a 180px square turning
-inside a 180px box loses every corner past the inscribed circle — worst at
-45 degrees and perfect at 0 and 90. `pad` to `LOGO_BOX` (the diagonal,
+`rotate` renders into a box the size of its input, so a square turning
+inside a box its own size loses every corner past the inscribed circle —
+worst at 45 degrees and perfect at 0 and 90. `pad` to `LOGO_BOX` (the diagonal,
 rounded up to even and DERIVED from `LOGO_SIZE` so the two cannot drift)
 comes first, and `rotate` then has room at every angle.
 
 `LOGO_MARGIN` then insets that padded box, not the mark. Margining the mark
 instead leaves only `LOGO_MARGIN - (LOGO_BOX - LOGO_SIZE) / 2` of real
-clearance at 45 degrees — measured at 10px on a 1920 frame, an outstretched
-arm all but touching the edge for a quarter of every turn while 0 and 90
-looked fine. Bounding the box makes the clearance angle-independent and
-costs only that the upright mark sits 38px further in than the number
-suggests.
+clearance at 45 degrees — measured at 10px on a 1920 frame with a 180px
+mark, an outstretched arm all but touching the edge for a quarter of every
+turn while 0 and 90 looked fine. That shortfall GROWS with `LOGO_SIZE`, so
+the wrong version degrades every time the mark is enlarged. Bounding the box
+makes the clearance angle-independent and costs only that the upright mark
+sits `(LOGO_BOX - LOGO_SIZE) / 2` further in than the number suggests.
 
 Three more details of that leg are load-bearing. `format=rgba` comes BEFORE
 `rotate`, because `c=none` fills the swept corners with transparency and an

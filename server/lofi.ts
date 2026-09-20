@@ -163,13 +163,15 @@ export const LOGO_PATH = asset("lofi-video-logo.png");
  *  The margin bounds the box rather than the upright mark, and that is a
  *  correction rather than a preference. Measured the other way round — the
  *  margin describing the mark's own edge — the clearance is only
- *  `LOGO_MARGIN - (LOGO_BOX - LOGO_SIZE) / 2` at 45 degrees, which was 10px
- *  on a 1920 frame: an outstretched arm all but touching the edge for a
- *  quarter of every turn, and full clearance at 0 and 90 where anybody
- *  checking a single frame would look. Bounding the box makes the guarantee
+ *  `LOGO_MARGIN - (LOGO_BOX - LOGO_SIZE) / 2` at 45 degrees, measured at
+ *  10px on a 1920 frame when the mark was 180px: an outstretched arm all but
+ *  touching the edge for a quarter of every turn, and full clearance at 0
+ *  and 90 where anybody checking a single frame would look. Note the gap
+ *  widens with `LOGO_SIZE`, so the bug the other way round would have got
+ *  worse every time someone enlarged the mark. Bounding the box makes the guarantee
  *  angle-independent, and costs only that the upright mark sits
  *  `(LOGO_BOX - LOGO_SIZE) / 2` further in than the number suggests. */
-const LOGO_SIZE = 180;
+const LOGO_SIZE = 240;
 const LOGO_MARGIN = 40;
 
 /** One full turn, in seconds. Exported so `server/lofi.test.ts` samples the
@@ -186,7 +188,8 @@ export const SPIN_SECONDS = 10;
  *  inscribed circle — worst at 45 degrees, and invisible at 0 and 90, which
  *  is exactly the sort of defect that looks fine in the one frame anybody
  *  checks. Padding to the diagonal FIRST and rotating inside that is what
- *  makes every angle safe: 180 * sqrt(2) = 254.6, so the box is 256.
+ *  makes every angle safe: at the current 240, 240 * sqrt(2) = 339.4, so
+ *  the box is 340.
  *
  *  Derived rather than written down so the two cannot drift apart, and
  *  rounded UP to an even number because it feeds the overlay offsets
