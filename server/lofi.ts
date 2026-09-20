@@ -173,6 +173,38 @@ export async function checkLofi(): Promise<void> {
   }
 }
 
+/** How many frames the background carries, or 0 when ffprobe will not say.
+ *
+ *  This is the whole still-vs-animated decision, and it has to be made from
+ *  the bytes rather than from a MIME type the client claimed: `renderLofi`
+ *  needs two DIFFERENT input forms for the two cases and they are not
+ *  interchangeable in either direction.
+ *
+ *  Local rather than in `ffmpeg.ts` beside `probeAudio` because nothing else
+ *  asks this question — `probeFile` already covers "what shape is it", and a
+ *  second exported prober whose one caller is this line is a layer's worth
+ *  of API for no reader's benefit.
+ *
+ *  A still JPEG reports no `nb_frames` at all (the field is absent, not 1)
+ *  and a 0.04s duration, so neither of those can be the test; a GIF reports
+ *  a real count. `> 1` is therefore the rule, and a format that declines to
+ *  report a count falls back to the still path — which shows its first frame
+ *  rather than failing, the right way round for a surprise input. */
+async function frameCount(path: string): Promise<number> {
+  try {
+    const { stdout } = await run("ffprobe", [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=nb_frames",
+      "-of", "default=nk=1:nw=1",
+      path,
+    ]);
+    return Number(stdout.trim()) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 /** Renders the picture and the track, with every speech mixed into the
  *  track, as one 1920x1080 file.
  *
@@ -193,17 +225,27 @@ export async function checkLofi(): Promise<void> {
  *  file's history — both were correctness fixes, not decoration, and neither
  *  is obvious from the code that replaced them.
  *
+ *  The background MAY MOVE. It is a still picture in the ordinary case and
+ *  an animated one (a GIF) when the user picked one, looped for as long as
+ *  the track runs. Nothing downstream of the input changes between the two —
+ *  the same `scale`+`crop` cover-crops either, and the same `-t` bounds
+ *  either — so "the picture is the whole video" holds exactly as written
+ *  above, with "picture" meaning a loop rather than a frame.
+ *
  *  The output's duration is still the music's by construction (`-t` plus the
- *  image input's own), so nothing sums, no leg's length feeds a later leg's
- *  offset, and the name `/api/lofi` builds from that duration cannot come to
- *  describe a different file. */
+ *  background input's own), so nothing sums, no leg's length feeds a later
+ *  leg's offset, and the name `/api/lofi` builds from that duration cannot
+ *  come to describe a different file. A background that runs LONGER than the
+ *  track is cut off by that same `-t` rather than extending anything. */
 export async function renderLofi(opts: {
-  image: string;
+  /** A still picture or an animated one. `renderLofi` decides which by
+   *  counting its frames, never by its name or the caller's say-so. */
+  background: string;
   music: string;
   cuts: Cut[];
   out: string;
 }): Promise<string> {
-  const { image, music, cuts, out } = opts;
+  const { background, music, cuts, out } = opts;
   // `probeAudio`, never `probeFile`: the track has no video stream, and
   // `probeFile` throws on exactly that. Task 2's prober, imported rather
   // than duplicated — `ffmpeg.ts` is the layer below this one, so there is
@@ -225,10 +267,28 @@ export async function renderLofi(opts: {
   const firstCut = 2;
   const crackleIndex = firstCut + cuts.length;
 
-  const inputs: string[] = [
-    "-loop", "1", "-framerate", String(FPS), "-t", String(seconds), "-i", image,
-    "-i", music,
-  ];
+  // The two input forms are NOT interchangeable, in either direction, and
+  // picking the wrong one does not fail politely.
+  //
+  // `-loop 1` is an image2-demuxer option: it MANUFACTURES frames from a
+  // single picture, which is exactly right for a still and does nothing
+  // useful for a file that already has frames of its own — it would hold the
+  // first one forever and the animation would silently never play.
+  //
+  // `-stream_loop -1` replays the whole decoded input, which is right for an
+  // animation and is a HANG for a still: measured here, a JPEG under
+  // `-stream_loop -1 -t 6` never produced a frame and ffmpeg had to be
+  // killed. It spins re-opening a one-frame input whose timestamps never
+  // advance. So this is a real fork rather than a tidiness one, and the
+  // still branch must keep `-loop 1`.
+  //
+  // `-t` is an INPUT option on both, which is what bounds `[v]` at the
+  // track's length whichever branch runs.
+  const moving = (await frameCount(background)) > 1;
+  const inputs: string[] = moving
+    ? ["-stream_loop", "-1", "-t", String(seconds), "-i", background]
+    : ["-loop", "1", "-framerate", String(FPS), "-t", String(seconds), "-i", background];
+  inputs.push("-i", music);
   for (const cut of cuts) inputs.push("-i", cut.path);
   // Looped rather than trimmed to length here: the asset is ~12s and a track
   // is minutes. Every tap below `atrim`s its own copy, and the output's own
@@ -237,10 +297,15 @@ export async function renderLofi(opts: {
 
   const legs: string[] = [];
 
-  // The whole video track: the picture, cover-cropped so it fills the frame
-  // edge to edge, held from t=0 to the end. No fades and no overlays — a
+  // The whole video track: the background, cover-cropped so it fills the
+  // frame edge to edge, from t=0 to the end. No fades and no overlays — a
   // speech is audio, so there is nothing for the picture to get out of the
   // way of.
+  //
+  // Identical for a still and for an animation, deliberately. `scale`+`crop`
+  // cover-crops a stream frame by frame, so the moving case needs no second
+  // recipe, and `fps` is what turns a GIF's own irregular inter-frame delays
+  // into the constant rate the encoder wants.
   legs.push(
     `[0:v]scale=${WIDE.w}:${WIDE.h}:force_original_aspect_ratio=increase,` +
       `crop=${WIDE.w}:${WIDE.h},fps=${FPS},setsar=1,format=yuv420p[v]`,

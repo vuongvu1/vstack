@@ -54,6 +54,8 @@ background picture and up to `MAX_SPEECHES` (8) speech clips become one
 1920x1080 video, each speech mixed into a quiet stretch of the music,
 band-limited and ducking it. A speech is AUDIO ONLY — it may be uploaded
 as an audio file or a video one, and a video one's picture is discarded.
+The background may be a still OR an animated GIF, looped for as long as
+the track runs.
 It shares `preview`, `/out/`, the publish panel and `media/uploads/` with
 the long journey and nothing else — the long journey's parts arrive on
 `/api/upload`, every one of the lofi journey's on `/api/upload-audio`. No
@@ -70,7 +72,7 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 400 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 402 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -103,8 +105,9 @@ server/longform.ts WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK,
                    checkLongform, Trim/MIN_KEPT/detectTrim/keptRange,
                    stackWide (the long journey's one ffmpeg pass)
 server/lofi.ts     WIDE, FADE, CRACKLE_PATH, checkLofi, Cut/renderLofi (the
-                   lofi journey's one ffmpeg pass — a still picture for the
-                   whole track, with every speech mixed in as AUDIO ONLY)
+                   lofi journey's one ffmpeg pass — one background, still
+                   or a looped GIF, for the whole track, with every speech
+                   mixed in as AUDIO ONLY)
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
                    starterDuration, checkStarter, installedVoices,
                    knownVoices, synthesize, speak, prependStarter (the title
@@ -813,11 +816,13 @@ a UUID the *server* minted, so there is nothing legitimate a client can send
 that it does not match. The original filename never crosses the wire at all
 — the client keeps it purely for display.
 
-**A lofi speech is AUDIO ONLY, and the picture never moves.** A speech is
-mixed into the track and is never shown: no overlay, no letterbox, no dip,
-no fade. The video track is one `-loop 1` still frame from t=0 to the end,
-which is why an uploaded speech may be an audio file or a video one
-indifferently — a video one's pictures are discarded here.
+**A lofi speech is AUDIO ONLY, and nothing a speech does moves the
+picture.** A speech is mixed into the track and is never shown: no overlay,
+no letterbox, no dip, no fade. The video track is the background and only
+the background, from t=0 to the end, which is why an uploaded speech may be
+an audio file or a video one indifferently — a video one's pictures are
+discarded here. (The background itself may move — see the GIF invariant
+below — but on its own loop, never in response to a speech.)
 
 This reversed an earlier design, and what it deleted is worth knowing about
 before anyone puts it back. The cut-in used to be letterboxed over a blurred
@@ -847,6 +852,59 @@ picture still ends when the music does, and `outName`'s `mmss` — built from
 the probed music length — could come to name a file a different length than
 the one on disk. This graph makes that disagreement structurally
 impossible.
+
+**The background's two input forms are NOT interchangeable, and one of the
+two wrong pairings HANGS rather than failing.** `renderLofi` takes a still
+picture or an animated one and decides which by counting frames
+(`frameCount`, a local ffprobe on `nb_frames`), never by a name, a MIME type
+or a caller's flag.
+
+- A still needs `-loop 1 -framerate N`, an image2-demuxer option that
+  MANUFACTURES frames from one picture.
+- An animation needs `-stream_loop -1`, which replays the decoded input.
+
+Cross them and neither fails loudly. `-loop 1` on a GIF holds its first
+frame forever, so the animation silently never plays. `-stream_loop -1` on a
+still never emits a frame at all — measured, a JPEG under
+`-stream_loop -1 -t 6` had to be killed — because it spins re-opening a
+one-frame input whose timestamps never advance. That is why this is a real
+fork and not a tidiness one; `server/lofi.test.ts` covers both sides, the
+still one by a test that would TIME OUT rather than assert.
+
+Everything downstream of the input is shared: the same
+`scale=increase`+`crop` cover-crops either one frame by frame, and the same
+`-t` bounds either at the track's length, so a GIF longer than the track is
+cut off and a GIF shorter than it repeats. `fps` is what turns a GIF's own
+irregular inter-frame delays into a constant rate. Note the cost — a moving
+background is real bitrate where a still is nearly free: measured on the
+same 40s track, 21 MB against 1.1 MB.
+
+**A still background is inline bytes and a GIF is an upload, and the split
+is not arbitrary.** `/api/lofi` takes exactly one of `image` (bare base64
+JPEG) or `bgId` (an upload id). Three separate reasons put the GIF on the
+other side:
+
+- The client cannot cover-crop it. `createImageBitmap` decodes a GIF's FIRST
+  FRAME and nothing else, so `renderWide` would flatten the animation — the
+  crop has to happen in ffmpeg, which means ffmpeg needs the file.
+- `json()` reads a whole body into memory with no cap. A 10 MB GIF is 13 MB
+  of base64 in a JSON body, per render; `/api/upload` streams to disk under
+  `UPLOAD_MAX_BYTES` instead.
+- It is a file the user PICKED, not artwork the client DREW. `image` and
+  `titlePng` are the latter; the music and the speeches are the former and
+  already travel as uploads.
+
+`image` is omitted rather than sent-and-ignored on the animated path,
+because a still the render never shows is a lie in the body rather than a
+spare. A *present but malformed* `bgId` is its own 400 ("Bad background
+id.") rather than a fall-through to the still branch — falling through
+answered "Expected image to be a string." for a body that never mentioned
+an image. Absent or `null` still means "a still is coming", so every body
+written before the field existed is exact.
+
+`thumb` is required either way and is always a still JPEG — on the animated
+path it is the GIF's own first frame, since a publish thumbnail is a still
+whatever the render does.
 
 **`troughs` places the LONGEST speech first, never in input order.** A long
 speech has strictly fewer legal windows than a short one. `src/lofi.test.ts`
@@ -1365,9 +1423,10 @@ speech, stability across repeated calls, and the longest-first ordering
 test itself — a hole only the long speech fits and a hole only the short
 one fits, built so that placing the short one first strands the long one.
 `server/lofi.test.ts` shells real ffmpeg against a synthetic fixture (a
-teal background, a 220 Hz sine bed, a crimson-over-white-noise VIDEO
-"speech", a 1200 Hz AUDIO-ONLY .m4a speech, a speech whose audio stream is
-digital silence, and a video with no audio stream at all) and asserts
+teal background, a 1.5s red/green/blue cycling GIF background, a 220 Hz
+sine bed, a crimson-over-white-noise VIDEO "speech", a 1200 Hz AUDIO-ONLY
+.m4a speech, a speech whose audio stream is digital silence, and a video
+with no audio stream at all) and asserts
 pixels and dB: the output is 1920x1080 and within half a second of the
 music's own length, the music measurably ducks under the speech in its own
 220 Hz band, and the speech's own energy above 6 kHz is suppressed relative
@@ -1388,7 +1447,20 @@ speech's end. A further three cover the audio-only path end to end (two
 windows and not between them), the refusal of a speech with no audio stream,
 and a speech that is digital silence rendering at all — the last standing in
 for `acrusher`'s `mode=lin`, now that no stand-in branch skips the filters
-for it. Another covers the crackle — the bed proven in the band above 6 kHz,
+for it. Two more cover the background's own fork. The GIF one samples the render at
+six instants and names the colour it expects at each, three of them PAST
+the GIF's own 1.5s end (the period is 1.5s, so the colour at `t` is decided
+by `t % 1.5`) — sampling only inside the first period would pass on a
+background that played once and froze, which is what a merely-working
+animation looks like for the first second and a half of a three-minute
+render. Mutation-pinned by forcing the still branch, which fails it at
+`t=0.2`. The still one asserts the teal background at two instants and
+exists to fail BY TIMING OUT if the two input forms are ever collapsed,
+since `-stream_loop -1` on a still hangs rather than erroring; that
+direction is evidenced by direct ffmpeg measurement rather than by a
+mutation run, because the run costs a three-minute hook timeout.
+
+Another covers the crackle — the bed proven in the band above 6 kHz,
 where nothing else in the fixture lives (the music is a 220 Hz sine and the
 speech is silence), and the per-speech lift proven lower down at 1-2.5 kHz,
 where the boost shows most. Both on PEAK rather

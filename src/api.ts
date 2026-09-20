@@ -155,12 +155,17 @@ export type LofiResult = { name: string; url: string; size: number };
 /** Renders the track, the picture and the placed speeches into one
  *  1920x1080 file. `music` and every `speeches[].id` are the UUIDs `upload`
  *  returned; `image` is bare base64 JPEG at 1920x1080, cover-cropped by
- *  `renderWide` — the render's own background, used for every frame outside
- *  a cut-in. */
+ *  `renderWide` — the render's own background, held for every frame. */
 export async function lofi(body: {
   title: string;
   music: string;
-  image: string;
+  /** Omitted when `bgId` is sent: a still the render never shows would be a
+   *  lie rather than a spare. Exactly one of the two. */
+  image?: string;
+  /** An uploaded GIF's id, when the background moves. The client cannot
+   *  cover-crop a GIF (a canvas decode gives its first frame only), so the
+   *  file itself goes to the server and ffmpeg crops and loops it there. */
+  bgId?: string;
   /** The same picture, re-rasterised at 1280x720 by `renderThumb` — the
    *  publish thumbnail, same shape as `stack`'s. Required for the same
    *  reason: there is no frame worth deriving one from, and `image`'s own

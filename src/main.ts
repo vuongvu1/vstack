@@ -1532,13 +1532,40 @@ async function doPickMusic(file: File): Promise<void> {
  *  video and 1280x720 for the publish thumbnail. Both here rather than one
  *  server-side, because this machine's ffmpeg is the wrong tool for an image
  *  format and the browser decodes every format it can display. */
+/** Whether a picked background is an animated GIF.
+ *
+ *  Sniffed from the BYTES, not from `file.type` or the extension: the type a
+ *  browser reports for a local file comes off the OS' own extension table,
+ *  and this decides whether several megabytes go up to the server. `GIF8` is
+ *  the whole signature — `GIF87a` and `GIF89a` are the only two versions
+ *  that exist.
+ *
+ *  A single-frame GIF reads as animated here and that is harmless: the
+ *  server counts frames itself (`frameCount` in `server/lofi.ts`) and puts
+ *  it back on the still path. This check only decides which DOOR the file
+ *  goes through, never how it renders. */
+async function isGif(file: File): Promise<boolean> {
+  const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  return head[0] === 0x47 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x38;
+}
+
 async function doPickBackground(file: File): Promise<void> {
   await guard("Reading the picture…", async () => {
+    const gif = await isGif(file);
+    // Uploaded FIRST, so a failed upload leaves the previous background in
+    // place rather than half-replacing it with a picture whose file never
+    // arrived. `guard` surfaces the throw.
+    const bgId = gif ? (await api.upload(file)).id : null;
+    // `renderWide` runs on a GIF too, and gives its first frame
+    // cover-cropped — which is exactly what the panel's chip wants, and is
+    // dead weight in the body the render never reads. `doLofi` drops it.
+    // `renderThumb` likewise: a publish thumbnail is a still either way.
     setState({
       bg: await renderWide(file),
       thumb: await renderThumb(file),
       bgName: file.name,
       thumbName: file.name,
+      bgId,
     });
   });
 }
@@ -1596,10 +1623,14 @@ async function doLofi(): Promise<void> {
   await guard("Mixing… (a five-minute track takes ~1-2 min)", async () => {
     const music = getState().music;
     if (music === null) return;
+    // Exactly one of the two, never both: on the animated path `bg` is the
+    // GIF's first frame, which the render does not show, so sending it would
+    // put a picture in the body that contradicts the one on screen.
+    const bgId = getState().bgId;
     const out = await api.lofi({
       title,
       music: music.id,
-      image: getState().bg,
+      ...(bgId === null ? { image: getState().bg } : { bgId }),
       thumb: getState().thumb,
       speeches: getState().placements.map((p) => ({ id: p.id, at: p.at })),
       // In-memory, like the export's: a reload between two renders strands
@@ -3055,6 +3086,9 @@ function renderLofiPanel(): Node[] {
   );
 
   const bgRow = el("div", { className: "lofi-row" });
+  // `image/*` already covers GIF, so the accept filter needs nothing added —
+  // an animated pick differs only in which door `doPickBackground` sends it
+  // through.
   const bgPicker = el("input", { type: "file", accept: "image/*", disabled: locked });
   bgPicker.onchange = () => {
     const file = bgPicker.files?.[0];
@@ -3064,8 +3098,18 @@ function renderLofiPanel(): Node[] {
   bgRow.append(
     el("h3", { textContent: "Background" }),
     s.bg === ""
-      ? el("p", { className: "stack-empty", textContent: "Pick one picture." })
+      ? el("p", { className: "stack-empty", textContent: "Pick one picture or GIF." })
       : el("img", { className: "lofi-chip", src: `data:image/jpeg;base64,${s.bg}`, alt: s.bgName }),
+    // ponytail: the chip is a STILL even for a GIF — `renderWide`'s
+    // cover-cropped first frame. Right about the framing and silent about
+    // the motion, so this badge is what says the render will move. Showing
+    // the GIF itself (an object URL at `object-fit: cover`, which is the
+    // same crop) would animate and stay accurate; it needs a URL whose
+    // lifetime someone has to own, which is more than a preview is worth
+    // until someone misses it.
+    ...(s.bgId === null
+      ? []
+      : [el("span", { className: "badge badge-info", textContent: "animated — loops under the track" })]),
     bgPicker,
   );
 

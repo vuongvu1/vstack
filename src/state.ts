@@ -54,6 +54,21 @@ export type AppState = {
   /** The picked picture's local filename, for display only — never sent.
    *  Same rule `UploadPart.name` and `thumbName` follow. */
   bgName: string;
+  /** The uploaded GIF's id when the background is an ANIMATED one, `null`
+   *  when it is an ordinary still.
+   *
+   *  A GIF cannot go the `bg` route: `createImageBitmap` decodes only its
+   *  first frame, so the client can neither cover-crop nor even see the
+   *  animation, and the server has to be handed the file itself. `bg` is
+   *  still filled in alongside it — that first frame IS the panel's preview
+   *  — so this field is what decides which of them the render uses, and
+   *  emptiness is the still case.
+   *
+   *  NOT persisted, `music`'s reason exactly: it names an upload the user
+   *  may have swept from `media/uploads/` by hand, and a restored id
+   *  pointing at a file that is gone would look like a working panel right
+   *  up until Render. */
+  bgId: string | null;
   /** The uploaded speeches. Order is display order only: a speech's position
    *  in the render is its `at`, not its index here.
    *
@@ -200,6 +215,7 @@ const initial: AppState = {
   music: null,
   bg: "",
   bgName: "",
+  bgId: null,
   speeches: [],
   placements: [],
   moments: [],

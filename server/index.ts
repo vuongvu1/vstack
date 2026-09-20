@@ -919,17 +919,50 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.url === "/api/lofi") {
     const raw = await json<Record<string, unknown>>(req);
     const title = readTitle(raw.title, "title");
-    // `image` is the render's own 1920x1080 cover-cropped background — every
-    // frame outside a cut-in is this picture. `thumb` is the SAME picture
-    // re-rasterised at 1280x720 by the client's `renderThumb`, required like
-    // the stack's for the identical reason: there is no frame worth deriving
-    // a thumbnail from. The two are not interchangeable here — writing
-    // `image` as the `.thumb.jpg` sidecar (the bug this replaced) ships a
-    // detailed 1920x1080 photo into a 16:9 surface sized and quality-budgeted
-    // for 1280x720, which can cross YouTube's 2 MB thumbnail limit and
-    // silently surface as the `thumbnail skipped` badge instead of failing
-    // where the mistake was made.
-    const image = jpeg(raw.image, "image");
+    // The background arrives by ONE OF TWO DOORS, and which one says what
+    // kind of background it is.
+    //
+    // `image` is bare bytes in this body: a 1920x1080 JPEG the client
+    // cover-cropped with `renderWide`. That is the still case, and inline
+    // bytes are right for it because the client MADE that picture — it is
+    // rendered artwork, the same category as `/api/export`'s `titlePng`.
+    //
+    // `bgId` names an upload instead, and that is the ANIMATED case: a GIF
+    // the user picked, which the client cannot cover-crop (a canvas decode
+    // of a GIF yields its first frame and nothing else) and must not inline
+    // (`json()` reads a whole body into memory with no cap, so a 10 MB GIF
+    // base64'd to 13 MB of JSON would be a heap spike per render, where
+    // `/api/upload` streams to disk under `UPLOAD_MAX_BYTES`). It is a file
+    // the user chose rather than one the client drew, which is the same
+    // reason the music and the speeches travel that way.
+    //
+    // Exactly one is required. `image` is not merely unused on the animated
+    // path, it would be a lie — a still the render never shows.
+    //
+    // Resolved to a tagged value here rather than two loose nullables,
+    // because the two halves have to stay tied together: a `Buffer | null`
+    // beside a `string | null` lets the later branch reach for whichever one
+    // is null, and nothing in the types would say so.
+    // A PRESENT but malformed `bgId` is its own error rather than a
+    // fall-through to the still branch. Falling through is what this did
+    // first, and it answered "Expected image to be a string." for a body
+    // that never mentioned an image — the caller's actual mistake named
+    // nowhere in the reply. Absent (or null) still means "a still is
+    // coming", which is what every body written before this field existed
+    // says.
+    if (raw.bgId !== undefined && raw.bgId !== null && !isUploadId(raw.bgId)) {
+      return send(res, 400, { error: "Bad background id." });
+    }
+    const background: { kind: "upload"; id: string } | { kind: "still"; bytes: Buffer } =
+      isUploadId(raw.bgId)
+        ? { kind: "upload", id: raw.bgId }
+        : { kind: "still", bytes: jpeg(raw.image, "image") };
+    if (background.kind === "upload" && !existsSync(uploadPath(background.id))) {
+      return send(res, 404, { error: "That background upload is no longer on disk." });
+    }
+    // `thumb` is required either way, and on the animated path it is the
+    // GIF's own first frame at 1280x720. A publish thumbnail is a still JPEG
+    // whatever the render does, so there is nothing to decide here.
     const thumb = jpeg(raw.thumb, "thumb");
     if (!isUploadId(raw.music)) return send(res, 400, { error: "Bad music id." });
     const musicPath = uploadPath(raw.music);
@@ -999,12 +1032,20 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // /api/export and /api/say already use. Not tracked in `inFlight`: it is
     // in $TMPDIR, is not servable, and has no name a client could request.
     const work = await mkdtemp(join(tmpdir(), "vstack-lofi-"));
-    const imageFile = join(work, "bg.jpg");
-    await writeFile(imageFile, image);
+    // An upload is already a path; a still is bytes that need one. Only the
+    // second needs the temp dir, which is why this is the one thing left in
+    // it — the `finally` sweeps it either way.
+    let bgPath: string;
+    if (background.kind === "upload") {
+      bgPath = uploadPath(background.id);
+    } else {
+      bgPath = join(work, "bg.jpg");
+      await writeFile(bgPath, background.bytes);
+    }
 
     inFlight.add(partial);
     try {
-      await renderLofi({ image: imageFile, music: musicPath, cuts, out: partial });
+      await renderLofi({ background: bgPath, music: musicPath, cuts, out: partial });
       await rename(partial, outFile);
       await writeFile(thumbPath(outFile), thumb).catch((err: unknown) => {
         console.warn(`vstack: could not save the thumbnail beside ${name}:`, err);

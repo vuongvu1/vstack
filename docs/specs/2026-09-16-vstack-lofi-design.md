@@ -99,6 +99,24 @@
 > overlay), two audio-only .m4a speeches land in their own windows, and a
 > speech with no audio stream is refused.
 
+> **Amended 2026-09-20 (fourth)**, on the user's call: the background may be
+> an **animated GIF**, looped for as long as the track runs, and not only a
+> still. Everything below describing the background as one picture still
+> holds with "picture" read as "loop" — the same cover-crop, the same `-t`
+> bound at the music's length, the same "the picture is the whole video".
+>
+> Two things are genuinely new. `renderLofi`'s `image` option is now
+> `background`, and it picks between `-loop 1 -framerate N` (a still) and
+> `-stream_loop -1` (an animation) by COUNTING FRAMES with ffprobe. The two
+> forms are not interchangeable and one wrong pairing hangs rather than
+> erroring — see the invariant in CLAUDE.md before touching it. And
+> `/api/lofi` grew a second door for the background: `bgId`, an upload id,
+> as the alternative to the inline `image` bytes. A GIF cannot go inline
+> because the client cannot cover-crop it (`createImageBitmap` sees only its
+> first frame) and because `json()` reads a whole body into memory uncapped.
+> `image` and `bgId` are mutually exclusive; `thumb` is required either way
+> and is a still JPEG either way.
+
 Supersedes nothing. It adds a **fourth journey** beside the short one, the
 long one and the chat-moments dead end: `idle → lofi → preview`. A user
 picks one music track, one background image and a handful of speech clips;

@@ -33,6 +33,11 @@ let voice = "";
 let silent = "";
 /** A video with no audio stream at all. Refused, not rendered. */
 let noaudio = "";
+/** A 1.5s ANIMATED background: red, then green, then blue, half a second
+ *  each. Three flat colours rather than anything subtle so a single sampled
+ *  pixel says which frame of the loop is on screen, and a period that
+ *  divides into the 30s track so "it looped" is checkable by arithmetic. */
+let gif = "";
 let out = "";
 
 beforeAll(async () => {
@@ -82,11 +87,21 @@ beforeAll(async () => {
     "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", noaudio,
   ]);
 
+  gif = join(dir, "cycle.gif");
+  await run("ffmpeg", [
+    "-v", "error",
+    "-f", "lavfi", "-i", "color=c=red:s=320x180:d=0.5:r=10",
+    "-f", "lavfi", "-i", "color=c=green:s=320x180:d=0.5:r=10",
+    "-f", "lavfi", "-i", "color=c=blue:s=320x180:d=0.5:r=10",
+    "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]",
+    "-map", "[v]", "-y", gif,
+  ]);
+
   out = join(dir, "out.mp4");
   // One speech at t=12, well clear of both ends. Deliberately the VIDEO
   // fixture: the render this whole describe block measures is the one whose
   // speech has a picture to suppress.
-  await renderLofi({ image: bg, music, cuts: [{ path: speech, at: 12 }], out });
+  await renderLofi({ background: bg, music, cuts: [{ path: speech, at: 12 }], out });
   // Explicit, because several real encodes compete for CPU in the full
   // suite — `server/longform.test.ts`'s hook carries one for the same
   // reason.
@@ -240,7 +255,7 @@ describe("renderLofi", () => {
     // more.
     await expect(
       renderLofi({
-        image: bg,
+        background: bg,
         music,
         cuts: [{ path: noaudio, at: 12 }],
         out: join(dir, "never.mp4"),
@@ -253,7 +268,7 @@ describe("renderLofi", () => {
     // background picture. This is the audio-only upload path end to end.
     const two = join(dir, "two.mp4");
     await renderLofi({
-      image: bg,
+      background: bg,
       music,
       cuts: [{ path: voice, at: 6 }, { path: voice, at: 20 }],
       out: two,
@@ -281,13 +296,76 @@ describe("renderLofi", () => {
     // is the one that dies, with `Error submitting audio frame to the
     // encoder: Invalid argument`.
     const quiet = join(dir, "quiet.mp4");
-    await renderLofi({ image: bg, music, cuts: [{ path: silent, at: 12 }], out: quiet });
+    await renderLofi({ background: bg, music, cuts: [{ path: silent, at: 12 }], out: quiet });
     const probed = await probeFile(quiet);
     expect(probed.hasAudio).toBe(true);
     expect(probed.seconds).toBeGreaterThan(29.5);
     expect(await audioStreamDuration(quiet)).toBeGreaterThan(29.5);
     expect(isBackground(await pixelAt(quiet, 13, 960, 540))).toBe(true);
   }, 120_000);
+
+  it("animates a GIF background and loops it under the whole track", async () => {
+    // The fixture GIF is 1.5s: red [0, 0.5), green [0.5, 1.0), blue
+    // [1.0, 1.5). So the colour at any t is decided by `t % 1.5`, and
+    // sampling past the first period is what proves the LOOP rather than a
+    // single play followed by a frozen last frame — which is exactly what a
+    // background that merely "worked" would look like for the first 1.5s of
+    // a three-minute render.
+    const moving = join(dir, "moving.mp4");
+    await renderLofi({
+      background: gif,
+      music,
+      cuts: [{ path: voice, at: 12 }],
+      out: moving,
+    });
+
+    const dominant = (p: { r: number; g: number; b: number }) =>
+      p.r > 100 && p.g < 90 && p.b < 90
+        ? "red"
+        : p.g > 70 && p.r < 90 && p.b < 90
+          ? "green"
+          : p.b > 100 && p.r < 90 && p.g < 90
+            ? "blue"
+            : `other(${p.r},${p.g},${p.b})`;
+
+    // Sampled 0.2s into each half-second cell, away from the boundaries,
+    // where a frame of rounding either way cannot change the answer. t=0.2
+    // is the first period; 5.2 and 26.7 are the fourth and the eighteenth
+    // (5.2 - 3*1.5 = 0.7, 26.7 - 17*1.5 = 1.2), so the last of them is 25s
+    // past the GIF's own end.
+    const cases: [number, string][] = [
+      [0.2, "red"],
+      [0.7, "green"],
+      [1.2, "blue"],
+      [1.7, "red"],
+      [5.2, "green"],
+      [26.7, "blue"],
+    ];
+    for (const [t, want] of cases) {
+      const colour = dominant(await pixelAt(moving, t, 960, 540));
+      expect({ t, colour }).toEqual({ t, colour: want });
+    }
+
+    // And the render is still exactly the TRACK's length rather than the
+    // GIF's — the property `-t` on the background input is there to keep.
+    const probed = await probeFile(moving);
+    expect(probed.seconds).toBeGreaterThan(29.5);
+    expect(probed.seconds).toBeLessThan(30.5);
+  }, 180_000);
+
+  it("still holds a lone still picture for the whole render", async () => {
+    // The other side of `frameCount`'s fork, and the reason it cannot be
+    // collapsed into one input form: `-stream_loop -1` on a still HANGS
+    // (measured — a JPEG under it never produced a frame and ffmpeg had to
+    // be killed), so the still branch must keep `-loop 1`. This is the
+    // assertion that fails, by timing out, if the two are ever "simplified"
+    // into one.
+    //
+    // The beforeAll render covers this already, but it covers it as part of
+    // the picture sweep. Named here so the fork has a test that says so.
+    expect(isBackground(await pixelAt(out, 0.2, 960, 540))).toBe(true);
+    expect(isBackground(await pixelAt(out, 25.7, 960, 540))).toBe(true);
+  });
 
   // The crackle bed and its per-speech boost, each measured in the band that
   // can actually see it — and on PEAK, because this asset is sparse pops
@@ -301,7 +379,7 @@ describe("renderLofi", () => {
   // under test.
   it("lays a crackle bed down and lifts it under a speech", async () => {
     const crackly = join(dir, "crackle.mp4");
-    await renderLofi({ image: bg, music, cuts: [{ path: silent, at: 12 }], out: crackly });
+    await renderLofi({ background: bg, music, cuts: [{ path: silent, at: 12 }], out: crackly });
 
     // Above 6 kHz nothing else in this render lives: the music is a 220 Hz
     // sine and the speech is digital silence, so the crackle — which plays
