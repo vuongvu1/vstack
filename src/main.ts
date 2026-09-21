@@ -133,6 +133,12 @@ const momentsPanel = el("div", { className: "moments-panel", hidden: true });
 // and never by hiding sourceSlot itself, which would put the YouTube
 // iframe's ancestor into display:none.
 const lofiPanel = el("div", { className: "lofi-panel", hidden: true });
+// The cutter's own media node. A <video> rather than an <audio> for both
+// input kinds: a video upload has a picture to show and an audio-only file
+// plays through the same element with a blank frame. Built once and only
+// ever hidden, like every other child of sourceSlot — see the module-level
+// comment on the persistent shell.
+const cutVideo = el("video", { controls: true, preload: "auto", hidden: true });
 const sourceSlot = el(
   "div",
   { className: "source" },
@@ -141,6 +147,7 @@ const sourceSlot = el(
   stackPanel,
   lofiPanel,
   momentsPanel,
+  cutVideo,
 );
 const outSlot = el("div", { className: "out" }, outPlaceholder);
 const barSlot = el("div", { className: "bar" });
@@ -3333,6 +3340,324 @@ function renderLofiBar(): Node[] {
   ];
 }
 
+// The cutter's strip owns a rAF loop, like the trimming and framing strips.
+// Stopped in two places, and both are load-bearing: renderCutting stops the
+// old one before building its replacement (the re-render case), and render()
+// stops it whenever `phase !== "cutting"` (the departure case). Nothing calls
+// back into renderCutting on the way out, so without the second one the loop
+// reads a hidden element for the rest of the session.
+let cutStrip: { el: HTMLElement; stop(): void } | null = null;
+
+// The object URL behind cutVideo. Revoked on leaving the phase — it is the
+// one piece of this phase's state that is not a plain value, which is why it
+// lives here rather than in AppState.
+let cutUrl = "";
+
+// Which range Set Start / Set End write to. Module-scoped for the reason
+// `activeSegment` is: nothing about it is persisted and barSlot is rebuilt
+// on every render, so it must survive that rebuild without causing one.
+let activeRange = 0;
+
+// Which ends the user has AIMED, keyed by the mark's own value — the same
+// shape and the same reasoning as the trimming phase's `aimed` set. It is
+// what `editMark`'s `endAimed` reads: an end nobody chose is carried, an end
+// the user chose is defended. Index-keyed it would follow the wrong range as
+// soon as normalize merged two of them.
+const cutAimedEnds = new Set<number>();
+
+function stopCutStrip(): void {
+  cutStrip?.stop();
+  cutStrip = null;
+}
+
+function releaseCutUrl(): void {
+  if (cutUrl !== "") URL.revokeObjectURL(cutUrl);
+  cutUrl = "";
+  cutVideo.removeAttribute("src");
+  cutVideo.load();
+}
+
+/** Picks a file: plays it locally at once, decodes its envelope for the
+ *  strip, and uploads it in parallel.
+ *
+ *  The object URL is what makes scrubbing live before the upload finishes —
+ *  only the Cut button waits on the id. A user marking ranges in a
+ *  40-minute recording should not be watching a progress bar first. */
+async function pickCutFile(file: File): Promise<void> {
+  releaseCutUrl();
+  cutUrl = URL.createObjectURL(file);
+  cutVideo.src = cutUrl;
+  activeRange = 0;
+  cutAimedEnds.clear();
+  setState({
+    cutFile: file,
+    cutUploadId: "",
+    cutRanges: [],
+    cutSeconds: 0,
+    error: "",
+    busy: `Reading ${file.name}…`,
+  });
+  try {
+    // decodeTrack, not loadWave: a flat strip is cosmetic on the framing bar
+    // and fatal here, since the strip is the only thing the user aims at.
+    const { env, seconds } = await decodeTrack(file);
+    // ponytail: this phase writes the module-scoped envelope `drawWave`
+    // reads rather than growing it a parameter. The journeys are mutually
+    // exclusive — no state exists in which a framing clip and a cut upload
+    // are both on screen — and a second envelope field is a second thing to
+    // keep in sync for no behaviour.
+    wavePeaks = env;
+    waveSeconds = seconds;
+    // …but `loadWave` caches on the clip URL it last decoded, and this just
+    // overwrote what that cache describes. Clearing the key is what makes
+    // the framing strip re-decode the next time it is entered rather than
+    // painting this file's envelope over someone else's clip.
+    waveFor = "";
+    setState({ cutSeconds: seconds, busy: `Uploading ${file.name}…` });
+    const { id } = await api.upload(file, true);
+    setState({ cutUploadId: id, busy: "" });
+  } catch (err) {
+    setState({ busy: "", error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+/** The cutter's strip: the file's own envelope, a band per range, and a
+ *  playhead.
+ *
+ *  Its axis is the file's own duration — there is no window and no PAD in
+ *  this journey — so `bucketAt` reduces exactly to `floor(x * buckets / w)`,
+ *  the identity `src/waveform.test.ts` already pins. No drag handles: the
+ *  ranges are aimed with Set Start / Set End, which is the whole reason this
+ *  phase could reuse `src/segments.ts` unchanged. */
+function buildCutStrip(span: number, ranges: Segment[]): { el: HTMLElement; stop(): void } {
+  const wave = el("div", { className: "wave" });
+  const canvas = el("canvas");
+  wave.append(canvas);
+  for (const [i, r] of ranges.entries()) {
+    const band = el("div", { className: "wave-cut" });
+    band.style.left = `${(100 * r.start) / span}%`;
+    band.style.width = `${(100 * (r.end - r.start)) / span}%`;
+    if (i === activeRange) band.classList.add("is-active");
+    wave.append(band);
+  }
+  const head = el("div", { className: "strip-head" });
+  wave.append(head);
+  wave.onclick = (e) => {
+    const box = wave.getBoundingClientRect();
+    const frac = (e.clientX - box.left) / Math.max(1, box.width);
+    cutVideo.currentTime = Math.min(span, Math.max(0, frac * span));
+  };
+  const resize = new ResizeObserver(() => drawWave(canvas, span));
+  resize.observe(wave);
+  let raf = 0;
+  const tick = () => {
+    head.style.left = `${(100 * cutVideo.currentTime) / span}%`;
+    raf = requestAnimationFrame(tick);
+  };
+  raf = requestAnimationFrame(tick);
+  return {
+    el: wave,
+    stop() {
+      cancelAnimationFrame(raf);
+      resize.disconnect();
+    },
+  };
+}
+
+function renderCutting(): Node[] {
+  const s = getState();
+  const busy = s.busy !== "";
+  cutVideo.hidden = s.cutFile === null;
+
+  const pick = el("input", { type: "file", accept: "audio/*,video/*", disabled: busy });
+  pick.onchange = () => {
+    const file = pick.files?.[0];
+    if (file) void pickCutFile(file);
+  };
+
+  /** Leaving the phase. Both teardowns by hand rather than through render():
+   *  `stopCutStrip` is also called from render()'s departure branch, but the
+   *  object URL has no such owner — nothing else knows this phase held one. */
+  const leave = () => {
+    stopCutStrip();
+    releaseCutUrl();
+    setState({ phase: "idle", cutFile: null, cutRanges: [], error: "" });
+  };
+
+  const rows: Node[] = [el("div", { className: "bar-row" }, pick)];
+  if (s.cutFile === null || s.cutSeconds === 0) {
+    const back = el("button", { className: "btn-gray", textContent: "← Back", disabled: busy });
+    back.onclick = leave;
+    rows.push(el("div", { className: "bar-row" }, back));
+    return rows;
+  }
+
+  const span = s.cutSeconds;
+  stopCutStrip();
+  cutStrip = buildCutStrip(span, s.cutRanges);
+  rows.push(el("div", { className: "bar-row" }, cutStrip.el));
+
+  const addRange = el("button", {
+    textContent: "+ Range",
+    title: "Start a range at the playhead",
+    disabled: busy || s.cutRanges.length >= MAX_SEGMENTS,
+  });
+  addRange.onclick = () => {
+    const cur = getState();
+    const at = Math.min(cutVideo.currentTime, Math.max(0, span - 1));
+    const added = { start: at, end: Math.min(at + 5, span) };
+    const next = normalize([...cur.cutRanges, added], span);
+    // segmentContaining, never an index or a `start ===` search: normalize
+    // merges, and a merged part keeps the EARLIER one's start, so equality
+    // returns -1 exactly when two ranges touch. This is the same call the
+    // trimming phase's `+ Part` makes.
+    activeRange = segmentContaining(next, added.start, added.end);
+    setState({ cutRanges: next, error: "" });
+  };
+
+  const setMarkAt = (which: "start" | "end") => () => {
+    const cur = getState();
+    const seg = cur.cutRanges[activeRange];
+    if (seg === undefined) return;
+    // `editMark(seg, which, t, duration, endAimed)` returns the edited
+    // Segment or `null` when the edit would leave `end <= start` — a refusal
+    // rather than a silent drop, because `normalize` DELETES such a range and
+    // that is the worst possible answer to an ordinary misclick.
+    //
+    // `endAimed` is what makes the carry asymmetric: an end nobody aimed is
+    // synthetic (`+ Range` gave it one) and is carried along keeping the
+    // range's own length, while an end the user DID aim is theirs and the
+    // edit is refused instead. Value-keyed, never index-keyed, for the reason
+    // the trimming phase's own `aimed` set documents: normalize sorts and
+    // merges, so an index-keyed flag follows the wrong range the moment two
+    // of them touch.
+    const edited = editMark(seg, which, cutVideo.currentTime, span, cutAimedEnds.has(seg.end));
+    if (edited === null) {
+      setState({
+        error:
+          which === "start"
+            ? "That start is past the range's own end."
+            : "That end is before the range's own start.",
+      });
+      return;
+    }
+    if (which === "end") {
+      cutAimedEnds.delete(seg.end);
+      cutAimedEnds.add(edited.end);
+    }
+    const next = normalize(
+      cur.cutRanges.map((r, i) => (i === activeRange ? edited : r)),
+      span,
+    );
+    // Re-aim AFTER normalising: dragging a mark into a neighbour merges the
+    // two, so the active index can point at an untouched range once the merge
+    // lands even though the edited range survives inside the merged one.
+    activeRange = segmentContaining(next, edited.start, edited.end);
+    setState({ cutRanges: next, error: "" });
+  };
+
+  const setStart = el("button", {
+    textContent: "Set Start",
+    disabled: busy || s.cutRanges.length === 0,
+  });
+  setStart.onclick = setMarkAt("start");
+  const setEnd = el("button", {
+    textContent: "Set End",
+    disabled: busy || s.cutRanges.length === 0,
+  });
+  setEnd.onclick = setMarkAt("end");
+
+  // One chip per range, switching which one the marking controls aim at —
+  // the same control the trimming bar carries, and for the same reason:
+  // position alone stops answering "which range is this" once two of them
+  // sit close together.
+  const chips = el("div", { className: "nudges", ariaLabel: "Select range" });
+  chips.setAttribute("role", "group");
+  s.cutRanges.forEach((r, i) => {
+    const chip = el("button", {
+      className: `chip-seg seg-c${i % MAX_SEGMENTS}${i === activeRange ? " is-active" : ""}`,
+      textContent: String(i + 1),
+      title: `${clock(r.start)} → ${clock(r.end)}`,
+      disabled: busy,
+    });
+    chip.onclick = () => {
+      activeRange = i;
+      // A seek, not just a selection: switching ranges is almost always a
+      // prelude to listening to that range.
+      cutVideo.currentTime = r.start;
+      setState({});
+    };
+    chips.append(chip);
+  });
+
+  const drop = el("button", {
+    className: "btn-gray",
+    textContent: "Remove",
+    disabled: busy || s.cutRanges.length === 0,
+  });
+  drop.onclick = () => {
+    const cur = getState();
+    const next = cur.cutRanges.filter((_, i) => i !== activeRange);
+    activeRange = Math.max(0, Math.min(activeRange, next.length - 1));
+    setState({ cutRanges: next, error: "" });
+  };
+
+  rows.push(el("div", { className: "bar-row" }, addRange, setStart, setEnd, drop, chips));
+
+  const base = el("input", {
+    type: "text",
+    placeholder: "File name",
+    value: s.cutBase,
+    disabled: busy,
+    className: "field-grow",
+  });
+  const go = el("button", {
+    className: "btn-solid",
+    textContent: "Cut →",
+    disabled: busy || s.cutBase.trim() === "" || s.cutRanges.length === 0 || s.cutUploadId === "",
+  });
+  // Quiet, so a keystroke does not rebuild this very input and drop the
+  // cursor — which means Cut's own `disabled` has to be flipped in here
+  // rather than waiting for a render that may never come. Same pattern the
+  // framing bar's Export button uses.
+  base.oninput = () => {
+    setQuiet({ cutBase: base.value });
+    const cur = getState();
+    go.disabled = base.value.trim() === "" || cur.cutRanges.length === 0 || cur.cutUploadId === "";
+  };
+  go.onclick = () =>
+    void guard("Cutting…", async () => {
+      const cur = getState();
+      // Re-checked here rather than trusted from the button, which is
+      // toggled in place by a quiet handler.
+      if (cur.cutBase.trim() === "") throw new Error("Type a file name first.");
+      const { names } = await api.cut({
+        id: cur.cutUploadId,
+        base: cur.cutBase,
+        ranges: cur.cutRanges,
+        ...(cur.cutNames.length > 0 ? { prev: cur.cutNames } : {}),
+      });
+      setState({ cutNames: names, error: "" });
+      bell();
+    });
+
+  const done = el("button", { className: "btn-gray", textContent: "← Back", disabled: busy });
+  done.onclick = leave;
+
+  rows.push(el("div", { className: "bar-row" }, base, el("div", { className: "bar-end" }, done, go)));
+
+  if (s.cutNames.length > 0) {
+    const list = el("div", { className: "cut-results" });
+    for (const name of s.cutNames) {
+      const show = el("button", { className: "btn-gray", textContent: name, disabled: busy });
+      show.onclick = () => void api.reveal(name);
+      list.append(show);
+    }
+    rows.push(el("div", { className: "bar-row" }, list));
+  }
+  return rows;
+}
+
 function renderIdle(s: AppState): Node[] {
   const busy = s.busy !== "";
   const input = el("input", {
@@ -3385,11 +3710,22 @@ function renderIdle(s: AppState): Node[] {
   // claim and nothing downstream that could read it.
   chat.onclick = () => setState({ phase: "moments", error: "" });
 
+  const cutter = el("button", {
+    className: "btn-gray",
+    textContent: "Audio cutter →",
+    title: "Cut an audio or video file into mp3s",
+    disabled: busy,
+  });
+  // No `mode` here, for the reason the chat button's comment right above
+  // gives: this journey reaches neither `preview` nor `/api/publish`, so
+  // there is nothing downstream that could read a stale value.
+  cutter.onclick = () => setState({ phase: "cutting", error: "" });
+
   const rows: Node[] = [el("div", { className: "bar-row" }, input, go)];
   if (clipList.length > 0) {
     rows.push(el("div", { className: "bar-row" }, renderClipPicker(s)));
   }
-  rows.push(el("div", { className: "bar-row" }, long, lofi, chat));
+  rows.push(el("div", { className: "bar-row" }, long, lofi, chat, cutter));
   return rows;
 }
 
@@ -3401,8 +3737,10 @@ function render(): void {
   // clean containers instead of layering real content under leftover text.
   sourcePlaceholder.hidden = s.phase !== "idle";
   // The out column has nothing to show in `moments` either, so its
-  // placeholder stays rather than leaving an empty card.
-  outPlaceholder.hidden = s.phase !== "idle" && s.phase !== "moments";
+  // placeholder stays rather than leaving an empty card. `cutting` is the
+  // same case: its output is a set of files on the Desktop, not something
+  // this app plays back.
+  outPlaceholder.hidden = s.phase !== "idle" && s.phase !== "moments" && s.phase !== "cutting";
   // The iframe is hidden, never removed, once framing owns the stage —
   // removing it (or any ancestor) is what discards its nested browsing
   // context and reloads the video (see ensureSourcePlayer above). Neither
@@ -3425,6 +3763,9 @@ function render(): void {
     strip.stop();
     strip = null;
   }
+  // The departure case — see the comment on `cutStrip`. renderCutting only
+  // runs while the phase is `cutting`, so nothing else ever stops this loop.
+  if (s.phase !== "cutting") stopCutStrip();
   // Same reasoning as sourceIframe above, but a <video> tolerates
   // detach/reattach fine — it just has no reason to move once it lives in
   // the persistent sourceSlot.
@@ -3467,6 +3808,12 @@ function render(): void {
   stackPanel.hidden = s.phase !== "stacking";
   lofiPanel.hidden = s.phase !== "lofi";
   momentsPanel.hidden = s.phase !== "moments";
+  // Same rule every other long-lived media node in this slot follows:
+  // hidden, never removed, and paused by hand on the way out — `display:
+  // none` suspends nothing, so a 40-minute recording left rolling here
+  // would play underneath whatever phase came next.
+  cutVideo.hidden = s.phase !== "cutting" || s.cutFile === null;
+  if (s.phase !== "cutting") cutVideo.pause();
 
   if (s.phase === "idle") barSlot.replaceChildren(...renderIdle(s));
   else if (s.phase === "trimming") barSlot.replaceChildren(...renderTrimming());
@@ -3479,6 +3826,8 @@ function render(): void {
     // on a quiet keystroke.
     barSlot.replaceChildren(...renderStacking());
     stackPanel.replaceChildren(...renderStackPanel());
+  } else if (s.phase === "cutting") {
+    barSlot.replaceChildren(...renderCutting());
   } else if (s.phase === "lofi") {
     barSlot.replaceChildren(...renderLofiBar());
     lofiPanel.replaceChildren(...renderLofiPanel());
@@ -3513,8 +3862,16 @@ function render(): void {
   // `moments` has no probed video behind it either — `title`, `duration` and
   // `source` are whatever a previous journey left — so it is excluded
   // explicitly rather than inheriting the `mode` test, which is true here
-  // for a reason that has nothing to do with this phase.
-  if (s.phase !== "idle" && s.phase !== "moments" && s.mode === "short") {
+  // for a reason that has nothing to do with this phase. `cutting` is
+  // excluded for exactly that reason too: it claims no `mode`, so on a
+  // fresh session `mode` is still "short" and these three would describe
+  // some other video entirely.
+  if (
+    s.phase !== "idle" &&
+    s.phase !== "moments" &&
+    s.phase !== "cutting" &&
+    s.mode === "short"
+  ) {
     meta.push(el("span", { className: "badge badge-title", textContent: s.title }));
     meta.push(el("span", { className: "badge", textContent: clock(s.duration) }));
     meta.push(el("span", { className: "badge", textContent: `${s.source.w}×${s.source.h}` }));
