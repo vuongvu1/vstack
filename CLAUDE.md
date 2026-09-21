@@ -1922,10 +1922,18 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
   than a derived frame. Nothing prunes either shape — deliberately the
   user's to clear, which is why it sits on the Desktop rather than in the
   repo. The cutter writes a third shape into the same directory, N bare
-  `.mp3`s with no sidecar at all, and it is the only producer here that
-  ever *removes* something from it — `/api/cut`'s `prev` sweep, which is
-  forced on it by the index in the name. Nothing else in the directory can
-  be touched by that sweep: every name goes through `isCutName` first.
+  `.mp3`s with no sidecar at all. It sweeps the previous run out the way
+  `/api/export` and `/api/lofi` already sweep a superseded render — all
+  three through a client-sent `prev`, after the rename, never before — but
+  what *forces* the sweep differs, and that is the part worth knowing. Those
+  two are forced by a name that moves with the title or the marks, so the
+  stranded file describes different content under a different name. The
+  cutter's is forced by the INDEX: `<slug>-4.mp3` from a four-range run is
+  left behind by a three-range one under a name the next four-range run
+  would reuse, so the stranded file is indistinguishable from a current one.
+  That is also why its `prev` is a list rather than a single name. Nothing
+  else in the directory can be touched by it: every name goes through
+  `isCutName` first.
 - Publishing needs `~/.vstack/youtube-client.json` (a **Desktop app** OAuth
   client from Google Cloud Console, with YouTube Data API v3 enabled) and a
   token from `pnpm youtube-auth`. Missing either is a boot *warning*, not a

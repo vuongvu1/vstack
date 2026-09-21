@@ -2,6 +2,44 @@
 
 2026-09-21
 
+> **Amended 2026-09-21.** Five things below are stale against what shipped
+> on `feat/audio-cutter`. `CLAUDE.md` carries the correct versions; this
+> block is so a session reading the spec first does not "fix" the code back
+> to it.
+>
+> 1. **`server/cut.ts` imports NOTHING from `ffmpeg.ts`.** "`server/cut.ts`"
+>    below says it imports `probeAudio`; it does not. `/api/cut` probes
+>    before it calls in, so the module needs no prober of its own — its only
+>    imports are `toolError` from `errors.ts` and `type Segment` from
+>    `src/segments.ts`. That is stricter than what this document asked for
+>    and is the version to keep.
+> 2. **The `-ss`/`-i` ordering is NOT mutation-pinned.** "Testing" below
+>    claims moving `-ss` after `-i` fails both tone assertions; it was tried
+>    and it does not — this ffmpeg (Homebrew 8.1.1) accurate-seeks on the
+>    input side too, and the short indexed M4A fixture lands on the identical
+>    sample either way, measured at identical dB and identical duration
+>    including with raw ffmpeg outside the test harness. The four tests pin
+>    the range-to-audio **mapping**, which is their real job; the ordering is
+>    kept as the convention `exportClip` and `stackWide` hold, and what it
+>    defends against — non-indexed containers, and decode-from-zero cost on a
+>    long input — is not something this fixture can demonstrate. The numbers
+>    are in `.superpowers/sdd/2026-09-21-vstack-audio-cutter/task-2-report.md`.
+> 3. **`/api/cut` runs `readTitle` before `isUploadId`**, the reverse of the
+>    order "`/api/cut`" below lists. Nothing depends on it beyond which 400 a
+>    doubly-bad body gets; recorded so nobody reorders the code to match.
+> 4. **The route answers a 404 the "Errors" table does not list** —
+>    `"That upload is no longer on disk."`, when `existsSync(uploadPath(id))`
+>    fails after the id validates. An addition, not a deviation.
+> 5. **Two controls shipped that this document does not mention**, both
+>    added in the final implementation round and both silent if dropped: a
+>    range-selector chip row, reusing the trimming bar's `.chip-seg` recipe,
+>    without which there is no way to re-aim which range `Set Start` /
+>    `Set End` write to; and a `waveFor = ""` reset in `pickCutFile`, because
+>    this phase writes the module-scoped `wavePeaks`/`waveSeconds` that
+>    `loadWave` caches against a clip URL, and without the reset the framing
+>    strip paints this upload's envelope over someone else's clip. Both are
+>    invariants in `CLAUDE.md`.
+
 Supersedes nothing and extends nothing. It adds a **fifth journey** beside
 the short one, the long one, the lofi one and the chat-moments dead end:
 `idle` → `cutting` → `idle`. An uploaded audio or video file is shown with a
