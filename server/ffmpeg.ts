@@ -124,7 +124,17 @@ export function outPath(name: string): string {
  *  describing audio from the previous attempt. See the sweep in
  *  `server/index.ts`. */
 export function cutName(base: string, n: number): string {
-  return `${slugify(base)}-${n}.mp3`;
+  return `${cutStem(base)}${n}.mp3`;
+}
+
+/** The prefix every one of a base's `cutName`s shares.
+ *
+ *  Exported so `/api/cut`'s sweep can ask "does this stale name belong to
+ *  the base I am superseding" without re-deriving the slug itself — two
+ *  copies of that derivation is exactly how a sweep comes to disagree with
+ *  the names it is scoped against. */
+export function cutStem(base: string): string {
+  return `${slugify(base)}-`;
 }
 
 /** The vertical still saved beside an export, for Studio's Shorts thumbnail

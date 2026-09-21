@@ -20,6 +20,7 @@ import {
   MAX_PARTS,
   MAX_SPEECHES,
   TAGS_DEFAULT,
+  UPLOAD_MAX_BYTES,
   YT_TITLE_MAX,
   defaultTitle,
 } from "./defaults.ts";
@@ -3389,6 +3390,20 @@ function releaseCutUrl(): void {
  *  only the Cut button waits on the id. A user marking ranges in a
  *  40-minute recording should not be watching a progress bar first. */
 async function pickCutFile(file: File): Promise<void> {
+  // Before the decode, not after. `upload` throws on the same constant, but
+  // it is only reached once `decodeTrack` has read the whole file into an
+  // ArrayBuffer — so an oversized recording pays for a full decode before
+  // the sentence that refuses it renders. Same constant and the same
+  // sentence, so the two cannot come to say different things.
+  if (file.size > UPLOAD_MAX_BYTES) {
+    setState({
+      busy: "",
+      error:
+        `${file.name} is ${(file.size / 1e6).toFixed(0)} MB — the limit is ` +
+        `${Math.round(UPLOAD_MAX_BYTES / 1e6)} MB.`,
+    });
+    return;
+  }
   releaseCutUrl();
   cutUrl = URL.createObjectURL(file);
   cutVideo.src = cutUrl;
@@ -3407,6 +3422,14 @@ async function pickCutFile(file: File): Promise<void> {
     // OUT_DIR. The result buttons would also still be listing them, which
     // is the same bug wearing its harmless face.
     cutNames: [],
+    // And the base with them, which is the other half of the same rule.
+    // `cutNames` alone is not enough: with it cleared the next cut sends no
+    // `prev` at all, so a base left reading `interview` would write THIS
+    // file's audio over interview-1.mp3 while interview-2.mp3 and -3.mp3
+    // stay on the Desktop holding the last file's — two recordings under
+    // one name, indistinguishable by name, and nothing left to sweep them
+    // with. One retype per file is the price.
+    cutBase: "",
     error: "",
     busy: `Reading ${file.name}…`,
   });
@@ -3427,8 +3450,20 @@ async function pickCutFile(file: File): Promise<void> {
     // painting this file's envelope over someone else's clip.
     waveFor = "";
     setState({ cutSeconds: seconds, busy: `Uploading ${file.name}…` });
-    const { id } = await api.upload(file, true);
-    setState({ cutUploadId: id, busy: "" });
+    const { id, duration } = await api.upload(file, true);
+    // The strip's axis becomes the SERVER's number, not the decoder's, and
+    // the envelope keeps the decoder's. They are two measurements of one
+    // file and they disagree: `decodeAudioData` reports the samples it
+    // produced, `probeAudio` reports `format.duration`, and on an mp3 with
+    // no Xing header the decode came out LONGER — 6.034286 against
+    // 6.034250, measured. That is the failing direction, because `+ Range`
+    // clamps a fresh range's end to the axis exactly, `/api/cut` validates
+    // against `probeAudio`, and `isValidSegments` rejects `end > duration`
+    // with no epsilon. Any range added within five seconds of the end would
+    // 400 with "ranges must be sorted, non-overlapping and inside the file"
+    // — for a range the UI's own button produced. `min`, so a decode that
+    // comes out SHORTER still keeps its own honest axis.
+    setState({ cutUploadId: id, cutSeconds: Math.min(seconds, duration), busy: "" });
   } catch (err) {
     setState({ busy: "", error: err instanceof Error ? err.message : String(err) });
   }
@@ -3690,7 +3725,20 @@ function renderCutting(): Node[] {
     const list = el("div", { className: "cut-results" });
     for (const name of s.cutNames) {
       const show = el("button", { className: "btn-gray", textContent: name, disabled: busy });
-      show.onclick = () => void api.reveal(name);
+      // Not wrapped in guard(), and handled exactly the way the preview
+      // bar's "Show in Finder" is: revealing a file is not a phase-blocking
+      // action, so a success has to clear `error` itself — guard() is what
+      // normally does that — and a failure (the file deleted from the
+      // Desktop since the cut) has to reach a callout rather than an
+      // unhandled rejection in the console.
+      show.onclick = () => {
+        void api
+          .reveal(name)
+          .then(() => setState({ error: "" }))
+          .catch((err: unknown) => {
+            setState({ error: err instanceof Error ? err.message : String(err) });
+          });
+      };
       list.append(show);
     }
     rows.push(el("div", { className: "bar-row" }, list));

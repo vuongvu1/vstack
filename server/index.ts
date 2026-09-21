@@ -30,6 +30,7 @@ import {
   clipPath,
   concatClips,
   cutName,
+  cutStem,
   exportClip,
   firstFrame,
   isCutName,
@@ -1137,9 +1138,19 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       // would do nothing and say nothing. And behind `isCutName`, because
       // this is the one client string in the API that names a file to
       // delete.
+      //
+      // And SCOPED TO THIS BASE, which is the fifth property. `prev` is
+      // "everything the last cut wrote", and the last cut may have been
+      // written under a different name: cutting one file as `podcast` and
+      // then, without leaving the phase, as `ads` would otherwise unlink
+      // podcast-1.mp3 and podcast-2.mp3 the moment ads-1.mp3 landed — two
+      // named sets out of one recording is an ordinary thing to want, and
+      // `rm` is not the Trash. The sweep exists to supersede one cut's own
+      // output, never to tidy up after the session.
+      const stem = cutStem(base);
       const prev = Array.isArray(raw.prev) ? raw.prev : [];
       for (const stale of prev) {
-        if (!isCutName(stale) || names.includes(stale)) continue;
+        if (!isCutName(stale) || names.includes(stale) || !stale.startsWith(stem)) continue;
         await rm(outPath(stale), { force: true }).catch((err: unknown) => {
           console.warn(`vstack: could not remove the previous out/${stale}:`, err);
         });

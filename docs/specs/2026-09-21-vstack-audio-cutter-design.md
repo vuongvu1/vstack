@@ -2,7 +2,7 @@
 
 2026-09-21
 
-> **Amended 2026-09-21.** Five things below are stale against what shipped
+> **Amended 2026-09-21.** Seven things below are stale against what shipped
 > on `feat/audio-cutter`. `CLAUDE.md` carries the correct versions; this
 > block is so a session reading the spec first does not "fix" the code back
 > to it.
@@ -39,6 +39,18 @@
 >    `loadWave` caches against a clip URL, and without the reset the framing
 >    strip paints this upload's envelope over someone else's clip. Both are
 >    invariants in `CLAUDE.md`.
+> 6. **The sweep has FOUR properties, not the three "The sweep" lists.** It
+>    is also scoped to the base being written — a `prev` entry that does not
+>    start with `cutStem(base)` is left alone. Without it, cutting one file
+>    as `podcast` and then, without leaving the phase, as `ads` unlinks
+>    podcast-1.mp3 and podcast-2.mp3 the moment ads-1.mp3 lands. `prev` is
+>    "everything the last cut wrote", which is not the same set as "what
+>    this cut supersedes".
+> 7. **The "Errors" table's ffmpeg row was wrong and is corrected in
+>    place.** It claimed the next run's `prev` sweeps whatever a part-way
+>    failure left behind; on a FIRST cut `cutNames` is still empty, so no
+>    `prev` is sent and nothing is swept. The paragraph under the table is
+>    the accurate version.
 
 Supersedes nothing and extends nothing. It adds a **fifth journey** beside
 the short one, the long one, the lofi one and the chat-moments dead end:
@@ -310,7 +322,18 @@ feature that names a file to delete.
 | blank or over-long base | 400, `readTitle` |
 | no ranges, or a range outside the file | 400, `isValidSegments` |
 | more than `MAX_SEGMENTS` | the client caps the button; `isValidSegments` is the backstop |
-| ffmpeg fails on one range | the whole request fails with `toolError`'s stderr tail; files already written stay, and the next run's `prev` sweeps them |
+| ffmpeg fails on one range | the whole request fails with `toolError`'s stderr tail, and the ranges already renamed STAY on disk — see below |
+
+A **first** cut that fails part-way is the one case nothing cleans up. The
+loop renames each range as it finishes, so a failure on range 3 leaves
+`<slug>-1.mp3` and `<slug>-2.mp3` behind — and `cutNames` is still empty on
+the client, so the next attempt sends no `prev` and sweeps nothing. If that
+attempt then succeeds with only two ranges, the two files are simply
+overwritten and nothing is stranded; if it succeeds with one, `<slug>-2.mp3`
+survives holding the failed run's audio. Only a *later* cut under the same
+base is covered by the sweep. `inFlight` covers the partials, never the
+renamed files — by design, since the whole point of renaming last is that a
+finished file is finished.
 
 ## Testing
 
