@@ -3370,8 +3370,13 @@ function stopCutStrip(): void {
   cutStrip = null;
 }
 
+/** Idempotent, and that is what lets render() own it. The departure branch
+ *  runs on every render where the phase is not `cutting`, so without the
+ *  early return this would be a `removeAttribute` plus a `load()` on every
+ *  render of every other phase for the rest of the session. */
 function releaseCutUrl(): void {
-  if (cutUrl !== "") URL.revokeObjectURL(cutUrl);
+  if (cutUrl === "") return;
+  URL.revokeObjectURL(cutUrl);
   cutUrl = "";
   cutVideo.removeAttribute("src");
   cutVideo.load();
@@ -3394,6 +3399,14 @@ async function pickCutFile(file: File): Promise<void> {
     cutUploadId: "",
     cutRanges: [],
     cutSeconds: 0,
+    // Cleared with the rest, and this one is not cosmetic: `cutNames` is
+    // what the next cut sends as `prev`, and `/api/cut` unlinks every name
+    // in `prev` that the new run did not just write. Carried across a file
+    // change it names the PREVIOUS file's finished mp3s — so cutting a
+    // second file would silently delete the first file's output from
+    // OUT_DIR. The result buttons would also still be listing them, which
+    // is the same bug wearing its harmless face.
+    cutNames: [],
     error: "",
     busy: `Reading ${file.name}…`,
   });
@@ -3434,7 +3447,12 @@ function buildCutStrip(span: number, ranges: Segment[]): { el: HTMLElement; stop
   const canvas = el("canvas");
   wave.append(canvas);
   for (const [i, r] of ranges.entries()) {
-    const band = el("div", { className: "wave-cut" });
+    // `wave-keep`, NOT the framing strip's `wave-cut`: the two strips mean
+    // opposite things by a shaded band. On the framing strip a band is
+    // material the export DROPS; here it is the only material the export
+    // keeps. Sharing the recipe painted "this is excluded" grey over
+    // exactly the audio that was about to become a file.
+    const band = el("div", { className: "wave-keep" });
     band.style.left = `${(100 * r.start) / span}%`;
     band.style.width = `${(100 * (r.end - r.start)) / span}%`;
     if (i === activeRange) band.classList.add("is-active");
@@ -3467,7 +3485,9 @@ function buildCutStrip(span: number, ranges: Segment[]): { el: HTMLElement; stop
 function renderCutting(): Node[] {
   const s = getState();
   const busy = s.busy !== "";
-  cutVideo.hidden = s.cutFile === null;
+  // No `cutVideo.hidden` here: render() sets it from the same two values
+  // earlier in this very pass, the way it owns every other long-lived
+  // media node's visibility.
 
   const pick = el("input", { type: "file", accept: "audio/*,video/*", disabled: busy });
   pick.onchange = () => {
@@ -3475,17 +3495,28 @@ function renderCutting(): Node[] {
     if (file) void pickCutFile(file);
   };
 
-  /** Leaving the phase. Both teardowns by hand rather than through render():
-   *  `stopCutStrip` is also called from render()'s departure branch, but the
-   *  object URL has no such owner — nothing else knows this phase held one. */
+  /** Leaving the phase. Both teardowns are mirrored in render()'s departure
+   *  branch, which is what covers a future route out of this phase that
+   *  never reaches this button — both are idempotent, so running them twice
+   *  costs nothing and running them here keeps the release synchronous with
+   *  the click rather than one render later.
+   *
+   *  `cutNames` goes with the file: it is the `prev` the next cut sends, and
+   *  `/api/cut` unlinks every name in it the new run did not write. */
   const leave = () => {
     stopCutStrip();
     releaseCutUrl();
-    setState({ phase: "idle", cutFile: null, cutRanges: [], error: "" });
+    setState({ phase: "idle", cutFile: null, cutRanges: [], cutNames: [], error: "" });
   };
 
   const rows: Node[] = [el("div", { className: "bar-row" }, pick)];
   if (s.cutFile === null || s.cutSeconds === 0) {
+    // The strip's own stop, for the branch that builds no replacement.
+    // Picking a second file writes `cutSeconds: 0`, so this branch is
+    // reached with the PREVIOUS file's loop still running against a node
+    // that is about to be detached — and if `decodeTrack` then throws, no
+    // later render ever builds the strip that would have stopped it.
+    stopCutStrip();
     const back = el("button", { className: "btn-gray", textContent: "← Back", disabled: busy });
     back.onclick = leave;
     rows.push(el("div", { className: "bar-row" }, back));
@@ -3518,7 +3549,16 @@ function renderCutting(): Node[] {
   const setMarkAt = (which: "start" | "end") => () => {
     const cur = getState();
     const seg = cur.cutRanges[activeRange];
-    if (seg === undefined) return;
+    if (seg === undefined) {
+      // Unreachable — both buttons are disabled at zero ranges and `Remove`
+      // re-clamps the index — but it says so rather than doing nothing. A
+      // marking button that silently no-ops is the exact failure the two
+      // refusals below carry messages for; this one is the `?? fallback`
+      // `noUncheckedIndexedAccess` asks for, and it costs one line to make
+      // it honest too.
+      setState({ error: "No range is selected." });
+      return;
+    }
     // `editMark(seg, which, t, duration, endAimed)` returns the edited
     // Segment or `null` when the edit would leave `end <= start` — a refusal
     // rather than a silent drop, because `normalize` DELETES such a range and
@@ -3765,7 +3805,16 @@ function render(): void {
   }
   // The departure case — see the comment on `cutStrip`. renderCutting only
   // runs while the phase is `cutting`, so nothing else ever stops this loop.
-  if (s.phase !== "cutting") stopCutStrip();
+  //
+  // The object URL is released here as well, so the teardown is driven by
+  // the phase rather than by one button: `← Back` is the only way out
+  // today, and a route added later that just sets `phase` would otherwise
+  // leak the blob for the life of the tab. Both calls are idempotent, which
+  // is what makes running them on every render of every other phase free.
+  if (s.phase !== "cutting") {
+    stopCutStrip();
+    releaseCutUrl();
+  }
   // Same reasoning as sourceIframe above, but a <video> tolerates
   // detach/reattach fine — it just has no reason to move once it lives in
   // the persistent sourceSlot.

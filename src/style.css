@@ -740,13 +740,28 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   pointer-events: none;
 }
 
-/* Which range Set Start / Set End are aiming at, in the cutting phase. An
-   outline rather than a different fill: the band is already the strip's
-   one shaded region, and a second shade beside it would read as a second
+/* A KEPT range, in the cutting phase — deliberately not `.wave-cut`. The
+   two strips mean opposite things by a shaded band: on the framing strip
+   it is footage the export drops, here it is the only audio the export
+   writes. Grass because it is the one scale free for it — `red` is this
+   app's exclusion and error colour, `blue` is the accent the playhead and
+   the handles already own, and grass was brought in for crop box 3. Like
+   `.wave-cut` it sits OVER the waveform at alpha, so the phrase the range
+   is aimed at stays readable, and takes no pointer events so the strip's
+   own click-to-seek still works through it. */
+.wave-keep {
+  position: absolute;
+  inset-block: 0;
+  background: var(--grass-a7);
+  pointer-events: none;
+}
+
+/* Which range Set Start / Set End are aiming at. An outline rather than a
+   different fill: a second shade beside the first would read as a second
    kind of range rather than as "this one". `outline-offset` pulls it
    inside, so a range flush to either end of the track is not clipped by
    `.wave`'s own `overflow: hidden`. */
-.wave-cut.is-active {
+.wave-keep.is-active {
   outline: 2px solid var(--blue-9);
   outline-offset: -2px;
 }
