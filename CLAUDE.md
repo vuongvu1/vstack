@@ -59,7 +59,18 @@ the track runs; a bundled mark spins in the top-right corner of every one
 of them, and a band of frequency bars runs along the bottom.
 It shares `preview`, `/out/`, the publish panel and `media/uploads/` with
 the long journey and nothing else — the long journey's parts arrive on
-`/api/upload`, every one of the lofi journey's on `/api/upload-audio`. No
+`/api/upload`, every one of the lofi journey's on `/api/upload-audio`, plus
+`docs/specs/2026-09-21-vstack-audio-cutter-design.md`, which supersedes
+nothing and extends nothing and adds a FIFTH journey that is also a second
+dead end: `idle` → `cutting` → `idle`, where an uploaded audio or video
+file is marked into ranges on a waveform strip and each range comes back as
+its own `.mp3` in `OUT_DIR`, revealed in Finder. It reaches no other phase,
+claims no `mode`, and never touches `framing`, `preview`, `/api/export`,
+`/api/publish` or `/out/` — that isolation is the design rather than an
+accident, and it is what keeps every invariant the other four journeys rest
+on out of scope there. It borrows `media/uploads/` and `/api/upload-audio`
+from the lofi journey and `src/segments.ts` from the trimming phase, and
+that is the whole of what it shares. No
 spec covers the speech engine: every one of them
 describes macOS `say` and its `Linh` voice, which this codebase no longer
 uses at all (see "the voice" below).
@@ -73,7 +84,7 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 409 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 421 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -84,7 +95,13 @@ Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH, the speech venv from
 `pnpm tts-setup`, and all seven bundled assets in `server/assets/`. The server checks
 all of it at boot and exits with an install hint if any is missing —
 `checkStarter` owns the short journey's four, `checkLongform` the long
-journey's one, and `checkLofi` the lofi journey's two. Nothing
+journey's one, and `checkLofi` the lofi journey's two. The cutter adds
+nothing to that list: it bundles no asset, and its one external requirement
+is `libmp3lame`, which is present in this machine's Homebrew ffmpeg
+(verified). A missing *encoder* fails the first render immediately with
+ffmpeg's own message, where a missing *asset* fails halfway through one —
+which is the difference the boot checks exist for. `ponytail:` add it the
+day a second machine runs this. Nothing
 here needs macOS `say` any more — the starter screen's voice is VieNeu-TTS,
 and the only remaining macOS dependency is `afplay` in `pnpm voices` and
 `open -R` in `/api/reveal`.
@@ -94,7 +111,8 @@ and the only remaining macOS dependency is `afplay` in `pnpm voices` and
 ```
 server/errors.ts   HttpError (status + message), toolError (stderr tail)
 server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
-                   outName/outPath, isOutName, stillPath/thumbPath/
+                   outName/outPath, isOutName, cutName/isCutName,
+                   stillPath/thumbPath/
                    removeExport,
                    UPLOADS_DIR/uploadPath, isUploadId,
                    probeFile, probeAudio, ConcatPart/
@@ -111,6 +129,8 @@ server/lofi.ts     WIDE, FADE, CRACKLE_PATH, LOGO_PATH/LOGO_RECT/
                    lofi journey's one ffmpeg pass — one background, still
                    or a looped GIF, for the whole track, with every speech
                    mixed in as AUDIO ONLY)
+server/cut.ts      MP3_QUALITY, cutMp3 (the cutter's one ffmpeg pass, run
+                   once per range)
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
                    starterDuration, checkStarter, installedVoices,
                    knownVoices, synthesize, speak, prependStarter (the title
@@ -139,7 +159,7 @@ server/ytdlp.ts    videoIdFrom, probe, fetchWindow, parseClipName, listClips
 server/chat.ts     ChatMsg/Moment, BIN/WIN/LAG/TOP/MIN_GAP/SKIP_HEAD,
                    fetchChat (chat replay -> media/<id>/chat.json),
                    parseChat, peaks (the scorer)
-server/index.ts    15 routes (14 POST + GET /out/<name>), serveOut range
+server/index.ts    16 routes (15 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
@@ -207,7 +227,16 @@ imports `probeFile` and `probeAudio` from `ffmpeg.ts` and nothing else. It
 declares its own `FADE` and re-derives its own asset path rather than
 importing either from `longform.ts`, which is its SIBLING rather than a
 layer below it — the same call `longform.ts` already made against
-`starter.ts` for `~/.vstack/`. `src/lofi.ts` sits at the very bottom beside
+`starter.ts` for `~/.vstack/`. `cut.ts` sits beside all four of them and is
+the thinnest of the set: every path is the caller's, and it imports nothing
+from `ffmpeg.ts` at all — not even `probeAudio`, because the route probes
+before it calls in. The spec says it imports `probeAudio`; the shipped
+module does not, and that direction is the one to keep. Its only imports are
+`toolError` from `errors.ts` and `type Segment` from `src/segments.ts`, the
+same reach across the client/server line `ytdlp.ts` already makes for
+`geometry.ts`'s `PAD` — which is also what makes the cutter's ranges the
+trimming phase's ranges by construction rather than by resemblance.
+`src/lofi.ts` sits at the very bottom beside
 `geometry.ts` and `segments.ts` and imports nothing — a music track's own
 loudness envelope and a speech's own length are enough to place it, with no
 need to reach into `layout.ts`, `custom.ts` or `frame.ts`.
@@ -216,8 +245,8 @@ its cache and imports nothing else, deliberately not `ytdlp.ts`, so
 `videoIdFrom` stays the one trust boundary that decides whether a subprocess
 spawns.
 
-Seven phases: six of them across three journeys that share the last one, plus
-one dead end: `idle` (URL) →
+Eight phases: six of them across three journeys that share the last one, plus
+two dead ends: `idle` (URL) →
 `trimming` (YouTube iframe, mark start/end, no download) → `framing` (real
 `<video>` of the fetched window, crop boxes, canvas composite, export) →
 `preview` (the finished file played back on the right, with the upload's
@@ -261,6 +290,30 @@ took.
 
 `idle` → `moments` → `idle` is a fourth way out of `idle` and a dead end,
 sharing no phase with any journey.
+
+`idle` → `cutting` → `idle` is the fifth way out and the second dead end: an
+uploaded audio or video file, a waveform strip, up to `MAX_SEGMENTS` marked
+ranges, and one `.mp3` per range in `OUT_DIR`. Like `moments` it **claims no
+`mode`** — the three rendering journeys all set one because they meet at
+`preview` and a stale value misclassifies an upload there, and this journey
+reaches neither `preview` nor `/api/publish`, so there is nothing to claim
+and nothing downstream that could read it. That absence is why the status
+row's three probed badges exclude `cutting` explicitly rather than
+inheriting the `mode === "short"` test: on a fresh session `mode` is still
+`"short"`, and those badges would describe some other video entirely.
+`cutVideo` is a persistent `<video controls>` child of `sourceSlot` under
+the same never-empty rule as every other long-lived node; there is no
+`.out` involvement at all, because this journey produces nothing to play
+back. Its `src` is a local `URL.createObjectURL(file)`, not the uploaded
+copy: scrubbing is live before the upload finishes (only the Cut button
+waits on the id), and there is no second GET route to write — `/media/` is
+only reachable in dev because Vite serves the project root, and relying on
+that is what forced `serveOut` into existence in the other direction. The
+URL is revoked in `releaseCutUrl`, and `render()` calls it on every render
+where `phase !== "cutting"` rather than leaving it to the `← Back` button,
+so a route out of this phase added later cannot leak the blob for the life
+of the tab. It is idempotent, which is what makes running it on every
+render of every other phase free.
 
 ## Invariants — breaking these is silent, not loud
 
@@ -589,6 +642,17 @@ returns *after* normalising: dragging a mark into a neighbour merges the two,
 so the active index can point at an untouched segment once the merge lands,
 even though the edited range's own identity survives inside the merged one.
 
+The cutting phase's `+ Range` and `Set Start`/`Set End` make the identical
+calls against `cutRanges`, with `activeRange` and `cutAimedEnds` as its own
+copies of `activeSegment` and `aimed` — **value-keyed, never index-keyed**,
+for the reason above. Marking there is the trimming phase's marking *by
+construction* rather than by resemblance: no range arithmetic was written
+for the feature, so the one thing that could silently differ between the two
+phases — what a merge does to the part the user is aiming at — cannot. The
+chip row is what makes `activeRange` reachable: without it there is no way
+to re-aim which range the two Set buttons write to, and the phase silently
+only ever edits whichever range was added last.
+
 **`renderStrip`'s rAF loop is stopped in two places, and both are
 load-bearing.** `renderTrimming` stops the old loop before building its
 replacement — the ordinary re-render case. `render()` stops it and nulls the
@@ -598,6 +662,16 @@ The normal flow (trim once, then frame, export, preview) never re-enters
 trimming, so nothing else ever calls the departure stop — without it the
 loop keeps `postMessage`-ing a hidden YouTube iframe every frame for the rest
 of the session, not just the rest of this visit to trimming.
+
+`cutStrip` is the same rule with a THIRD stop, and that third one is the
+non-obvious half. `renderCutting` stops the old loop before building its
+replacement and `render()` stops it whenever `phase !== "cutting"` — but
+`renderCutting` also returns early, before it builds any strip, whenever
+there is no file or `cutSeconds` is still 0. Picking a second file writes
+`cutSeconds: 0`, so that branch is reached with the PREVIOUS file's loop
+still running against a node about to be detached, and if `decodeTrack`
+then throws, no later render ever builds the strip that would have stopped
+it. Hence the `stopCutStrip()` inside the early-return branch as well.
 
 **`setMark` refuses an edit that would leave `end <= start`, rather than
 letting `normalize` handle it — but a start that overshoots an end the user
@@ -1139,6 +1213,76 @@ character — a levelled record reads as continuous surface noise rather than
 the occasional pop — and dropping the filter from the two taps is how to
 get the raw asset back.
 
+**`OUT_NAME` is not widened for the cutter; `CUT_NAME` sits beside it.** The
+long-form journey's invariant says there is nothing to widen `OUT_NAME` for,
+and that still holds — the cutter needs a *different* shape, not a looser
+one. Two anchored patterns, each matching exactly what its own producer can
+emit, is a strictly smaller surface than one pattern loose enough for both,
+and since `OUT_DIR` lives under `$HOME` what a loose pattern reaches is the
+user's home directory rather than the repo. `/api/reveal` is the only route
+that accepts either (`isOutName(name) || isCutName(name)`, both still
+followed by an `existsSync` in `OUT_DIR`); `/api/publish` and `/out/` are
+deliberately left untaught about `.mp3`, because nothing in this journey
+produces something to publish or to stream back. `cutName` lives beside
+`outName` in `server/ffmpeg.ts` rather than in `cut.ts` for the same reason
+`isCutName` does: it resolves against `OUT_DIR`, which `cut.ts` does not
+know about. `server/ffmpeg.test.ts` pins that a `.mp4` fails `isCutName` and
+an `.mp3` fails `isOutName` — the pair of assertions that fail if anyone
+ever merges the two.
+
+**`/api/cut`'s sweep is `/api/export`'s `prev`, indexed — and the index is
+what makes it necessary at all.** `<slug>-<n>.mp3` renumbers when a range is
+inserted: cut four ranges, delete the second, cut again, and `<slug>-4.mp3`
+is left on the Desktop describing audio from the previous attempt,
+indistinguishable by name from a current one. So the client sends the
+previous run's names as `prev: string[]` and the route deletes them **after**
+every rename (a failed cut must leave the previous run intact), **skipping
+`prev ∩ names`** (otherwise it unlinks a file this very run just wrote — the
+defect `/api/export` guards with `prev === name`), **resolved through
+`outPath`** (`rm` on a bare name resolves against `process.cwd()` and
+`force: true` swallows the resulting ENOENT, so the sweep does nothing and
+says nothing — the `/api/lofi` footgun, written down), and **behind
+`isCutName`**, because this is the one client string in this feature that
+names a file to delete. `prev` is in-memory, like `/api/export`'s: a reload
+between two cuts strands the older set, the accepted cost of not persisting
+a field whose only job is naming files to destroy.
+
+**`cutNames` must be cleared when the file changes, or the sweep deletes the
+PREVIOUS file's mp3s.** `cutNames` is what the next cut sends as `prev`, and
+`/api/cut` unlinks every name in `prev` the new run did not itself write.
+Carried across a file change it names the finished output of the file before
+it, so cutting a second file silently destroys the first file's mp3s in
+`OUT_DIR` — the ordinary "cut two files in a row" path, with no error and
+nothing on screen to notice. `pickCutFile` clears it along with the ranges,
+and `leave()` clears it on the way out. The results list going stale is the
+same bug wearing its harmless face: if those buttons still name the old
+files, the sweep is still aimed at them.
+
+**The cutter's strip axis is the file's own duration.** No window, no `PAD`,
+no stitch — `span === waveSeconds`, so `bucketAt` reduces exactly to
+`floor(x * buckets / w)`, the identity `src/waveform.test.ts` already pins.
+There is nothing in this phase that could reproduce the stitch drift the
+framing strip's mapping exists to fix, which is why the strip needs no
+mapping of its own.
+
+**The cutter writes the module-scoped `wavePeaks`/`waveSeconds` and must
+therefore reset `waveFor`.** `drawWave` reads those two rather than taking
+an envelope — deliberate, `ponytail:`-marked, because the journeys are
+mutually exclusive and a second envelope field is a second thing to keep in
+sync for no behaviour. But `loadWave` caches on the clip URL it last
+decoded, and `pickCutFile` has just overwritten what that key describes, so
+it sets `waveFor = ""`. Without it the framing strip skips its re-decode and
+paints this upload's envelope over someone else's clip — a waveform that
+looks like a waveform and describes the wrong audio.
+
+**A kept range is `.wave-keep` (grass), never the framing strip's
+`.wave-cut`.** The two strips mean opposite things by a shaded band: on the
+framing strip a band is material the export DROPS, here it is the only
+material the export writes. Sharing the recipe paints "this is excluded"
+grey over exactly the audio that is about to become a file. `red` was
+already this app's exclusion-and-error colour and `blue` is the accent the
+playhead owns, so grass is the one scale free for it.
+
 ## Gotchas that each cost real time
 
 **Never empty `sourceSlot` or `outSlot`.** They hold the trimming iframe,
@@ -1610,6 +1754,50 @@ fields' already is. The `/api/lofi` route, the panel, and the waveform's
 draggable markers have no tests, like the rest of the network and DOM
 surface.
 
+`server/cut.test.ts` shells real ffmpeg against a synthetic fixture of three
+back-to-back tones — 440 Hz, 1760 Hz, 440 Hz, two seconds each — and its
+four tests pin the range-to-audio MAPPING, which is their real job. The
+**frequency** assertion is the load-bearing half and the duration one is
+not: a range that maps to the wrong part of the input still comes out the
+right length, so only the tone says where the audio came from, and 1760 Hz
+lives in the middle two seconds alone. The first and third bands repeat
+440 Hz on purpose, so an off-by-one leg lands measurably wrong in either
+direction. The four are the middle range (both duration and tone), the head
+range (tone the other way round), a range running to the very end (where a
+duration assertion would otherwise over-report), and a missing input
+reporting ffmpeg's own stderr through `toolError`. `beforeAll` carries the
+180s timeout `server/longform.test.ts`'s and `server/lofi.test.ts`'s do, for
+the identical reason.
+
+**Do NOT claim the `-ss`-before-`-i` ordering is mutation-tested here — it
+was measured and it is not.** Moving `-ss` after `-i` was run against this
+fixture and all four tests still passed, verified three ways including two
+raw ffmpeg invocations outside any test code: identical mean dB and
+identical duration on both orders. Homebrew ffmpeg 8.1.1 defaults
+`-accurate_seek` on for input seeking, and a six-second indexed M4A has a
+sample-accurate seek index, so "decode from the start and discard" lands on
+exactly the same sample as an index jump. `cutMp3` keeps the order anyway,
+because it is the convention `exportClip`'s mask input and `stackWide`'s
+per-part trims both hold and because what it protects against is real —
+containers with no accurate seek index, and the decode-from-zero cost on a
+long input — just not anything this fixture can demonstrate. Reproducing it
+as a *correctness* failure would need a much longer or non-indexed source,
+which is more than a real-ffmpeg unit test's budget here; the measurements
+are in `.superpowers/sdd/2026-09-21-vstack-audio-cutter/task-2-report.md`.
+
+`server/ffmpeg.test.ts` gains `cutName`'s seven cases with the exhaustive
+traversal treatment `isOutName` and `videoIdFrom` get — what `cutName`
+emits, traversal, everything `slugify` could not have produced (uppercase,
+diacritics, leading and trailing dashes, spaces, doubled dashes, a missing
+index), non-strings, and the pair that fails if the two predicates are ever
+merged: a `.mp4` is not an `isCutName` and an `.mp3` is not an `isOutName`.
+`src/state.test.ts` gains the five `cut*` fields' persistence exclusion,
+mutation-tested the way the lofi fields' already is. `src/segments.ts`
+needed no new tests — the feature adds no rule to it, which was the point of
+spending its ranges through that module. The `cutting` panel, the strip, the
+chip row, the object URL's lifecycle, `/api/cut`'s HTTP surface and `open -R`
+have no tests, like the rest of the network and DOM surface.
+
 DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by design — vitest runs `environment: "node"` here and those behaviours are verified by hand.
 
 ## Environment notes for agents
@@ -1733,7 +1921,11 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
   `.mp4` and a `<name>.thumb.jpg` sidecar instead, the picked picture rather
   than a derived frame. Nothing prunes either shape — deliberately the
   user's to clear, which is why it sits on the Desktop rather than in the
-  repo.
+  repo. The cutter writes a third shape into the same directory, N bare
+  `.mp3`s with no sidecar at all, and it is the only producer here that
+  ever *removes* something from it — `/api/cut`'s `prev` sweep, which is
+  forced on it by the index in the name. Nothing else in the directory can
+  be touched by that sweep: every name goes through `isCutName` first.
 - Publishing needs `~/.vstack/youtube-client.json` (a **Desktop app** OAuth
   client from Google Cloud Console, with YouTube Data API v3 enabled) and a
   token from `pnpm youtube-auth`. Missing either is a boot *warning*, not a
@@ -1796,7 +1988,11 @@ they actually are — ffmpeg dispatches on content rather than the `.mp4`
 extension, so an .mp3 in a `.mp4` name needs no exception anywhere in
 `ffmpeg.ts`, and neither does the `.mp3` name the crackle asset wears over
 AAC. Re-rendering a lofi mix after a title or marker fix is the same
-argument against eviction, doubled.
+argument against eviction, doubled. The cutter is a THIRD door onto the
+same directory and the same route, for the same reason: `probeAudio` is
+right for both an audio file and a video one, where `probeFile` would
+refuse the first outright, and it is already the gate that refuses a file
+with no audio stream — which here could only produce silent mp3s.
 
 **`/api/upload` destroys the socket past `UPLOAD_MAX_BYTES` rather than
 answering.** Replying politely means having read the whole body first, which
