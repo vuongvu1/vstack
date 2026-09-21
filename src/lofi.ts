@@ -1,11 +1,14 @@
 /** Where a speech goes in a music track, found from the track's own
  *  loudness envelope.
  *
- *  Imports NOTHING, and sits at the bottom of the client layering beside
- *  `geometry.ts` and `segments.ts`. That is what lets vitest's `node`
- *  environment test it at all — the caller owns the decode — and what would
- *  let the server import it directly the day detection has to move, the way
- *  `ytdlp.ts` already reaches across for `geometry.ts`'s `PAD`. */
+ *  Imports only `defaults.ts`, which itself imports nothing, and sits at the
+ *  bottom of the client layering beside `geometry.ts` and `segments.ts`.
+ *  That is what lets vitest's `node` environment test it at all — the caller
+ *  owns the decode — and what would let the server import it directly the
+ *  day detection has to move, the way `ytdlp.ts` already reaches across for
+ *  `geometry.ts`'s `PAD`. */
+
+import { MAX_DROPS } from "./defaults.ts";
 
 /** One uploaded speech, as the panel knows it. `seconds` is what
  *  `/api/upload-audio` probed; `name` is the local filename, for the error
@@ -242,4 +245,107 @@ export function orderByPrefix<T extends { name: string }>(
   }
   const pinned = pinnedAt === -1 ? undefined : items[pinnedAt];
   return pinned === undefined ? rest : [pinned, ...rest];
+}
+
+/** Where each speech goes when it RECURS through a long track, or the first
+ *  reason one of them cannot.
+ *
+ *  **When `spacing` is 0 or less this is `troughs`, exactly.** That identity
+ *  is load-bearing rather than tidy: it is what keeps every `troughs` test
+ *  in `src/lofi.test.ts` — the longest-first ordering, MIN_GAP, the
+ *  SKIP_HEAD/SKIP_TAIL boundaries, the by-name refusal — describing live
+ *  behaviour instead of an orphaned branch. The same shape `bucketAt` holds
+ *  against `floor(x * buckets / w)` and `trims` holds against the empty
+ *  array. Mutation-tested: breaking the delegation fails the first test
+ *  above and nothing else.
+ *
+ *  With a spacing, the timeline is cut into slots and each slot takes one
+ *  drop. Inside a slot the position is still the QUIETEST available, scored
+ *  by the same global-median baseline `troughs` uses, so a drop lands on a
+ *  breakdown rather than on a downbeat. Speeches cycle in list order, which
+ *  is the order `orderByPrefix` has already resolved — so a `1_` speech
+ *  opens the render.
+ *
+ *  Note this does NOT sort longest-first the way `troughs` does. There is
+ *  nothing to ration: a slot's occupant is decided by the cycle, not
+ *  competed for, so the scarcity argument that forces that ordering does not
+ *  arise here. */
+export function fill(
+  env: Float32Array,
+  seconds: number,
+  speeches: Speech[],
+  spacing: number,
+): TroughResult {
+  if (!(spacing > 0)) return troughs(env, seconds, speeches);
+  if (speeches.length === 0) return { placements: [] };
+  if (!(seconds > 0) || env.length === 0) {
+    return { error: "That track has no audio to measure." };
+  }
+  // Below MIN_GAP two drops read as one long interruption regardless of what
+  // was typed, so the floor wins over the field.
+  const step = Math.max(spacing, MIN_GAP);
+  const perSec = env.length / seconds;
+  const base = Math.max(median(env), 1e-6);
+  const placements: Placement[] = [];
+  // The previous drop's own end, carried across iterations. Consecutive
+  // slots abut (slot k's window can run right up to slot k+1's own centre
+  // minus half a step), so without this two drops can land back to back and
+  // overlap — which `/api/lofi`'s own "Two speeches overlap" validator would
+  // then reject the whole render for.
+  let prevEnd = 0;
+
+  for (let k = 0; k < MAX_DROPS; k++) {
+    const centre = SKIP_HEAD + k * step;
+    const speech = speeches[k % speeches.length];
+    if (speech === undefined) break;
+    const need = speech.seconds + 2 * FADE;
+    if (need > step) {
+      return {
+        error:
+          `${speech.name} (${Math.round(speech.seconds)}s) does not fit in a ` +
+          `${Math.round(step)}s slot.`,
+      };
+    }
+    // The slot's own half-step either side, intersected with the track's
+    // bounds and with the previous drop's own end. `hi` subtracts `need`
+    // because the window has to END inside.
+    const lo = Math.max(SKIP_HEAD, centre - step / 2, prevEnd + MIN_GAP);
+    const hi = Math.min(centre + step / 2, seconds - SKIP_TAIL - need);
+    if (lo > hi) {
+      // Past the end of the track is where the loop stops, not an error —
+      // the render simply holds as many slots as it holds. A FIRST slot that
+      // does not fit is the real failure, and it is the refusal below.
+      if (k > 0) break;
+      return {
+        error:
+          `${speech.name} (${Math.round(speech.seconds)}s) does not fit in a ` +
+          `${Math.round(step)}s slot.`,
+      };
+    }
+    let bestAt = -1;
+    let bestScore = Infinity;
+    // Stepped by BUCKET INDEX, never an accumulated float stride — the same
+    // lesson `troughs` and `peaks()` both record.
+    for (let b = Math.ceil(lo * perSec); b <= Math.floor(hi * perSec); b++) {
+      const from = b / perSec;
+      const score = windowMean(env, b, Math.ceil((from + need) * perSec)) / base;
+      if (score < bestScore) {
+        bestScore = score;
+        bestAt = from;
+      }
+    }
+    if (bestAt < 0) {
+      if (k > 0) break;
+      return {
+        error:
+          `${speech.name} (${Math.round(speech.seconds)}s) does not fit in a ` +
+          `${Math.round(step)}s slot.`,
+      };
+    }
+    prevEnd = bestAt + need;
+    placements.push({ id: speech.id, at: bestAt + FADE });
+  }
+
+  placements.sort((a, b) => a.at - b.at);
+  return { placements };
 }

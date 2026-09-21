@@ -86,11 +86,32 @@ export const UPLOAD_MAX_BYTES = 512 << 20;
  *  filter graph grows five legs per part. */
 export const MAX_PARTS = 20;
 
-/** The most speeches one lofi render will take.
+/** The most speech FILES one lofi render will take.
  *
- *  Shared client and server, like `MAX_PARTS`: the panel refuses the
- *  eleventh file before it is uploaded, and `/api/lofi` refuses it again
- *  because the route is reachable without the panel. Eight cut-ins over one
- *  track is already a lot of interruption; the cap is a sanity bound on the
- *  filter graph's size, not a judgement about music. */
+ *  Files, not drops. Those were the same number until a speech could repeat;
+ *  now this bounds how many distinct recordings the panel accepts and
+ *  `MAX_DROPS` bounds how many times they are heard. The distinction is what
+ *  keeps the ffmpeg graph's INPUT count bounded by this while its LEG count
+ *  grows with `MAX_DROPS` — one input per file, `asplit` into its drops, the
+ *  same shape the crackle leg already has.
+ *
+ *  Shared client and server, like `MAX_PARTS`: the panel refuses the ninth
+ *  file before it is uploaded, and `/api/lofi` refuses it again because the
+ *  route is reachable without the panel. */
 export const MAX_SPEECHES = 8;
+
+/** The most speech placements one render will carry.
+ *
+ *  A sanity bound on the filter graph's size, not a judgement about pacing:
+ *  every drop is an `asplit` tap plus an `atrim`, an `adelay` and a crackle
+ *  boost leg with two fades. Three hours at the default five-minute spacing
+ *  is 36, so this leaves room without pretending there is no bound. */
+export const MAX_DROPS = 120;
+
+/** The most music tracks one render will concatenate.
+ *
+ *  Sixty four-minute tracks is four hours, past anything this is for. The
+ *  bound is on the CONCAT PRE-PASS's input count, which is the one place in
+ *  this journey that still grows with the music list — the main graph takes
+ *  the pre-pass's single output whatever the list's length. */
+export const MAX_TRACKS = 60;

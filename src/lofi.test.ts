@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { BUCKETS_PER_SEC, FADE, MIN_GAP, SKIP_HEAD, SKIP_TAIL, clampPlacement, orderByPrefix, troughs } from "./lofi.ts";
+import { BUCKETS_PER_SEC, FADE, MIN_GAP, SKIP_HEAD, SKIP_TAIL, clampPlacement, fill, orderByPrefix, troughs } from "./lofi.ts";
 import type { Placement, Speech } from "./lofi.ts";
+import { MAX_DROPS } from "./defaults.ts";
 
 /** An envelope at `loud` everywhere except inside `holes`, which sit at
  *  `quiet`. Built at BUCKETS_PER_SEC so the tests speak in seconds. */
@@ -247,5 +248,108 @@ describe("orderByPrefix", () => {
   it("handles empty and single-item lists", () => {
     expect(orderByPrefix([], () => 0)).toEqual([]);
     expect(orderByPrefix(named("1_only"), () => 0).map((x) => x.name)).toEqual(["1_only"]);
+  });
+});
+
+describe("fill", () => {
+  const speech = (id: string, seconds: number): Speech => ({ id, name: `${id}.mp3`, seconds });
+
+  it("reduces exactly to troughs when spacing is 0", () => {
+    // THE identity. This is what keeps every troughs test above describing
+    // live behaviour rather than an orphaned branch.
+    const env = envOf(120, [{ from: 60, to: 80 }]);
+    const speeches = [speech("a", 6), speech("b", 4)];
+    expect(fill(env, 120, speeches, 0)).toEqual(troughs(env, 120, speeches));
+  });
+
+  it("reduces to troughs for a negative spacing too", () => {
+    const env = envOf(120, [{ from: 60, to: 80 }]);
+    const speeches = [speech("a", 6)];
+    expect(fill(env, 120, speeches, -1)).toEqual(troughs(env, 120, speeches));
+  });
+
+  it("drops a speech once per slot across the track", () => {
+    // 600s, spacing 120 => slots centred at 15, 135, 255, 375, 495, 615. The
+    // sixth still fits: hi = min(675, 600 - 10 - 7) = 583, lo = 555, and
+    // 555 <= 583. The seventh (centre 735) does not, so the loop stops at 6.
+    const env = envOf(600, []);
+    const found = fill(env, 600, [speech("a", 6)], 120);
+    if ("error" in found) throw new Error(found.error);
+    expect(found.placements).toHaveLength(6);
+  });
+
+  it("cycles the speech list across slots, in list order", () => {
+    const env = envOf(600, []);
+    const found = fill(env, 600, [speech("a", 6), speech("b", 6)], 120);
+    if ("error" in found) throw new Error(found.error);
+    expect(found.placements.map((p) => p.id)).toEqual(["a", "b", "a", "b", "a", "b"]);
+  });
+
+  it("returns placements in time order", () => {
+    const env = envOf(600, []);
+    const found = fill(env, 600, [speech("a", 6)], 120);
+    if ("error" in found) throw new Error(found.error);
+    const ats = found.placements.map((p) => p.at);
+    expect([...ats].sort((x, y) => x - y)).toEqual(ats);
+  });
+
+  it("clamps a spacing below MIN_GAP up to MIN_GAP", () => {
+    const env = envOf(600, []);
+    const tight = fill(env, 600, [speech("a", 2)], 1);
+    const floored = fill(env, 600, [speech("a", 2)], MIN_GAP);
+    expect(tight).toEqual(floored);
+  });
+
+  it("never returns more than MAX_DROPS placements", () => {
+    const env = envOf(20000, []);
+    const found = fill(env, 20000, [speech("a", 2)], MIN_GAP);
+    if ("error" in found) throw new Error(found.error);
+    expect(found.placements.length).toBeLessThanOrEqual(MAX_DROPS);
+  });
+
+  it("refuses a speech longer than its slot, by name", () => {
+    const env = envOf(600, []);
+    const found = fill(env, 600, [speech("a", 200)], 60);
+    if (!("error" in found)) throw new Error("expected a refusal");
+    expect(found.error).toContain("a.mp3");
+  });
+
+  it("puts each drop inside its own slot window", () => {
+    const env = envOf(600, []);
+    const found = fill(env, 600, [speech("a", 6)], 120);
+    if ("error" in found) throw new Error(found.error);
+    found.placements.forEach((p, k) => {
+      const centre = SKIP_HEAD + k * 120;
+      expect(Math.abs(p.at - FADE - centre)).toBeLessThanOrEqual(60);
+    });
+  });
+
+  it("places into the quietest part of a slot", () => {
+    // One hole per slot, offset from the slot's own centre. The drop should
+    // land in the hole rather than at the centre.
+    const env = envOf(600, [{ from: 150, to: 180 }]);
+    const found = fill(env, 600, [speech("a", 6)], 120);
+    if ("error" in found) throw new Error(found.error);
+    const second = found.placements[1];
+    if (second === undefined) throw new Error("expected a second placement");
+    expect(second.at).toBeGreaterThanOrEqual(150);
+    expect(second.at + 6).toBeLessThanOrEqual(180);
+  });
+
+  it("keeps MIN_GAP between consecutive drops when slots abut", () => {
+    // `need` (111) is inside `(step - MIN_GAP, step]`, which is the only band
+    // where the clamp changes the answer: slot k's window ends exactly where
+    // slot k+1's begins, so without it drop 1 would start at 75 while drop 0
+    // still runs to 126. `/api/lofi` rejects an overlap outright, so the
+    // failure would be a 400 on a real render rather than a bad mix.
+    const env = envOf(1200, []);
+    const found = fill(env, 1200, [speech("a", 110)], 120);
+    if ("error" in found) throw new Error(found.error);
+    expect(found.placements.length).toBeGreaterThan(1);
+    found.placements.slice(1).forEach((p, i) => {
+      const prev = found.placements[i];
+      if (prev === undefined) throw new Error("expected a previous placement");
+      expect(p.at - (prev.at + 110)).toBeGreaterThanOrEqual(MIN_GAP);
+    });
   });
 });
