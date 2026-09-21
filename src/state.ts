@@ -25,6 +25,10 @@ export type Phase =
  *  something readable to show, and deliberately never sent anywhere. */
 export type UploadPart = { id: string; name: string; duration: number };
 
+/** One uploaded lofi music track. The same shape the single `music` field
+ *  carried inline, named now that it is an array element. */
+export type UploadTrack = { id: string; name: string; seconds: number };
+
 export type AppState = {
   phase: Phase;
   error: string;
@@ -44,13 +48,21 @@ export type AppState = {
    *  of not storing a list of paths the user may have swept from
    *  `media/uploads/` by hand. The files themselves survive. */
   parts: UploadPart[];
-  /** The lofi journey's music track, once uploaded. `null` until then, which
-   *  is what the panel's Render button is gated on along with the rest.
+  /** The lofi journey's music tracks, IN PLAY ORDER — `orderByPrefix` has
+   *  already put any `1_` file first and shuffled the rest. Empty until the
+   *  first upload, which is what the panel's Render button is gated on.
    *
-   *  NOT persisted, like `parts`: it names an upload the user may have swept
-   *  from `media/uploads/` by hand, and a restored id pointing at a file
-   *  that is gone would look like a working panel until Render. */
-  music: { id: string; name: string; seconds: number } | null;
+   *  NOT persisted, for the reason `parts` is not: each entry names an
+   *  upload the user may have swept from `media/uploads/` by hand, and a
+   *  restored id pointing at a file that is gone would look like a working
+   *  panel right up until Render. */
+  tracks: UploadTrack[];
+  /** Seconds between speech drops, as the panel's minutes field resolved to
+   *  seconds. 0 means the one-shot behaviour every render had before repeats
+   *  existed — `fill` delegates straight to `troughs` for it.
+   *
+   *  NOT persisted, like every other lofi field. */
+  spacing: number;
   /** The background picture as bare base64 JPEG at 1920x1080 — the render's
    *  base video. Its 1280x720 twin is the publish thumbnail, rendered from
    *  the same file at pick time. `""` until picked.
@@ -72,7 +84,7 @@ export type AppState = {
    *  — so this field is what decides which of them the render uses, and
    *  emptiness is the still case.
    *
-   *  NOT persisted, `music`'s reason exactly: it names an upload the user
+   *  NOT persisted, `tracks`'s reason exactly: it names an upload the user
    *  may have swept from `media/uploads/` by hand, and a restored id
    *  pointing at a file that is gone would look like a working panel right
    *  up until Render. */
@@ -80,7 +92,7 @@ export type AppState = {
   /** The uploaded speeches. Order is display order only: a speech's position
    *  in the render is its `at`, not its index here.
    *
-   *  NOT persisted, `music`'s reason: each entry names an upload the user may
+   *  NOT persisted, `tracks`'s reason: each entry names an upload the user may
    *  have swept from `media/uploads/` by hand, and a restored id pointing at
    *  a file that is gone would look like a working panel until Render. */
   speeches: Speech[];
@@ -102,7 +114,7 @@ export type AppState = {
    *  upload is still in flight, which is what the Cut button waits on —
    *  marking ranges does not.
    *
-   *  NOT persisted, `music`'s reason exactly: it names an upload the user may
+   *  NOT persisted, `tracks`'s reason exactly: it names an upload the user may
    *  have swept from `media/uploads/` by hand, and a restored id pointing at
    *  a file that is gone would look like a working panel until Cut. */
   cutUploadId: string;
@@ -253,7 +265,8 @@ const initial: AppState = {
   busy: "",
   mode: "short",
   parts: [],
-  music: null,
+  tracks: [],
+  spacing: 300,
   bg: "",
   bgName: "",
   bgId: null,

@@ -19,6 +19,7 @@ import {
   LONG_TAGS_DEFAULT,
   MAX_PARTS,
   MAX_SPEECHES,
+  MAX_TRACKS,
   TAGS_DEFAULT,
   UPLOAD_MAX_BYTES,
   YT_TITLE_MAX,
@@ -33,7 +34,7 @@ import {
   ratioOf,
   resolveLayout,
 } from "./layout.ts";
-import { BUCKETS_PER_SEC, clampPlacement, troughs } from "./lofi.ts";
+import { BUCKETS_PER_SEC, clampPlacement, fill, orderByPrefix } from "./lofi.ts";
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
@@ -41,7 +42,7 @@ import { MAX_SEGMENTS, editMark, isValidSegments, normalize } from "./segments.t
 import type { Segment } from "./segments.ts";
 import { renderTitleArt } from "./starter.ts";
 import { renderThumb, renderWide } from "./thumb.ts";
-import type { AppState } from "./state.ts";
+import type { AppState, UploadTrack } from "./state.ts";
 import {
   getState,
   keptLength,
@@ -1050,11 +1051,18 @@ async function loadWave(clipUrl: string): Promise<void> {
   render();
 }
 
-/** The picked track's envelope, at `BUCKETS_PER_SEC`, and its length.
- *  Module-scoped like `wavePeaks`, and for the same reason: the bar is
- *  rebuilt on every render and the decode must not be. */
+/** The concatenated envelope of every track in play order, at
+ *  `BUCKETS_PER_SEC`, and its total length. Module-scoped like `wavePeaks`,
+ *  and for the same reason: the bar is rebuilt on every render and the decode
+ *  must not be. */
 let lofiEnv: Float32Array | null = null;
 let lofiSeconds = 0;
+
+/** Each track's own `File`, keyed by the upload id `state.tracks` carries.
+ *  What lets a re-order or a re-shuffle rebuild the envelope without
+ *  re-uploading — a `File` handle does not survive a reload, which is
+ *  consistent with `tracks` itself not persisting. */
+const trackFiles = new Map<string, File>();
 
 /** Decodes a picked music File into the envelope `troughs` scores, through
  *  the same 8 kHz mono OfflineAudioContext `loadWave` uses — that bounds the
@@ -1507,33 +1515,77 @@ async function doStack(): Promise<void> {
   });
 }
 
-/** Uploads the track and decodes its envelope. Both, because the render
- *  needs the file server-side and the placement needs the envelope here —
- *  and doing them in one action is what keeps the two from disagreeing about
- *  which file is loaded. */
-async function doPickMusic(file: File): Promise<void> {
-  await guard("Reading the track…", async () => {
-    const { env, seconds } = await decodeTrack(file);
-    // `api.upload`'s own `duration` (the server's `ffprobe` reading of the
-    // same file) is discarded here — two measurements of one track, not a
-    // bug. `seconds` from `decodeTrack` is what the envelope `env` was
-    // built against, so it has to stay the axis `troughs` and
-    // `clampPlacement` both measure in; probing again server-side is what
-    // lets `/api/lofi` bound cuts against a number it trusts independently
-    // of the client. `FADE`'s slack absorbs the usual decoder-delay gap
-    // between the two; only a VBR file with a missing or bad Xing header
-    // can drift far enough to matter, and only at the track's own edge.
-    const { id } = await api.upload(file, true);
-    lofiEnv = env;
-    lofiSeconds = seconds;
-    setState({
-      music: { id, name: file.name, seconds },
-      // A new track invalidates every position: they were found in the old
-      // one's envelope.
-      placements: [],
-    });
+/** Uploads tracks and rebuilds the concatenated envelope.
+ *
+ *  The envelope is built PER TRACK and appended, never by decoding the whole
+ *  timeline at once: `decodeTrack` resamples into an 8 kHz mono
+ *  OfflineAudioContext and reduces straight to `BUCKETS_PER_SEC`, so one
+ *  track at a time is a few MB where three hours in one go is not. Three
+ *  hours reduces to about 43k floats.
+ *
+ *  `orderByPrefix` runs over the whole list once here, on add — never inside
+ *  `place()`, which also consumes `spacing` and would otherwise re-roll the
+ *  shuffle on every spacing change. `↻ Shuffle` is the only other place a
+ *  re-roll happens. */
+async function doPickMusic(files: File[]): Promise<void> {
+  await guard("Reading the tracks…", async () => {
+    const existing = getState().tracks;
+    if (existing.length + files.length > MAX_TRACKS) {
+      setState({
+        error: `That's ${existing.length + files.length} tracks — the limit is ${MAX_TRACKS}.`,
+      });
+      return;
+    }
+    const added: UploadTrack[] = [];
+    for (const file of files) {
+      const { seconds } = await decodeTrack(file);
+      // `api.upload`'s own `duration` (the server's `ffprobe` reading of the
+      // same file) is discarded here — two measurements of one track, not a
+      // bug. `seconds` from `decodeTrack` is what the envelope was built
+      // against, so it has to stay the axis `fill` and `clampPlacement` both
+      // measure in; probing again server-side is what lets `/api/lofi` bound
+      // cuts against a number it trusts independently of the client.
+      const { id } = await api.upload(file, true);
+      // Held so a re-order or a re-shuffle can rebuild the envelope without
+      // re-uploading. A `File` handle does not survive a reload, which is
+      // consistent with `tracks` itself not persisting.
+      trackFiles.set(id, file);
+      added.push({ id, name: file.name, seconds });
+    }
+    const tracks = orderByPrefix([...existing, ...added]);
+    await rebuildLofiEnv(tracks);
+    // A new track set invalidates every position: they were found against
+    // the old envelope.
+    setState({ tracks, placements: [] });
     place();
   });
+}
+
+/** Decodes every track in play order and concatenates their envelopes into
+ *  the module-scoped `lofiEnv`/`lofiSeconds` the placer and the strip read.
+ *
+ *  Re-decodes from scratch on every change rather than caching per id. The
+ *  decode is the cheap part (8 kHz mono) and a cache keyed on a list that
+ *  reorders is a second thing to keep in sync; `ponytail:` — key it by id the
+ *  day a fifty-track list feels slow. */
+async function rebuildLofiEnv(tracks: UploadTrack[]): Promise<void> {
+  const parts: Float32Array[] = [];
+  let total = 0;
+  for (const track of tracks) {
+    const file = trackFiles.get(track.id);
+    if (file === undefined) continue;
+    const { env, seconds } = await decodeTrack(file);
+    parts.push(env);
+    total += seconds;
+  }
+  const joined = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of parts) {
+    joined.set(p, at);
+    at += p.length;
+  }
+  lofiEnv = joined;
+  lofiSeconds = total;
 }
 
 /** The background picture, rasterised twice: 1920x1080 for the render's base
@@ -1601,20 +1653,35 @@ async function doAddSpeeches(files: File[]): Promise<void> {
         speeches: [...getState().speeches, { id, name: file.name, seconds: duration }],
       });
     }
+    // Ordered once, over the whole list, after every upload in this batch has
+    // landed — never inside `place()`, which also fires on a spacing edit and
+    // would otherwise re-roll a shuffle the panel had already shown the user
+    // a different order for. `fill` cycles speeches in list order when
+    // `spacing` is set, so this is what decides which one opens the render.
+    setState({ speeches: orderByPrefix(getState().speeches) });
     place();
   });
 }
 
-/** Re-runs detection for the current speech set. Called whenever that set
- *  changes and never on a drag — a drag is the user overriding one position,
- *  and re-detecting would throw it away. */
+/** Re-runs detection for the current speech and track set. Called whenever
+ *  either changes, or `spacing` does, and never on a drag — a drag is the
+ *  user overriding one position, and re-detecting would throw it away.
+ *
+ *  Consumes `s.speeches` and `s.tracks` as they stand — no `orderByPrefix`
+ *  here. The shuffle happens exactly once, in `doPickMusic`/`doAddSpeeches`
+ *  on add and in `↻ Shuffle` on demand, and is stored in state; re-rolling it
+ *  on every call to `place()` (which also fires on every spacing edit) would
+ *  silently reshuffle a mix the panel had already shown the user a different
+ *  order for. */
 function place(): void {
   const s = getState();
-  if (!lofiEnv || s.music === null || s.speeches.length === 0) {
+  if (!lofiEnv || s.tracks.length === 0 || s.speeches.length === 0) {
     setState({ placements: [] });
     return;
   }
-  const found = troughs(lofiEnv, lofiSeconds, s.speeches);
+  // `fill` with a spacing of 0 IS `troughs`, so this one call covers both
+  // the repeating case and the one-shot one.
+  const found = fill(lofiEnv, lofiSeconds, s.speeches, s.spacing);
   if ("error" in found) {
     setState({ placements: [], error: found.error });
     return;
@@ -1626,38 +1693,57 @@ function place(): void {
 async function doLofi(): Promise<void> {
   const s = getState();
   const title = s.starterTitle.trim();
-  if (title === "" || s.music === null || s.bg === "" || s.placements.length === 0) return;
-  if (s.placements.length !== s.speeches.length) return;
+  if (title === "" || s.tracks.length === 0 || s.bg === "" || s.placements.length === 0) return;
   await guard("Mixing… (a five-minute track takes ~1-2 min)", async () => {
-    const music = getState().music;
-    if (music === null) return;
     // Exactly one of the two, never both: on the animated path `bg` is the
     // GIF's first frame, which the render does not show, so sending it would
     // put a picture in the body that contradicts the one on screen.
     const bgId = getState().bgId;
-    const out = await api.lofi({
-      title,
-      music: music.id,
-      ...(bgId === null ? { image: getState().bg } : { bgId }),
-      thumb: getState().thumb,
-      speeches: getState().placements.map((p) => ({ id: p.id, at: p.at })),
-      // In-memory, like the export's: a reload between two renders strands
-      // the older file, which is the accepted cost of not persisting a field
-      // whose only job is naming a file to delete.
-      ...(getState().outName === "" ? {} : { prev: getState().outName }),
-    });
-    setState({
-      phase: "preview",
-      outName: out.name,
-      outUrl: out.url,
-      outSize: out.size,
-      ytTitle: getState().ytTitle || defaultTitle(title),
-      ytDescription: getState().ytDescription || LONG_DESCRIPTION_TEMPLATE,
-      ytTags: getState().ytTags || LONG_TAGS_DEFAULT,
-      ytVideoId: "",
-      ytThumbnail: false,
-    });
-    bell();
+    // Polled rather than reported by the render's own promise, which answers
+    // nothing until it finishes. A failed poll is not a failed render —
+    // staying quiet on that catch is right, since the render's own promise
+    // is what reports success or failure.
+    const poll = window.setInterval(() => {
+      void api
+        .lofiProgress()
+        .then((p) => {
+          if (p.total > 0) {
+            const pct = Math.min(100, Math.round((p.done / p.total) * 100));
+            const what = p.phase === "music" ? "Joining tracks" : "Rendering";
+            setState({ busy: `${what}… ${pct}%` });
+          }
+        })
+        .catch(() => {
+          // See above: a failed poll tick is not a failed render.
+        });
+    }, 2000);
+    try {
+      const out = await api.lofi({
+        title,
+        music: getState().tracks.map((t) => t.id),
+        ...(bgId === null ? { image: getState().bg } : { bgId }),
+        thumb: getState().thumb,
+        speeches: getState().placements.map((p) => ({ id: p.id, at: p.at })),
+        // In-memory, like the export's: a reload between two renders strands
+        // the older file, which is the accepted cost of not persisting a
+        // field whose only job is naming a file to delete.
+        ...(getState().outName === "" ? {} : { prev: getState().outName }),
+      });
+      setState({
+        phase: "preview",
+        outName: out.name,
+        outUrl: out.url,
+        outSize: out.size,
+        ytTitle: getState().ytTitle || defaultTitle(title),
+        ytDescription: getState().ytDescription || LONG_DESCRIPTION_TEMPLATE,
+        ytTags: getState().ytTags || LONG_TAGS_DEFAULT,
+        ytVideoId: "",
+        ytThumbnail: false,
+      });
+      bell();
+    } finally {
+      window.clearInterval(poll);
+    }
   });
 }
 
@@ -3075,21 +3161,72 @@ function renderLofiPanel(): Node[] {
   const locked = Boolean(s.busy);
 
   const musicRow = el("div", { className: "lofi-row" });
-  const musicPicker = el("input", { type: "file", accept: "audio/*", disabled: locked });
+  const musicPicker = el("input", {
+    type: "file",
+    accept: "audio/*",
+    multiple: true,
+    disabled: locked || s.tracks.length >= MAX_TRACKS,
+  });
   musicPicker.onchange = () => {
-    const file = musicPicker.files?.[0];
-    // Cleared so picking the same file twice fires a second change event.
+    const files = [...(musicPicker.files ?? [])];
+    // Cleared so picking the same file(s) twice fires a second change event.
     musicPicker.value = "";
-    if (file) void doPickMusic(file);
+    if (files.length > 0) void doPickMusic(files);
   };
+  const shuffleBtn = el("button", {
+    className: "btn-gray",
+    textContent: "↻ Shuffle",
+    disabled: locked || s.tracks.length < 2,
+  });
+  // Re-rolls BOTH lists: `fill` cycles speeches in list order too, so a
+  // shuffle that only touched the tracks would leave the speech order stale
+  // beside it. This is the only place a re-roll happens after the initial
+  // add — `place()` itself never calls `orderByPrefix`, or every spacing
+  // edit would silently reshuffle a mix the panel had already shown a
+  // different order for.
+  shuffleBtn.onclick = () => {
+    setState({
+      tracks: orderByPrefix(getState().tracks),
+      speeches: orderByPrefix(getState().speeches),
+    });
+    place();
+  };
+  const spacingInput = el("input", {
+    type: "number",
+    min: "0",
+    step: "1",
+    className: "field-grow",
+    placeholder: "Speech every … min",
+    ariaLabel: "Speech every … min",
+    title: "Minutes between speech drops. 0 places each speech once.",
+    value: String(s.spacing / 60),
+    disabled: locked,
+  });
+  // Quiet while typing, like the title field — a notifying update per
+  // keystroke would rebuild this input and drop the caret. `change`, not
+  // `input`, re-places: re-scoring the whole envelope on every keystroke
+  // would be wasted work mid-edit.
+  spacingInput.oninput = () => {
+    const minutes = Number(spacingInput.value);
+    if (Number.isFinite(minutes) && minutes >= 0) setQuiet({ spacing: minutes * 60 });
+  };
+  spacingInput.onchange = () => place();
   musicRow.append(
-    el("h3", { textContent: "Track" }),
-    s.music
-      ? el("p", {
-          className: "lofi-fact",
-          textContent: `${s.music.name} — ${clock(s.music.seconds)}`,
-        })
-      : el("p", { className: "stack-empty", textContent: "Pick one music file." }),
+    el(
+      "div",
+      { className: "bar-row" },
+      el("h3", { textContent: `Tracks (${s.tracks.length}/${MAX_TRACKS})` }),
+      el("span", { className: "bar-end" }, shuffleBtn),
+    ),
+    ...(s.tracks.length > 0
+      ? s.tracks.map((t, i) =>
+          el("p", {
+            className: "lofi-fact",
+            textContent: `(${i + 1}/${s.tracks.length}) ${t.name} — ${clock(t.seconds)}`,
+          }),
+        )
+      : [el("p", { className: "stack-empty", textContent: "Pick one or more music files." })]),
+    el("div", { className: "bar-row" }, spacingInput),
     musicPicker,
   );
 
@@ -3175,7 +3312,14 @@ function renderLofiPanel(): Node[] {
     );
   });
   speechRow.append(
-    el("h3", { textContent: `Speeches (${s.speeches.length}/${MAX_SPEECHES})` }),
+    el(
+      "div",
+      { className: "bar-row" },
+      el("h3", { textContent: `Speeches (${s.speeches.length}/${MAX_SPEECHES})` }),
+      // Drops rather than speeches: with a spacing set the two legitimately
+      // differ, since one speech can recur through several quiet stretches.
+      el("span", { className: "bar-end badge", textContent: `${s.placements.length} drops` }),
+    ),
     ...(rows.length > 0
       ? rows
       : [
@@ -3313,10 +3457,10 @@ function renderLofiBar(): Node[] {
 
   const ready = (live: AppState) =>
     live.starterTitle.trim() !== "" &&
-    live.music !== null &&
+    live.tracks.length > 0 &&
     live.bg !== "" &&
     live.speeches.length > 0 &&
-    live.placements.length === live.speeches.length;
+    live.placements.length > 0;
 
   const go = el("button", {
     className: "btn-solid",
