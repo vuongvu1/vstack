@@ -60,6 +60,15 @@ of them, and a band of frequency bars runs along the bottom.
 It shares `preview`, `/out/`, the publish panel and `media/uploads/` with
 the long journey and nothing else — the long journey's parts arrive on
 `/api/upload`, every one of the lofi journey's on `/api/upload-audio`, plus
+`docs/specs/2026-09-21-vstack-lofi-longform-design.md`, which supersedes
+nothing and extends the 2026-09-16 doc rather than any other: the music
+becomes a LIST of up to `MAX_TRACKS` (60) tracks, joined into one file
+before the render ever probes it; a speech now RECURS on a spacing the
+user sets, up to `MAX_DROPS` (120) placements, with `MAX_SPEECHES`
+re-scoped to mean distinct uploaded FILES rather than placements; a
+`1_`-prefixed upload plays first and the rest are shuffled once,
+client-side, at add time; and the render reports progress, polled from an
+ffmpeg `-progress` file, plus
 `docs/specs/2026-09-21-vstack-audio-cutter-design.md`, which supersedes
 nothing and extends nothing and adds a FIFTH journey that is also a second
 dead end: `idle` → `cutting` → `idle`, where an uploaded audio or video
@@ -84,7 +93,7 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 421 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 448 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -123,12 +132,16 @@ server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
 server/longform.ts WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK,
                    checkLongform, Trim/MIN_KEPT/detectTrim/keptRange,
                    stackWide (the long journey's one ffmpeg pass)
-server/lofi.ts     WIDE, FADE, CRACKLE_PATH, LOGO_PATH/LOGO_RECT/
+server/lofi.ts     WIDE, FADE, TRACK_FADE, CRACKLE_PATH, LOGO_PATH/LOGO_RECT/
                    SPIN_SECONDS, VIZ_RECT/VIZ_BAR, checkLofi,
+                   concatMusic (the music pre-pass — several tracks dipped
+                   at each seam into one file, or one track untouched),
                    Cut/renderLofi (the
                    lofi journey's one ffmpeg pass — one background, still
                    or a looped GIF, for the whole track, with every speech
-                   mixed in as AUDIO ONLY)
+                   mixed in as AUDIO ONLY, one input per unique speech
+                   FILE), parseProgress/renderProgress/clearProgress (the
+                   `-progress` file, polled)
 server/cut.ts      MP3_QUALITY, cutMp3 (the cutter's one ffmpeg pass, run
                    once per range)
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
@@ -159,13 +172,15 @@ server/ytdlp.ts    videoIdFrom, probe, fetchWindow, parseClipName, listClips
 server/chat.ts     ChatMsg/Moment, BIN/WIN/LAG/TOP/MIN_GAP/SKIP_HEAD,
                    fetchChat (chat replay -> media/<id>/chat.json),
                    parseChat, peaks (the scorer)
-server/index.ts    16 routes (15 POST + GET /out/<name>), serveOut range
+server/index.ts    17 routes (16 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
                    totalDuration, keepRanges, editMark
 src/lofi.ts        Speech/Placement, BUCKETS_PER_SEC/MIN_GAP/SKIP_HEAD/
-                   SKIP_TAIL, troughs (the detector — longest speech first)
+                   SKIP_TAIL, troughs (the detector — longest speech first),
+                   orderByPrefix (a `1_` file first, the rest shuffled once),
+                   fill (troughs' own answer at spacing 0, slots above it)
 src/layout.ts      nine layout presets, cellsOf, ratioOf, defaultBoxes
 src/custom.ts      CustomBox, MAX_CUSTOM/MIN_OUT_SIDE, outRatio, clampOut/
                    moveOut/resizeOut, resnapCrop, isValidOut/isValidCustom,
@@ -237,9 +252,12 @@ same reach across the client/server line `ytdlp.ts` already makes for
 `geometry.ts`'s `PAD` — which is also what makes the cutter's ranges the
 trimming phase's ranges by construction rather than by resemblance.
 `src/lofi.ts` sits at the very bottom beside
-`geometry.ts` and `segments.ts` and imports nothing — a music track's own
-loudness envelope and a speech's own length are enough to place it, with no
-need to reach into `layout.ts`, `custom.ts` or `frame.ts`.
+`geometry.ts` and `segments.ts` and imports only `defaults.ts`, itself a
+leaf — `MAX_DROPS` bounds `fill`'s own slot loop, so the cap that has to
+hold lives one import away from the function that spends it rather than
+being threaded in by every caller. A music track's own loudness envelope
+and a speech's own length are otherwise enough to place it, with no need to
+reach into `layout.ts`, `custom.ts` or `frame.ts`.
 `chat.ts` sits above `ffmpeg.ts` beside `mask.ts` — it needs `MEDIA_DIR` for
 its cache and imports nothing else, deliberately not `ytdlp.ts`, so
 `videoIdFrom` stays the one trust boundary that decides whether a subprocess
@@ -253,8 +271,9 @@ two dead ends: `idle` (URL) →
 title/description/tags in a panel on the left where the framing `<video>`
 was — it has nothing left to say once the export exists) is the short
 journey, `idle` → `stacking` → `preview` is the long one, and `idle` →
-`lofi` → `preview` is the third — a music track, a background picture and
-up to `MAX_SPEECHES` speech clips become one 1920x1080 render. `publishForm`
+`lofi` → `preview` is the third — a list of music tracks, a background
+picture and up to `MAX_DROPS` speech drops from up to `MAX_SPEECHES` files
+become one 1920x1080 render. `publishForm`
 is a child of `sourceSlot`, not a third `.stage` column, `stackPanel` is
 another beside it, and `lofiPanel` is a third, all under the same rule —
 `sourceSlot` itself is never
@@ -429,6 +448,23 @@ first the way `/api/export` already does; passing the name through directly
 compiles (both are strings) but resolves against `process.cwd()` instead of
 `OUT_DIR`, and `rm(..., { force: true })` swallows the resulting ENOENT
 silently — the sweep does nothing and no error surfaces.
+
+**The `.progress` sidecar sweeps itself, because nothing else in this
+codebase could find it to sweep.** `concatMusic` and `renderLofi` each write
+`${out}.progress` for `-progress` to append to, and each removes its OWN in
+a `finally` the instant its ffmpeg process exits — never the route. `out` is
+a temp-dir path for `concatMusic`'s pre-pass, which the route's own
+`finally` already sweeps wholesale either way, but for `renderLofi` it is
+the partial inside `OUT_DIR`, which on this machine is `~/Desktop/vstack` —
+the user's own directory, not scratch space. Neither `isOutName` nor
+`isCutName` matches a `.progress` suffix, so no existing check could ever
+name this file to clean it up, the way `removeExport`, `/api/export`'s
+`prev` and `/api/cut`'s `prev` all do for the shapes they own. A
+route-level sweep would need a THIRD filename convention threaded through
+`server/index.ts` for a file only `lofi.ts` ever writes; letting each
+function clean up its own litter needs none. Found in review, not by a
+test — the failure is a `.progress` file left on the Desktop beside every
+finished render, not a wrong answer anything asserts on.
 
 **Uploads are private and there is no option.** An unaudited YouTube Data API
 project has every `videos.insert` locked to private viewing. `buildSnippet`
@@ -933,6 +969,20 @@ the probed music length — could come to name a file a different length than
 the one on disk. This graph makes that disagreement structurally
 impossible.
 
+The music is a LIST now, up to `MAX_TRACKS` (60) of them, and the invariant
+survives verbatim rather than becoming a sum. `/api/lofi` concatenates the
+tracks with `concatMusic` into ONE file in the route's own temp directory —
+the same directory it already creates for the still's bytes and already
+sweeps in a `finally` — and probes *that file*, not the tracks it was given.
+The obvious alternative, N music inputs joined by ffmpeg's own `concat` on
+the main graph, was rejected for exactly this invariant: `seconds` would
+become an arithmetic sum of probed lengths, `outName`'s `mmss` would be
+computed from that sum, and the filename could disagree with the file by
+whatever rounding the concat introduced — the class of failure this
+invariant exists to rule out. Building the file first keeps the render's
+one music input and its one `-t <seconds>` exactly as they were; the music
+is simply a file this route built rather than one the client uploaded.
+
 **The background's two input forms are NOT interchangeable, and one of the
 two wrong pairings HANGS rather than failing.** `renderLofi` takes a still
 picture or an animated one and decides which by counting frames
@@ -1081,6 +1131,54 @@ there the error names the speech and its length rather than picking the
 least-bad window anyway. A silently misplaced speech is indistinguishable
 from a working render until someone watches the output, the failure class
 this codebase treats as cardinal everywhere else.
+
+**A single track skips the music pre-pass altogether, and that identity is
+load-bearing.** `concatMusic` returns `paths[0]` unchanged and writes
+nothing for one track — no concat, no flac, no extra ffmpeg run — so the
+original one-track journey pays no new pass, no ~1 GB temp file and no new
+failure mode for a feature it does not use. `server/lofi.test.ts` pins the
+identity directly rather than just its consequence: `concatMusic([track],
+out)` returns `track` itself and never creates `out`. The same
+reduction-to-identity `fill` (below) holds against `troughs` and `trims`
+holds in `stackWide`.
+
+**`fill` reduces to `troughs` exactly at a non-positive spacing, and that is
+mutation-tested.** The delegation is what keeps `src/lofi.test.ts`'s
+existing exhaustive `troughs` suite — the longest-first ordering, `MIN_GAP`,
+the `SKIP_HEAD`/`SKIP_TAIL` boundaries, the by-name refusal — describing
+live behaviour rather than an orphaned branch, the same shape `bucketAt`
+holds against `floor(x * buckets / w)` and `trims` holds against the empty
+array. Forcing the delegation's `if` to `false` fails both "reduces exactly
+to troughs when spacing is 0" and "reduces to troughs for a negative spacing
+too" and no other test in the file — the two share a non-positive `spacing`,
+which is the one case this line exists to route to `troughs` at all. An
+earlier version of this claim said the mutation failed only the first of
+the two; re-measured against the whole file rather than a narrowed test
+filter, it fails both.
+
+**One ffmpeg input per unique speech FILE, `asplit` into its drops.** A
+speech now recurs on a spacing, so a three-hour render at the default
+five-minute spacing plays roughly 36 drops from as few as one recording.
+Opening every drop as its own input would put one input on the graph per
+drop rather than per file, on top of the background, the music, the crackle
+and the mark — the crackle leg already solves exactly this (one input,
+`asplit` into one tap per speech) and the speech legs now copy its shape:
+`renderLofi` collects the unique paths among `cuts`, opens one input per
+unique path, and only `asplit`s a path that has more than one drop, so a
+one-shot render's graph stays byte-identical to the one it had before
+repeats existed.
+
+**`MAX_SPEECHES` bounds the graph's INPUTS; `MAX_DROPS` bounds its LEGS, and
+neither cap is redundant with the other.** A speech recurring split what
+used to be one number into two that measure different things:
+`MAX_SPEECHES` (8) is how many distinct FILES `/api/upload-audio` and the
+panel will accept, one input each; `MAX_DROPS` (120) is how many
+PLACEMENTS `fill` may hand back, one `asplit` tap and one crackle-boost leg
+each. Checking only the drop count would let eighty distinct uploads
+through under a 120-drop limit — eighty inputs on a graph the file cap
+exists to bound, with the drop count none the wiser. Both are checked in
+the panel and again in the route, because the route is reachable without
+the panel — the same posture `MAX_SPEECHES` and `MAX_PARTS` already hold.
 
 **`probeFile` is the wrong prober for a music track, and "has a video
 stream" is the wrong fix.** `probeFile` demands a video stream and throws
@@ -2001,6 +2099,19 @@ same directory and the same route, for the same reason: `probeAudio` is
 right for both an audio file and a video one, where `probeFile` would
 refuse the first outright, and it is already the gate that refuses a file
 with no audio stream — which here could only produce silent mp3s.
+
+**The lofi render has no loudness normalisation across tracks, and nothing
+in the graph corrects for it.** The music leg carries no gain at all and
+every `amix` in this render is `normalize=0`, so tracks from different
+sources sit at whatever level they were uploaded at. This is a real defect
+of the multi-track render and it is **not** new to this feature — a
+one-track render always had exactly the same gap, just only one level to be
+wrong at, so nothing here regressed; it is only more visible now that a
+render can carry several sources at once. `ponytail:` the fix is a
+`loudnorm` per leg inside `concatMusic`'s pre-pass, where the tracks are
+already being resampled and reformatted for `concat` to accept them — not
+done now because nobody has yet measured how far real uploads actually
+drift from each other.
 
 **`/api/upload` destroys the socket past `UPLOAD_MAX_BYTES` rather than
 answering.** Replying politely means having read the whole body first, which
