@@ -42,8 +42,12 @@ export const FADE = 0.5;
  *  of on top of it. */
 const SPEECH_HP = 300;
 const SPEECH_LP = 3000;
-/** Makeup for what the band takes out. */
-const SPEECH_GAIN = 1.6;
+/** Makeup for what the band takes out, plus a little over the top: the duck
+ *  only lowers the music, so the voice's own level is the other half of
+ *  whether it reads. The speech leg is what sets the finished mix's peak, so
+ *  this is also the clipping knob: measured on a synthetic render, 1.6 peaks
+ *  at -4.0 dBFS and 2.0 at -3.1, both clear. Well past 2.5 wants a check. */
+const SPEECH_GAIN = 2.0;
 
 /** The duck. `sidechaincompress` takes a threshold and a ratio, not a target
  *  depth, which is why there is no dB knob here — the depth is whatever
