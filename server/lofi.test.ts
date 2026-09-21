@@ -299,24 +299,42 @@ describe("renderLofi", () => {
       () => { settled = true; },
       () => { settled = true; },
     );
+    let seenPhase: "music" | "render" | undefined;
+    let seenTotal = 0;
     let seenDone = 0;
     while (!settled) {
-      seenDone = Math.max(seenDone, renderProgress().done);
+      const p = renderProgress();
+      // `phase` and `total` are set once, early, and hold for the whole
+      // render — unlike `done` they are not moving targets, so sampling them
+      // inside this same loop is not racy and costs nothing extra.
+      seenPhase = p.phase;
+      seenTotal = Math.max(seenTotal, p.total);
+      seenDone = Math.max(seenDone, p.done);
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     await pending;
+    expect(seenPhase).toBe("render");
+    // Proves the music's own duration is wired through to the slot, the same
+    // thing the old on-disk read proved.
+    expect(seenTotal).toBeGreaterThan(29.5);
     // Real ffmpeg output was read and parsed to a positive position — the
     // failure this guards against is a progress bar that never renders
     // anything. (Reading the LAST out_time_us block rather than the first is
-    // covered exactly by the synthetic `parseProgress` tests above; polling
-    // a live process cannot pin that down without risking flakiness on how
-    // often ffmpeg happens to flush a block before exiting.)
+    // covered exactly by the synthetic `parseProgress` tests above.)
+    //
+    // Deliberately NOT restoring the old `done` close to `total` assertion.
+    // That could only ever be read from a FINISHED render's file, and a
+    // finished render's file is exactly what this fix now deletes — so
+    // "progress reaches near-completion" is no longer observable from
+    // outside the render at all, not just harder to catch with a poll. That
+    // loss is the real cost of the fix, and it is the right trade against
+    // leaving litter in the user's own OUT_DIR.
     expect(seenDone).toBeGreaterThan(0);
     // THE assertion for the sweep itself: nothing is left on disk once the
     // render — successful or not — has finished, which is what keeps this
     // file off the user's own `OUT_DIR` in a real run.
     expect(existsSync(`${out2}.progress`)).toBe(false);
-  });
+  }, 120_000);
 
   it("keeps the audio STREAM itself as long as the music, not just the container", async () => {
     // `probeFile` reads `format.duration` — the CONTAINER's claim — which
