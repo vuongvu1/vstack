@@ -40,12 +40,15 @@
 >    strip paints this upload's envelope over someone else's clip. Both are
 >    invariants in `CLAUDE.md`.
 > 6. **The sweep has FOUR properties, not the three "The sweep" lists.** It
->    is also scoped to the base being written — a `prev` entry that does not
->    start with `cutStem(base)` is left alone. Without it, cutting one file
->    as `podcast` and then, without leaving the phase, as `ads` unlinks
->    podcast-1.mp3 and podcast-2.mp3 the moment ads-1.mp3 lands. `prev` is
->    "everything the last cut wrote", which is not the same set as "what
->    this cut supersedes".
+>    is also scoped to the base being written: a `prev` entry survives
+>    unless it is `cutStem(base)` followed by nothing but an index and
+>    `.mp3` — exactly the set `cutName` can emit for this base. Without any
+>    scoping, cutting one file as `podcast` and then, without leaving the
+>    phase, as `ads` unlinks podcast-1.mp3 and podcast-2.mp3 the moment
+>    ads-1.mp3 lands. The index test rather than a bare `startsWith` is the
+>    second half of the same bug: a slug is hyphen-separated, so `ads-` is a
+>    string prefix of `ads-extra-1.mp3` too. `prev` is "everything the last
+>    cut wrote", which is not the same set as "what this cut supersedes".
 > 7. **The "Errors" table's ffmpeg row was wrong and is corrected in
 >    place.** It claimed the next run's `prev` sweeps whatever a part-way
 >    failure left behind; on a FIRST cut `cutNames` is still empty, so no

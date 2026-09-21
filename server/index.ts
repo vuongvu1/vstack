@@ -1147,10 +1147,21 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       // named sets out of one recording is an ordinary thing to want, and
       // `rm` is not the Trash. The sweep exists to supersede one cut's own
       // output, never to tidy up after the session.
+      //
+      // And the scope is the stem plus AN INDEX, never the bare prefix. A
+      // slug is hyphen-separated, so one base's stem is a string prefix of
+      // every base that extends it by a segment: cut as `ads extra` and
+      // then as `ads`, and `ads-extra-1.mp3` starts with `ads-` and is
+      // unlinked — the same silent loss the scoping was added to stop,
+      // surviving inside the fix for it, and reachable from two ordinary
+      // names one of which is a prefix of the other. What follows the stem
+      // must therefore be exactly what `cutName` can put there for THIS
+      // base and nothing else.
       const stem = cutStem(base);
       const prev = Array.isArray(raw.prev) ? raw.prev : [];
       for (const stale of prev) {
-        if (!isCutName(stale) || names.includes(stale) || !stale.startsWith(stem)) continue;
+        if (!isCutName(stale) || names.includes(stale)) continue;
+        if (!stale.startsWith(stem) || !/^\d+\.mp3$/.test(stale.slice(stem.length))) continue;
         await rm(outPath(stale), { force: true }).catch((err: unknown) => {
           console.warn(`vstack: could not remove the previous out/${stale}:`, err);
         });
