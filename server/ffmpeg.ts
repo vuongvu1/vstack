@@ -115,6 +115,18 @@ export function outPath(name: string): string {
   return join(OUT_DIR, name);
 }
 
+/** One cut mp3's filename — the base the user typed, slugified, plus the
+ *  range's 1-based index.
+ *
+ *  Indexed rather than marked with `<mmss>-<mmss>` the way `outName` is, and
+ *  that choice is what makes `/api/cut`'s sweep necessary: inserting a range
+ *  renumbers every later file, so a second cut can leave a `-4.mp3` behind
+ *  describing audio from the previous attempt. See the sweep in
+ *  `server/index.ts`. */
+export function cutName(base: string, n: number): string {
+  return `${slugify(base)}-${n}.mp3`;
+}
+
 /** The vertical still saved beside an export, for Studio's Shorts thumbnail
  *  slot. One derivation, two callers — `saveStill` writes it and
  *  `removeExport` takes it away. */
@@ -178,6 +190,25 @@ const OUT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*-\d{4,}-\d{4,}\.mp4$/;
  *  that arrives from the wire. */
 export function isOutName(name: unknown): name is string {
   return typeof name === "string" && OUT_NAME.test(name);
+}
+
+/** Anchored to exactly what `cutName` emits, and deliberately NOT a widened
+ *  `OUT_NAME`.
+ *
+ *  The long-form journey's invariant says there is nothing to widen
+ *  `OUT_NAME` for, and that still holds — this needs a *different* shape,
+ *  not a looser one. Two anchored patterns, each matching one producer, is a
+ *  strictly smaller surface than one pattern loose enough for both, and
+ *  since `OUT_DIR` lives under `$HOME` what a loose pattern reaches is the
+ *  user's home directory.
+ *
+ *  This is also the one client string in the API that names files to
+ *  *delete*: `/api/cut`'s `prev` is checked with it before anything is
+ *  unlinked. */
+const CUT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*-\d+\.mp3$/;
+
+export function isCutName(name: unknown): name is string {
+  return typeof name === "string" && CUT_NAME.test(name);
 }
 
 function cacheSize(dir: string): number {

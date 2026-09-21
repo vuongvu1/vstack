@@ -17,8 +17,10 @@ import {
   buildFilter,
   clipName,
   concatClips,
+  cutName,
   exportClip,
   firstFrame,
+  isCutName,
   isOutName,
   isUploadId,
   outName,
@@ -178,6 +180,61 @@ describe("outName — the traversal guard", () => {
     expect(isOutName(42)).toBe(false);
     expect(isOutName(undefined)).toBe(false);
     expect(isOutName({ toString: () => "clip-0000-0030.mp4" })).toBe(false);
+  });
+});
+
+describe("cutName", () => {
+  it("slugifies the base and appends a 1-based index", () => {
+    expect(cutName("Hôm nay trời đẹp quá", 1)).toBe("hom-nay-troi-dep-qua-1.mp3");
+    expect(cutName("clip", 12)).toBe("clip-12.mp3");
+  });
+
+  it("produces a name that isCutName accepts", () => {
+    expect(isCutName(cutName("Hôm nay trời đẹp quá", 3))).toBe(true);
+    expect(isCutName(cutName("2024", 1))).toBe(true);
+  });
+});
+
+// The second client-supplied path component on the `/out/` side, and the one
+// that names files to DELETE (see `/api/cut`'s sweep). Same exhaustive
+// treatment isOutName gets.
+describe("cutName — the traversal guard", () => {
+  it("accepts what cutName emits", () => {
+    expect(isCutName("an-com-chua-1.mp3")).toBe(true);
+    expect(isCutName("a-1.mp3")).toBe(true);
+    expect(isCutName("2024-10.mp3")).toBe(true);
+  });
+
+  it("rejects traversal", () => {
+    expect(isCutName("../secret-1.mp3")).toBe(false);
+    expect(isCutName("a/b-1.mp3")).toBe(false);
+    expect(isCutName("a\\b-1.mp3")).toBe(false);
+    expect(isCutName("/etc/passwd")).toBe(false);
+    expect(isCutName("..")).toBe(false);
+  });
+
+  it("rejects anything slugify could not have produced", () => {
+    expect(isCutName("An-Com-1.mp3")).toBe(false); // uppercase
+    expect(isCutName("ăn-cơm-1.mp3")).toBe(false); // diacritics
+    expect(isCutName("-lead-1.mp3")).toBe(false); // leading dash
+    expect(isCutName("has space-1.mp3")).toBe(false);
+    expect(isCutName("a--b-1.mp3")).toBe(false); // slugify collapses runs
+    expect(isCutName("trailing-1-.mp3")).toBe(false);
+    expect(isCutName("no-index.mp3")).toBe(false);
+  });
+
+  it("rejects non-strings", () => {
+    expect(isCutName(undefined)).toBe(false);
+    expect(isCutName(null)).toBe(false);
+    expect(isCutName(3)).toBe(false);
+  });
+
+  // THE assertion that fails if anyone ever merges the two patterns: each
+  // producer's names must be rejected by the other's guard, or a cut could
+  // reach /api/publish and an export could reach the cut sweep.
+  it("does not overlap isOutName in either direction", () => {
+    expect(isCutName("an-com-0130-0205.mp4")).toBe(false);
+    expect(isOutName("an-com-chua-1.mp3")).toBe(false);
   });
 });
 
