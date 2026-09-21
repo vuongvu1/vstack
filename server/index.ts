@@ -29,8 +29,10 @@ import {
   assertCustoms,
   clipPath,
   concatClips,
+  cutName,
   exportClip,
   firstFrame,
+  isCutName,
   isOutName,
   isUploadId,
   outName,
@@ -43,6 +45,7 @@ import {
   thumbPath,
   uploadPath,
 } from "./ffmpeg.ts";
+import { cutMp3 } from "./cut.ts";
 import { fetchChat, parseChat, peaks } from "./chat.ts";
 import { ensureMask } from "./mask.ts";
 import type { Trim } from "./longform.ts";
@@ -1079,13 +1082,95 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
   }
 
+  // The audio cutter. Takes an upload id and ranges, never a path — the same
+  // posture /api/stack and /api/lofi hold.
+  if (req.url === "/api/cut") {
+    const raw = await json<Record<string, unknown>>(req);
+    const base = readTitle(raw.base, "base");
+    if (!isUploadId(raw.id)) return send(res, 400, { error: "Bad upload id." });
+    const src = uploadPath(raw.id);
+    if (!existsSync(src)) {
+      return send(res, 404, { error: "That upload is no longer on disk." });
+    }
+    // The duration is the SERVER's, probed here: a length the client
+    // reported could put a range past the end of the file, which ffmpeg
+    // answers with an empty output rather than an error anyone can read.
+    // `probeAudio` rather than `probeFile` because the input may legitimately
+    // have no video stream — and it is also the gate that already refused a
+    // file with no audio stream, back at /api/upload-audio.
+    const { seconds } = await probeAudio(src);
+    // The SAME predicate `restore` uses on the client, so the two sides
+    // cannot come to disagree about what a legal range is. It also covers
+    // the count (>= 1, <= MAX_SEGMENTS), the sort, the overlaps and the
+    // bounds, so there is nothing left to check here by hand.
+    if (!isValidSegments(raw.ranges, seconds)) {
+      return send(res, 400, { error: "ranges must be sorted, non-overlapping and inside the file." });
+    }
+    const ranges = raw.ranges;
+
+    await mkdir(OUT_DIR, { recursive: true });
+    const names = ranges.map((_, i) => cutName(base, i + 1));
+    // Every partial is tracked before the first render starts: `node --watch`
+    // SIGTERMs this process on any server edit, and a killed process never
+    // reaches the `finally` while the ffmpeg it spawned keeps writing.
+    const partials = names.map((name) => outPath(name).replace(/\.mp3$/, `.${randomUUID()}.part.mp3`));
+    for (const p of partials) inFlight.add(p);
+    try {
+      for (const [i, range] of ranges.entries()) {
+        const partial = partials[i];
+        const name = names[i];
+        if (partial === undefined || name === undefined) continue;
+        await cutMp3(src, range, partial);
+        await rename(partial, outPath(name));
+      }
+      // The sweep, and every property of it is deliberate. An index-based
+      // name renumbers when a range is inserted, so a second cut with fewer
+      // ranges leaves a file behind that is indistinguishable by name from a
+      // current one.
+      //
+      // AFTER the renames, never before: a failed cut must leave the
+      // previous run intact. Skipping anything just written, which would
+      // otherwise unlink a file from this very run — the defect
+      // /api/export guards with `prev === name`. Through `outPath`, because
+      // `rm` on a bare name resolves against process.cwd() and
+      // `force: true` swallows the resulting ENOENT silently, so the sweep
+      // would do nothing and say nothing. And behind `isCutName`, because
+      // this is the one client string in the API that names a file to
+      // delete.
+      const prev = Array.isArray(raw.prev) ? raw.prev : [];
+      for (const stale of prev) {
+        if (!isCutName(stale) || names.includes(stale)) continue;
+        await rm(outPath(stale), { force: true }).catch((err: unknown) => {
+          console.warn(`vstack: could not remove the previous out/${stale}:`, err);
+        });
+      }
+      console.warn(`vstack: cut ${names.length} mp3 file(s) from ${String(raw.id)}`);
+      return send(res, 200, { names });
+    } finally {
+      for (const p of partials) {
+        inFlight.delete(p);
+        await rm(p, { force: true }).catch((err: unknown) => {
+          console.error("vstack: cut partial cleanup failed:", err);
+        });
+      }
+    }
+  }
+
   if (req.url === "/api/reveal") {
     const body = await json<Record<string, unknown>>(req);
     // The name is validated, not reconstructed — see isOutName. This is the
     // only path component this API takes from a client on the `/out/` side
     // — `/api/export`'s `digest` is the analogous case on the `/media/`
     // side, thirty-ish lines above in that route.
-    if (!isOutName(body.name)) return send(res, 400, { error: "Bad output name." });
+    //
+    // Two producers, two anchored patterns — see isCutName. Widening
+    // OUT_NAME to cover both would loosen the guard on a path that reaches
+    // `open -R` under $HOME. /api/publish and /out/ are deliberately NOT
+    // taught about .mp3: nothing in the cutter produces something to publish
+    // or to stream back.
+    if (!isOutName(body.name) && !isCutName(body.name)) {
+      return send(res, 400, { error: "Bad output name." });
+    }
     const path = outPath(body.name);
     if (!existsSync(path)) return send(res, 404, { error: `${body.name} is not in out/.` });
     // Fire and forget: `open` has done its job by the time it exits, and
