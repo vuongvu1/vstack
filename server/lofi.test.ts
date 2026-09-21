@@ -1,16 +1,18 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { probeFile } from "./ffmpeg.ts";
+import { probeAudio, probeFile } from "./ffmpeg.ts";
 import {
   FADE,
   LOGO_RECT,
   SPIN_SECONDS,
   VIZ_BAR,
   VIZ_RECT,
+  concatMusic,
   renderLofi,
 } from "./lofi.ts";
 
@@ -51,6 +53,11 @@ let noaudio = "";
  *  divides into the 30s track so "it looped" is checkable by arithmetic. */
 let gif = "";
 let out = "";
+/** Three 2s tones for `concatMusic`'s own fixtures — see the tests below for
+ *  why the frequencies rather than the lengths are what prove the order. */
+let tone440a = "";
+let tone1760 = "";
+let tone440b = "";
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "vstack-lofi-"));
@@ -108,6 +115,16 @@ beforeAll(async () => {
     "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]",
     "-map", "[v]", "-y", gif,
   ]);
+
+  tone440a = join(dir, "t440a.m4a");
+  tone1760 = join(dir, "t1760.m4a");
+  tone440b = join(dir, "t440b.m4a");
+  for (const [path, hz] of [[tone440a, 440], [tone1760, 1760], [tone440b, 440]] as const) {
+    await run("ffmpeg", [
+      "-y", "-f", "lavfi", "-i", `sine=frequency=${hz}:duration=2`,
+      "-c:a", "aac", path,
+    ]);
+  }
 
   out = join(dir, "out.mp4");
   // One speech at t=12, well clear of both ends. Deliberately the VIDEO
@@ -632,4 +649,71 @@ describe("renderLofi", () => {
     const under = await loudness(crackly, 12.6, 0.8, band);
     expect(under.max).toBeGreaterThan(bed.max + 3);
   }, 120_000);
+});
+
+/** The dominant frequency at `at` seconds, via a 0.2s window through
+ *  `astats`-free means: an `ebur128`-free FFT is not available here, so this
+ *  slices the window out and asks `aspectralstats` for its centroid, which
+ *  on a pure sine is the sine.
+ *
+ *  The first and last of the ~9 frames `aspectralstats` prints for a 0.2s
+ *  window carry the seek's priming transient and the window's flush
+ *  transient — measured on a steady 1760 Hz tone, they read 2468 Hz and
+ *  2103 Hz against 1771 Hz (±1 Hz) for every frame between them, which is
+ *  a bigger miss than `toBeCloseTo`'s tolerance allows and would otherwise
+ *  make this a frequency-plus-edge-noise reader rather than a frequency
+ *  one. Dropped rather than averaged in. */
+async function peakHzAt(path: string, at: number): Promise<number> {
+  const { stderr } = await run("ffmpeg", [
+    "-v", "info", "-ss", String(at), "-t", "0.2", "-i", path,
+    "-af", "aspectralstats=measure=centroid,ametadata=mode=print:key=lavfi.aspectralstats.1.centroid",
+    "-f", "null", "-",
+  ]);
+  const hits = [...stderr.matchAll(/centroid=([\d.]+)/g)].map((m) => Number(m[1]));
+  if (hits.length === 0) throw new Error(`no centroid read from ${path} at ${at}s`);
+  const steady = hits.length > 2 ? hits.slice(1, -1) : hits;
+  return steady.reduce((a, b) => a + b, 0) / steady.length;
+}
+
+describe("concatMusic", () => {
+  it("returns the single input untouched, writing nothing", async () => {
+    // THE identity: one track must not pay a pass, a temp file or a new
+    // failure mode for a feature it does not use.
+    const single = join(dir, "single.flac");
+    expect(await concatMusic([tone440a], single)).toBe(tone440a);
+    expect(existsSync(single)).toBe(false);
+  });
+
+  it("joins three tracks to their summed duration", async () => {
+    const joined = join(dir, "joined.flac");
+    const got = await concatMusic([tone440a, tone1760, tone440b], joined);
+    expect(got).toBe(joined);
+    const { seconds } = await probeAudio(joined);
+    expect(seconds).toBeGreaterThan(5.8);
+    expect(seconds).toBeLessThan(6.2);
+  });
+
+  it("keeps each track's own tone in its own third", async () => {
+    const ordered = join(dir, "ordered.flac");
+    await concatMusic([tone440a, tone1760, tone440b], ordered);
+    // 1760 Hz lives in the middle two seconds alone, so the middle sample is
+    // what proves the ORDER rather than merely the length.
+    expect(await peakHzAt(ordered, 1.0)).toBeCloseTo(440, -2);
+    expect(await peakHzAt(ordered, 3.0)).toBeCloseTo(1760, -2);
+    expect(await peakHzAt(ordered, 5.0)).toBeCloseTo(440, -2);
+  });
+
+  it("dips at each seam and not at the head or tail", async () => {
+    const seams = join(dir, "seams.flac");
+    await concatMusic([tone440a, tone1760, tone440b], seams);
+    const seam = (await loudness(seams, 1.95, 0.1)).mean;
+    const inside = (await loudness(seams, 1.0, 0.1)).mean;
+    const head = (await loudness(seams, 0.0, 0.1)).mean;
+    const tail = (await loudness(seams, 5.9, 0.1)).mean;
+    expect(seam).toBeLessThan(inside - 10);
+    // The mix opens and closes deliberately — fading either is fading
+    // something that already starts and ends on purpose.
+    expect(head).toBeGreaterThan(seam + 10);
+    expect(tail).toBeGreaterThan(seam + 10);
+  });
 });

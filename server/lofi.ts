@@ -37,6 +37,15 @@ const CRF = "20";
  *  value. Change one and change the other. */
 export const FADE = 0.5;
 
+/** How long the dip at each seam between two tracks takes.
+ *
+ *  Longer than this journey's own `FADE` (0.5s), and declared separately
+ *  rather than shared with it: `FADE` measures a VOICE's breathing room and
+ *  this measures a seam between two pieces of music. One constant for two
+ *  jobs means tuning either one moves the other — the same reason
+ *  `longform.ts` and `starter.ts` keep separate blur sigmas. */
+export const TRACK_FADE = 1.5;
+
 /** The speech's own band. An AM-radio 300-3000 Hz is the whole "lofi
  *  effect" — it is what makes a clean recording sit inside the mix instead
  *  of on top of it. */
@@ -279,6 +288,77 @@ export async function checkLofi(): Promise<void> {
       process.exit(1);
     }
   }
+}
+
+/** Joins the music tracks into one file and returns the path to use as the
+ *  render's music.
+ *
+ *  **One track returns its own path and writes nothing.** That identity is
+ *  the point: the existing single-track journey must not pay an extra pass,
+ *  a ~1 GB temp file or a new failure mode for a feature it does not use.
+ *
+ *  Why a PRE-PASS rather than N inputs on the main graph. The obvious shape
+ *  is `concat` inside `renderLofi`, and it works — but a three-hour render
+ *  at four minutes a track is around forty-five tracks, which is forty-five
+ *  more ffmpeg inputs on a graph that already carries the background, every
+ *  speech, the crackle and the mark. More importantly it would make
+ *  `seconds` an arithmetic SUM, and this journey's duration invariant is
+ *  that nothing sums: the route probes one file and `outName` commits that
+ *  number to the filename. Building the file here keeps the invariant
+ *  verbatim — the duration is still the music's, by construction, and the
+ *  music is now a file this function built.
+ *
+ *  flac, so the tracks are not lossily re-encoded twice on their way to the
+ *  render's AAC. Roughly 1 GB for three hours, in the caller's temp dir.
+ *
+ *  The seam is a DIP ON EACH LEG, never `acrossfade`. A crossfade overlaps
+ *  the legs, so the output is `(N-1) * d` shorter than the tracks sum to —
+ *  and the sum is what the caller has already committed to in the filename.
+ *  A dip keeps the total exact by construction. Same decision, same reason,
+ *  as `stackWide`'s transition. */
+export async function concatMusic(paths: string[], out: string): Promise<string> {
+  const first = paths[0];
+  if (first === undefined) throw new Error("concatMusic needs at least one track.");
+  if (paths.length === 1) return first;
+
+  const probed = await Promise.all(paths.map((p) => probeAudio(p)));
+  const fmt = `aformat=sample_fmts=fltp:channel_layouts=stereo`;
+  const legs: string[] = [];
+  paths.forEach((_, i) => {
+    const secs = probed[i]?.seconds ?? 0;
+    // Clamped to a third of the track, the same clamp `stackWide` carries
+    // and for the same two symptoms of one defect: on a track shorter than
+    // `2 * TRACK_FADE` an unclamped fade-in and fade-out overlap and
+    // MULTIPLY to roughly quarter level, and once the track is shorter than
+    // the fade itself the fade-out's `st` goes negative and ffmpeg refuses
+    // the graph outright.
+    const d = Math.min(TRACK_FADE, secs / 3);
+    // Only BETWEEN tracks: the mix opens on its first track and closes on
+    // its last, both deliberately, and fading either is fading something
+    // that already begins and ends on purpose.
+    const fadeIn = i > 0 ? `afade=t=in:st=0:d=${d},` : "";
+    const fadeOut = i < paths.length - 1 ? `afade=t=out:st=${secs - d}:d=${d},` : "";
+    legs.push(`[${i}:a]aresample=${RATE},${fmt},${fadeIn}${fadeOut}anull[t${i}]`);
+  });
+  legs.push(`${paths.map((_, i) => `[t${i}]`).join("")}concat=n=${paths.length}:v=0:a=1[out]`);
+
+  try {
+    await run(
+      "ffmpeg",
+      [
+        "-v", "error",
+        ...paths.flatMap((p) => ["-i", p]),
+        "-filter_complex", legs.join(";"),
+        "-map", "[out]",
+        "-c:a", "flac",
+        "-y", out,
+      ],
+      { maxBuffer: 16 << 20 },
+    );
+  } catch (err) {
+    throw toolError("ffmpeg", err);
+  }
+  return out;
 }
 
 /** How many frames the background carries, or 0 when ffprobe will not say.
