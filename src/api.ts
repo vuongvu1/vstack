@@ -158,7 +158,10 @@ export type LofiResult = { name: string; url: string; size: number };
  *  `renderWide` — the render's own background, held for every frame. */
 export async function lofi(body: {
   title: string;
-  music: string;
+  /** The uploaded tracks IN PLAY ORDER. The client has already applied the
+   *  `1_` pin and the shuffle, because the original filename never crosses
+   *  this wire — the server sees ids and no names. */
+  music: string[];
   /** Omitted when `bgId` is sent: a still the render never shows would be a
    *  lie rather than a spare. Exactly one of the two. */
   image?: string;
@@ -325,6 +328,25 @@ export async function publish(body: {
 export async function publishProgress(): Promise<{ sent: number; total: number }> {
   return (await post("/api/publish/progress", {})).json() as Promise<{
     sent: number;
+    total: number;
+  }>;
+}
+
+/** How far the running render has got. Polled while a lofi render is in
+ *  flight; `total` of 0 means nothing is running.
+ *
+ *  A POST to a route that reads like a GET, exactly as `publishProgress` is —
+ *  the server routes on `req.url` alone and never checks the method, and
+ *  going through the shared `post` helper is what gives this the same
+ *  BACKEND_DOWN handling every other call has. */
+export async function lofiProgress(): Promise<{
+  phase: "music" | "render";
+  done: number;
+  total: number;
+}> {
+  return (await post("/api/lofi/progress", {})).json() as Promise<{
+    phase: "music" | "render";
+    done: number;
     total: number;
   }>;
 }

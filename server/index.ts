@@ -18,7 +18,7 @@ import { promisify } from "node:util";
 import type { Rect } from "../src/geometry.ts";
 import { layoutById } from "../src/layout.ts";
 import type { CustomBox } from "../src/custom.ts";
-import { MAX_PARTS, MAX_SPEECHES, UPLOAD_MAX_BYTES } from "../src/defaults.ts";
+import { MAX_DROPS, MAX_PARTS, MAX_SPEECHES, MAX_TRACKS, UPLOAD_MAX_BYTES } from "../src/defaults.ts";
 import { MAX_SEGMENTS, isValidSegments, keepRanges, totalDuration } from "../src/segments.ts";
 import type { Segment } from "../src/segments.ts";
 import { HttpError } from "./errors.ts";
@@ -51,7 +51,7 @@ import { fetchChat, parseChat, peaks } from "./chat.ts";
 import { ensureMask } from "./mask.ts";
 import type { Trim } from "./longform.ts";
 import { checkLongform, detectTrim, keptRange, stackWide } from "./longform.ts";
-import { checkLofi, renderLofi } from "./lofi.ts";
+import { checkLofi, clearProgress, concatMusic, renderLofi, renderProgress } from "./lofi.ts";
 import {
   END_PATH,
   VOICE,
@@ -968,18 +968,34 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // GIF's own first frame at 1280x720. A publish thumbnail is a still JPEG
     // whatever the render does, so there is nothing to decide here.
     const thumb = jpeg(raw.thumb, "thumb");
-    if (!isUploadId(raw.music)) return send(res, 400, { error: "Bad music id." });
-    const musicPath = uploadPath(raw.music);
-    if (!existsSync(musicPath)) {
-      return send(res, 404, { error: "That music upload is no longer on disk." });
+    // A LIST now, in play order — the client has already resolved the `1_`
+    // pin and the shuffle, because the filename never crosses the wire.
+    const tracks = raw.music;
+    if (!Array.isArray(tracks) || tracks.length === 0) {
+      return send(res, 400, { error: "music must be a non-empty array of upload ids." });
+    }
+    if (tracks.length > MAX_TRACKS) {
+      return send(res, 400, { error: `At most ${MAX_TRACKS} tracks.` });
+    }
+    const trackPaths: string[] = [];
+    for (const id of tracks) {
+      if (!isUploadId(id)) return send(res, 400, { error: "Bad music id." });
+      const path = uploadPath(id);
+      if (!existsSync(path)) {
+        return send(res, 404, { error: "That music upload is no longer on disk." });
+      }
+      trackPaths.push(path);
     }
 
     const speeches = raw.speeches;
     if (!Array.isArray(speeches) || speeches.length === 0) {
       return send(res, 400, { error: "speeches must be a non-empty array." });
     }
-    if (speeches.length > MAX_SPEECHES) {
-      return send(res, 400, { error: `At most ${MAX_SPEECHES} speeches.` });
+    // Two caps now, because a speech repeats: DROPS bound the filter graph's
+    // legs and FILES bound its inputs. Checking only the first would let
+    // eighty distinct uploads through under a 120-drop limit.
+    if (speeches.length > MAX_DROPS) {
+      return send(res, 400, { error: `At most ${MAX_DROPS} speech drops.` });
     }
     const cuts: { path: string; at: number }[] = [];
     for (const entry of speeches) {
@@ -998,85 +1014,111 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       cuts.push({ path, at });
     }
     cuts.sort((a, b) => a.at - b.at);
-
-    // Every bound is checked against durations the SERVER probed. The client
-    // sends only positions: a length it reported could put a cut-in past the
-    // end of the track, which ffmpeg renders as a graph that fails minutes
-    // in rather than as an error anyone can read.
-    const { seconds: musicLength } = await probeAudio(musicPath);
-    // `probeAudio` on a speech as well as on the track: a speech is mixed in
-    // as AUDIO ONLY — its pictures, if it has any, are never rendered — so a
-    // bare .mp3 is as legitimate here as an .mp4, and `probeFile` refuses the
-    // first outright. It is also the gate that keeps a file with no audio
-    // stream out of a render it could only contribute silence to.
-    const lengths = await Promise.all(cuts.map((c) => probeAudio(c.path)));
-    for (const [i, cut] of cuts.entries()) {
-      const dur = lengths[i]?.seconds ?? 0;
-      if (cut.at + dur > musicLength) {
-        return send(res, 400, { error: "A speech runs past the end of the track." });
-      }
-      const prev = cuts[i - 1];
-      const prevDur = lengths[i - 1]?.seconds ?? 0;
-      if (prev !== undefined && cut.at < prev.at + prevDur) {
-        return send(res, 400, { error: "Two speeches overlap." });
-      }
+    const distinct = new Set(cuts.map((c) => c.path));
+    if (distinct.size > MAX_SPEECHES) {
+      return send(res, 400, { error: `At most ${MAX_SPEECHES} speech files.` });
     }
 
     await mkdir(OUT_DIR, { recursive: true });
-    // Marks of 0 and the track's length, ceiled — `<slug>-0000-<mmss>.mp4`,
-    // which today's OUT_NAME already accepts. That is the whole reason
-    // /out/, /api/reveal and /api/publish need no changes here.
-    const total = Math.ceil(musicLength);
-    const name = outName(title, 0, total);
-    const outFile = join(OUT_DIR, name);
-    const partial = outFile.replace(/\.mp4$/, `.${randomUUID()}.part.mp4`);
-
-    // `renderLofi` takes a path and the picture arrived as bytes, so it goes
-    // to a temp dir this route sweeps in its own `finally` — the same shape
-    // /api/export and /api/say already use. Not tracked in `inFlight`: it is
-    // in $TMPDIR, is not servable, and has no name a client could request.
+    // Created here, ABOVE the music probe, because `concatMusic` needs
+    // somewhere to write the joined track before there is anything else to
+    // probe. Not tracked in `inFlight`: it is in $TMPDIR, is not servable,
+    // and has no name a client could request.
+    //
+    // Everything from here on — including every validation `return` still
+    // to come — is wrapped in this outer `try`, because a bad request that
+    // throws or returns early after `work` exists must still sweep it. The
+    // inner `try` below is unchanged and owns only `partial`, which is not
+    // even named yet at this point.
     const work = await mkdtemp(join(tmpdir(), "vstack-lofi-"));
-    // An upload is already a path; a still is bytes that need one. Only the
-    // second needs the temp dir, which is why this is the one thing left in
-    // it — the `finally` sweeps it either way.
-    let bgPath: string;
-    if (background.kind === "upload") {
-      bgPath = uploadPath(background.id);
-    } else {
-      bgPath = join(work, "bg.jpg");
-      await writeFile(bgPath, background.bytes);
-    }
-
-    inFlight.add(partial);
     try {
-      await renderLofi({ background: bgPath, music: musicPath, cuts, out: partial });
-      await rename(partial, outFile);
-      await writeFile(thumbPath(outFile), thumb).catch((err: unknown) => {
-        console.warn(`vstack: could not save the thumbnail beside ${name}:`, err);
-      });
-      // After the rename and the sidecar, never before: a failed render must
-      // leave the render it was replacing intact. Skipped when the name is
-      // unchanged, which would unlink the file just written.
-      if (isOutName(raw.prev) && raw.prev !== name) {
-        await removeExport(outPath(raw.prev)).catch((err: unknown) => {
-          console.warn(`vstack: could not remove the previous out/${raw.prev}:`, err);
+      // Every bound is checked against durations the SERVER probed. The
+      // client sends only positions: a length it reported could put a
+      // cut-in past the end of the track, which ffmpeg renders as a graph
+      // that fails minutes in rather than as an error anyone can read.
+      //
+      // The pre-pass. One track returns its own path and writes nothing, so
+      // the single-track journey is byte-identical to what it was.
+      const musicPath = await concatMusic(trackPaths, join(work, "music.flac"));
+      // Probed from the file that will actually be rendered — NOT summed
+      // from the tracks. That is what keeps "the duration is the music's, by
+      // construction" true now that there are several of them.
+      const { seconds: musicLength } = await probeAudio(musicPath);
+      // `probeAudio` on a speech as well as on the track: a speech is mixed
+      // in as AUDIO ONLY — its pictures, if it has any, are never rendered —
+      // so a bare .mp3 is as legitimate here as an .mp4, and `probeFile`
+      // refuses the first outright. It is also the gate that keeps a file
+      // with no audio stream out of a render it could only contribute
+      // silence to.
+      const lengths = await Promise.all(cuts.map((c) => probeAudio(c.path)));
+      for (const [i, cut] of cuts.entries()) {
+        const dur = lengths[i]?.seconds ?? 0;
+        if (cut.at + dur > musicLength) {
+          return send(res, 400, { error: "A speech runs past the end of the track." });
+        }
+        const prev = cuts[i - 1];
+        const prevDur = lengths[i - 1]?.seconds ?? 0;
+        if (prev !== undefined && cut.at < prev.at + prevDur) {
+          return send(res, 400, { error: "Two speeches overlap." });
+        }
+      }
+
+      // Marks of 0 and the track's length, ceiled — `<slug>-0000-<mmss>.mp4`,
+      // which today's OUT_NAME already accepts. That is the whole reason
+      // /out/, /api/reveal and /api/publish need no changes here.
+      const total = Math.ceil(musicLength);
+      const name = outName(title, 0, total);
+      const outFile = join(OUT_DIR, name);
+      const partial = outFile.replace(/\.mp4$/, `.${randomUUID()}.part.mp4`);
+
+      // An upload is already a path; a still is bytes that need one. Only
+      // the second needs the temp dir, which is why this is the one thing
+      // left in it — the outer `finally` sweeps it either way.
+      let bgPath: string;
+      if (background.kind === "upload") {
+        bgPath = uploadPath(background.id);
+      } else {
+        bgPath = join(work, "bg.jpg");
+        await writeFile(bgPath, background.bytes);
+      }
+
+      inFlight.add(partial);
+      try {
+        await renderLofi({ background: bgPath, music: musicPath, cuts, out: partial });
+        await rename(partial, outFile);
+        await writeFile(thumbPath(outFile), thumb).catch((err: unknown) => {
+          console.warn(`vstack: could not save the thumbnail beside ${name}:`, err);
+        });
+        // After the rename and the sidecar, never before: a failed render
+        // must leave the render it was replacing intact. Skipped when the
+        // name is unchanged, which would unlink the file just written.
+        if (isOutName(raw.prev) && raw.prev !== name) {
+          await removeExport(outPath(raw.prev)).catch((err: unknown) => {
+            console.warn(`vstack: could not remove the previous out/${raw.prev}:`, err);
+          });
+        }
+        const { size, mtimeMs } = statSync(outFile);
+        console.warn(`vstack: mixed out/${name} (${Math.round(size / 1e6)} MB)`);
+        return send(res, 200, {
+          name,
+          // The mtime is the cache-buster: the name is stable across
+          // re-renders, so without it the <video> re-shows the previous one.
+          url: `/out/${name}?t=${Math.round(mtimeMs)}`,
+          size,
+          duration: total,
+        });
+      } finally {
+        inFlight.delete(partial);
+        await rm(partial, { force: true }).catch((err: unknown) => {
+          console.error("vstack: lofi partial cleanup failed:", err);
         });
       }
-      const { size, mtimeMs } = statSync(outFile);
-      console.warn(`vstack: mixed out/${name} (${Math.round(size / 1e6)} MB)`);
-      return send(res, 200, {
-        name,
-        // The mtime is the cache-buster: the name is stable across
-        // re-renders, so without it the <video> re-shows the previous one.
-        url: `/out/${name}?t=${Math.round(mtimeMs)}`,
-        size,
-        duration: total,
-      });
     } finally {
-      inFlight.delete(partial);
-      await rm(partial, { force: true }).catch((err: unknown) => {
-        console.error("vstack: lofi partial cleanup failed:", err);
-      });
+      // The progress slot is cleared here rather than only on success: a
+      // request that throws or returns a validation error mid-render must
+      // not leave a stale `{ phase, done, total }` for the NEXT render's
+      // first poll to read.
+      clearProgress();
       await rm(work, { recursive: true, force: true }).catch((err: unknown) => {
         console.error("vstack: lofi temp cleanup failed:", err);
       });
@@ -1234,6 +1276,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // Polled twice a second by the client while an upload runs. Exact string
   // equality above means this never shadows /api/publish and vice versa.
   if (req.url === "/api/publish/progress") return send(res, 200, publishProgress());
+
+  // A distinct URL rather than a flag: `server/index.ts` routes on exact
+  // `req.url` equality, so `/api/lofi?progress=1` would miss the `/api/lofi`
+  // branch entirely rather than reaching a flag inside it.
+  if (req.url === "/api/lofi/progress") return send(res, 200, renderProgress());
 
   // The framing bar's voice dropdown. Served from the boot cache, so it costs
   // nothing and cannot disagree with what /api/export will accept.
