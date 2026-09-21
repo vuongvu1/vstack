@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BUCKETS_PER_SEC, FADE, MIN_GAP, SKIP_HEAD, SKIP_TAIL, clampPlacement, troughs } from "./lofi.ts";
+import { BUCKETS_PER_SEC, FADE, MIN_GAP, SKIP_HEAD, SKIP_TAIL, clampPlacement, orderByPrefix, troughs } from "./lofi.ts";
 import type { Placement, Speech } from "./lofi.ts";
 
 /** An envelope at `loud` everywhere except inside `holes`, which sit at
@@ -206,5 +206,46 @@ describe("clampPlacement", () => {
   it("returns the placements unchanged for an id it does not know", () => {
     const placements: Placement[] = [{ id: "a", at: 30 }];
     expect(clampPlacement(placements, speeches, "ghost", 100, 300)).toBe(placements);
+  });
+});
+
+describe("orderByPrefix", () => {
+  const named = (...names: string[]) => names.map((name) => ({ name }));
+
+  it("pins a 1_ file first", () => {
+    const out = orderByPrefix(named("b.mp3", "1_intro.mp3", "c.mp3"), () => 0);
+    expect(out[0]?.name).toBe("1_intro.mp3");
+  });
+
+  it("gives the first of two 1_ files the pin and shuffles the other", () => {
+    const out = orderByPrefix(named("1_a.mp3", "1_b.mp3", "c.mp3"), () => 0);
+    expect(out[0]?.name).toBe("1_a.mp3");
+    expect(out.map((x) => x.name).sort()).toEqual(["1_a.mp3", "1_b.mp3", "c.mp3"]);
+  });
+
+  it("shuffles everything when no file is pinned", () => {
+    // Fisher-Yates with rand() === 0 swaps each i down to index 0, which
+    // rotates [a,b,c] to [b,c,a]. Deterministic, so a shuffle that never
+    // moves anything fails here.
+    const out = orderByPrefix(named("a", "b", "c"), () => 0);
+    expect(out.map((x) => x.name)).toEqual(["b", "c", "a"]);
+  });
+
+  it("is always a permutation of its input", () => {
+    const input = named("a", "b", "1_c", "d", "e");
+    const out = orderByPrefix(input, () => 0.5);
+    expect(out.map((x) => x.name).sort()).toEqual(["1_c", "a", "b", "d", "e"]);
+    expect(out).toHaveLength(5);
+  });
+
+  it("does not mutate the caller's array", () => {
+    const input = named("a", "b", "1_c");
+    orderByPrefix(input, () => 0);
+    expect(input.map((x) => x.name)).toEqual(["a", "b", "1_c"]);
+  });
+
+  it("handles empty and single-item lists", () => {
+    expect(orderByPrefix([], () => 0)).toEqual([]);
+    expect(orderByPrefix(named("1_only"), () => 0).map((x) => x.name)).toEqual(["1_only"]);
   });
 });

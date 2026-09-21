@@ -202,3 +202,44 @@ export function clampPlacement(
   const at = Math.min(Math.max(want, lo), hi);
   return placements.map((p) => (p.id === id ? { ...p, at } : p));
 }
+
+/** Play order for a list of uploaded files: a name beginning `1_` goes
+ *  first, everything else is shuffled.
+ *
+ *  Generic over `{ name }` because the music list and the speech list take
+ *  the identical rule and neither knows about the other.
+ *
+ *  This reads the FILENAME, which is why it lives on the client: the
+ *  original name never crosses the wire — `/api/upload` answers with a UUID
+ *  and the panel keeps the name purely for display. So the client resolves
+ *  the order and sends the resolved list; the server sees ids and no names,
+ *  and its trust boundary stays exactly where it was.
+ *
+ *  `rand` is injected so the shuffle can be tested for more than the
+ *  permutation property — with `Math.random` a shuffle that never moves
+ *  anything passes every assertion worth writing.
+ *
+ *  Two `1_` files is not an error: the first in list order takes the pin and
+ *  the other joins the shuffled tail. It is a filename convention rather
+ *  than a validated input, and refusing a render over it would be the wrong
+ *  severity. */
+export function orderByPrefix<T extends { name: string }>(
+  items: T[],
+  rand: () => number = Math.random,
+): T[] {
+  const pinnedAt = items.findIndex((x) => /^1_/.test(x.name));
+  const rest = items.filter((_, i) => i !== pinnedAt);
+  // Fisher-Yates over a copy. The caller's array is the panel's list and
+  // reordering it as a side effect would move rows under the user.
+  for (let i = rest.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    const a = rest[i];
+    const b = rest[j];
+    if (a !== undefined && b !== undefined) {
+      rest[i] = b;
+      rest[j] = a;
+    }
+  }
+  const pinned = pinnedAt === -1 ? undefined : items[pinnedAt];
+  return pinned === undefined ? rest : [pinned, ...rest];
+}
