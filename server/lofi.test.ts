@@ -282,20 +282,40 @@ describe("renderLofi", () => {
     expect(probed.seconds).toBeLessThan(30.5);
   });
 
-  it("leaves a progress file behind that renderProgress reads back", () => {
-    // Permanent rather than the brief's suggested temporary
-    // `console.error(renderProgress())`: this runs immediately after
-    // `beforeAll`'s one `renderLofi` call and before any other test's own
-    // call overwrites the module-scoped slot, so it reads exactly that run's
-    // `<out>.progress` file. A finished ffmpeg run has written through to
-    // (near) the end, so `done` sits close to the music's own duration
-    // rather than at 0 — the failure this guards against is a progress bar
-    // that never renders anything, which a bare `> 0` would not catch if the
-    // parser stopped at the first block instead of the last.
-    const p = renderProgress();
-    expect(p.phase).toBe("render");
-    expect(p.total).toBeGreaterThan(29.5);
-    expect(p.done).toBeGreaterThan(p.total - 1);
+  it("reads real progress while a render is in flight, then sweeps the file behind it", async () => {
+    // This used to read `beforeAll`'s own already-finished render, on the
+    // premise that a finished ffmpeg run leaves its `<out>.progress` file on
+    // disk for a later poll to read. That premise is exactly the debt this
+    // suite's sibling fix removed: `renderLofi` now deletes its own
+    // `<out>.progress` in a `finally`, the instant ffmpeg exits, so by the
+    // time any `it` runs after `beforeAll` the file described here is
+    // already gone. Proving the on-disk `-progress` output is real and
+    // parses through a live run therefore needs a render still IN FLIGHT to
+    // poll against, so this starts a second one rather than reusing `out`.
+    const out2 = join(dir, "out2.mp4");
+    const pending = renderLofi({ background: bg, music, cuts: [], out: out2 });
+    let settled = false;
+    pending.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+    let seenDone = 0;
+    while (!settled) {
+      seenDone = Math.max(seenDone, renderProgress().done);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    await pending;
+    // Real ffmpeg output was read and parsed to a positive position — the
+    // failure this guards against is a progress bar that never renders
+    // anything. (Reading the LAST out_time_us block rather than the first is
+    // covered exactly by the synthetic `parseProgress` tests above; polling
+    // a live process cannot pin that down without risking flakiness on how
+    // often ffmpeg happens to flush a block before exiting.)
+    expect(seenDone).toBeGreaterThan(0);
+    // THE assertion for the sweep itself: nothing is left on disk once the
+    // render — successful or not — has finished, which is what keeps this
+    // file off the user's own `OUT_DIR` in a real run.
+    expect(existsSync(`${out2}.progress`)).toBe(false);
   });
 
   it("keeps the audio STREAM itself as long as the music, not just the container", async () => {

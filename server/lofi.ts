@@ -6,6 +6,7 @@
 
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { toolError } from "./errors.ts";
@@ -402,6 +403,14 @@ export async function concatMusic(paths: string[], out: string): Promise<string>
     );
   } catch (err) {
     throw toolError("ffmpeg", err);
+  } finally {
+    // Swept here, not by the route: `out` is the caller's own path (a temp
+    // dir today), and `${out}.progress` is a name only this function ever
+    // writes, so this is the one place that knows it exists at all.
+    // `force: true` because ffmpeg may have died before its first block,
+    // before the file was ever created — that must not raise a second error
+    // masking the first.
+    await rm(`${out}.progress`, { force: true });
   }
   return out;
 }
@@ -817,6 +826,21 @@ export async function renderLofi(opts: {
     );
   } catch (err) {
     throw toolError("ffmpeg", err);
+  } finally {
+    // Swept HERE rather than by the route, and that placement matters more
+    // for this call than for `concatMusic`'s: `out` is the partial inside
+    // `OUT_DIR`, which on this machine is `~/Desktop/vstack` — a directory
+    // this codebase treats as the user's own, not scratch space it already
+    // sweeps wholesale the way it sweeps its temp dir. The partial itself is
+    // renamed on success and unlinked on failure by the route, but neither
+    // path touches `${out}.progress`, and no existing name check
+    // (`isOutName`/`isCutName`) matches a `.progress` suffix — so nothing
+    // else in the codebase could ever find this file to remove it. `rm`
+    // creates and cleans its own litter rather than handing `server/index.ts`
+    // a filename convention to keep in sync with. `force: true` for the same
+    // reason as above — a render can fail before ffmpeg writes its first
+    // progress block.
+    await rm(`${out}.progress`, { force: true });
   }
   return out;
 }
