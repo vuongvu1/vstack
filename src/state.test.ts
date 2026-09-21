@@ -834,3 +834,29 @@ describe("the lofi journey's state", () => {
     expect(stored).not.toHaveProperty("placements");
   });
 });
+
+describe("the cutter's state", () => {
+  // Mutation-tested the way the lofi fields' exclusion is: putting any of
+  // these into save()'s record fails here. A cut is over when its files are
+  // on disk, and cutUploadId names a file the user may have swept from
+  // media/uploads/ by hand — a restored id pointing at nothing would look
+  // like a working panel right up until Cut.
+  it("does not persist the cutter's session fields", () => {
+    setState({
+      videoId: "abc12345678",
+      phase: "cutting",
+      cutBase: "an com chua",
+      cutRanges: [{ start: 1, end: 2 }],
+      cutSeconds: 120,
+      cutUploadId: "8f14e45f-ceea-467a-9e2f-9c8d0e6a1b23",
+      cutNames: ["an-com-chua-1.mp3"],
+    });
+    save();
+    const stored = readRaw("abc12345678") as Record<string, unknown>;
+    expect(stored).not.toHaveProperty("cutBase");
+    expect(stored).not.toHaveProperty("cutRanges");
+    expect(stored).not.toHaveProperty("cutSeconds");
+    expect(stored).not.toHaveProperty("cutUploadId");
+    expect(stored).not.toHaveProperty("cutNames");
+  });
+});

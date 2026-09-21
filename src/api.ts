@@ -180,6 +180,27 @@ export async function lofi(body: {
   return (await post("/api/lofi", body)).json() as Promise<LofiResult>;
 }
 
+/** What `/api/cut` answers with: one filename per range, in range order.
+ *  No url and no size — this journey never plays its output back, it reveals
+ *  it in Finder. */
+export type CutResult = { names: string[] };
+
+/** Cuts the uploaded file into one mp3 per range. `id` is the UUID `upload`
+ *  returned; `ranges` are seconds in the file's own timeline, which is the
+ *  only timeline this journey has — there is no window and no PAD here.
+ *
+ *  `prev` is the previous cut's names, so an index-based rename does not
+ *  leave the superseded files on the Desktop. Omitted on the first cut of a
+ *  session. */
+export async function cut(body: {
+  id: string;
+  base: string;
+  ranges: Segment[];
+  prev?: string[];
+}): Promise<CutResult> {
+  return (await post("/api/cut", body)).json() as Promise<CutResult>;
+}
+
 export async function probe(url: string): Promise<ProbeResult> {
   return (await post("/api/probe", { url })).json() as Promise<ProbeResult>;
 }

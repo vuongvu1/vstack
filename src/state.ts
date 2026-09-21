@@ -8,7 +8,15 @@ import { isValidSegments, keepRanges, totalDuration } from "./segments.ts";
 import type { Segment } from "./segments.ts";
 import type { Placement, Speech } from "./lofi.ts";
 
-export type Phase = "idle" | "trimming" | "framing" | "stacking" | "lofi" | "moments" | "preview";
+export type Phase =
+  | "idle"
+  | "trimming"
+  | "framing"
+  | "stacking"
+  | "lofi"
+  | "moments"
+  | "cutting"
+  | "preview";
 
 /** One uploaded long-form part.
  *
@@ -83,6 +91,39 @@ export type AppState = {
    *  found in, and that envelope (`lofiEnv`, a module-scoped decode) is never
    *  persisted either — there is nothing to restore a placement against. */
   placements: Placement[];
+  /** The picked file, held so the strip and the <video> both have it and so
+   *  a re-pick replaces rather than accumulates. `null` until picked.
+   *
+   *  NOT persisted, and not persistable: a `File` handle does not survive a
+   *  reload, and the object URL built from it is revoked on leaving the
+   *  phase. */
+  cutFile: File | null;
+  /** The upload's id once `/api/upload-audio` has answered. `""` while the
+   *  upload is still in flight, which is what the Cut button waits on —
+   *  marking ranges does not.
+   *
+   *  NOT persisted, `music`'s reason exactly: it names an upload the user may
+   *  have swept from `media/uploads/` by hand, and a restored id pointing at
+   *  a file that is gone would look like a working panel until Cut. */
+  cutUploadId: string;
+  /** The picked file's own decoded length, from `decodeTrack`. The strip's
+   *  axis and the bound every range is validated against. */
+  cutSeconds: number;
+  /** The ranges to cut, one mp3 each. Spent entirely through
+   *  `src/segments.ts` — `normalize` merges and sorts them, `editMark` moves
+   *  a mark, `isValidSegments` is what the server re-checks.
+   *
+   *  NOT persisted: a cut is over when its files are on disk. */
+  cutRanges: Segment[];
+  /** What each output file is named after, before `slugify` and the index.
+   *  Cut is gated on it being non-blank, the way Export is gated on
+   *  `starterTitle`. */
+  cutBase: string;
+  /** The previous cut's filenames, sent as `prev` so an index-based rename
+   *  does not strand them. In-memory like `outName`: a reload between two
+   *  cuts strands the older set, which is the accepted cost of not
+   *  persisting a field whose only job is naming files to destroy. */
+  cutNames: string[];
   /** The chat-moments lookup's result, and the video it belongs to.
    *
    *  NOT persisted, and `momentsFor` is a field of its own rather than a
@@ -218,6 +259,12 @@ const initial: AppState = {
   bgId: null,
   speeches: [],
   placements: [],
+  cutFile: null,
+  cutUploadId: "",
+  cutSeconds: 0,
+  cutRanges: [],
+  cutBase: "",
+  cutNames: [],
   moments: [],
   momentsFor: "",
   thumb: "",
