@@ -370,6 +370,42 @@ describe("renderLofi", () => {
     expect(isBackground(await pixelAt(two, 20.5, 960, 540))).toBe(true);
   }, 180_000);
 
+  it("plays one speech file at every one of its drops", async () => {
+    // Three drops of ONE file. If drops were opened as separate inputs and
+    // one were mis-indexed, the tone would be missing from that window while
+    // the render still succeeded — the silent failure this asserts against.
+    // `voice` is the existing 1200 Hz audio-only fixture, reused rather than
+    // duplicated.
+    const repeat = join(dir, "repeat.mp4");
+    await renderLofi({
+      background: bg,
+      music,
+      cuts: [
+        { path: voice, at: 4 },
+        { path: voice, at: 12 },
+        { path: voice, at: 20 },
+      ],
+      out: repeat,
+    });
+    // width=120, not the 200 a first draft of this test used: measured
+    // against the real bundled crackle asset (which plays full-spectrum,
+    // unconditionally, under every render), a 200 Hz-wide band around 1200 Hz
+    // has a floor of -54.2 dB even with NO speech at all — wider than the
+    // -55 dB "absent" threshold below needs. width=120 is the bandwidth the
+    // sibling "mixes two audio-only speeches" test above already uses for
+    // this identical 1200 Hz tone, and its floor measures -56.5..-57.3 dB in
+    // the same two windows this test checks.
+    const band = "bandpass=f=1200:width_type=h:width=120";
+    for (const at of [4.5, 12.5, 20.5]) {
+      expect((await loudness(repeat, at, 1, band)).mean).toBeGreaterThan(-45);
+    }
+    // And absent between them, which is what proves the delays are distinct
+    // rather than all three landing on one moment.
+    for (const at of [8, 16]) {
+      expect((await loudness(repeat, at, 1, band)).mean).toBeLessThan(-55);
+    }
+  }, 120_000);
+
   it("renders a speech whose audio is digital silence", async () => {
     // Legal input: it HAS an audio stream, so `probeAudio` passes it, and it
     // reaches the full vinyl chain — which the old graph's stand-in branch

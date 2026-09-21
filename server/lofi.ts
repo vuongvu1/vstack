@@ -452,12 +452,20 @@ export async function renderLofi(opts: {
   // here rather than rendering as a silent stretch nobody notices until they
   // watch the output.
   const probed = await Promise.all(cuts.map((c) => probeAudio(c.path)));
-  // Positional, the way `stackWide`'s inputs are: image, music, the
-  // speeches, the crackle. There is no conditional input left in this graph
-  // — the `anullsrc` stand-in went with the cut-in it stood in for — so the
-  // arithmetic is now flat.
+  // One INPUT per unique speech FILE, not one per drop. A repeated speech —
+  // a three-hour render at five-minute spacing might play four recordings
+  // thirty-odd times — would otherwise put one input on this graph per drop,
+  // on top of the background, the music, the crackle and the logo. This is
+  // the crackle leg's own shape (one input, `asplit` into its taps) applied
+  // to the speeches, computed here because the index arithmetic below needs
+  // the unique count rather than the drop count.
+  const uniquePaths = [...new Set(cuts.map((c) => c.path))];
+  // Positional, the way `stackWide`'s inputs are: image, music, the unique
+  // speech files, the crackle. There is no conditional input left in this
+  // graph — the `anullsrc` stand-in went with the cut-in it stood in for —
+  // so the arithmetic is now flat.
   const firstCut = 2;
-  const crackleIndex = firstCut + cuts.length;
+  const crackleIndex = firstCut + uniquePaths.length;
   // APPENDED LAST, after the crackle, which is the rule every input in this
   // graph has followed since the `anullsrc` stand-in taught it: an index
   // inserted above an existing one shifts that one silently. Nothing here is
@@ -487,7 +495,7 @@ export async function renderLofi(opts: {
     ? ["-stream_loop", "-1", "-t", String(seconds), "-i", background]
     : ["-loop", "1", "-framerate", String(FPS), "-t", String(seconds), "-i", background];
   inputs.push("-i", music);
-  for (const cut of cuts) inputs.push("-i", cut.path);
+  for (const path of uniquePaths) inputs.push("-i", path);
   // Looped rather than trimmed to length here: the asset is ~12s and a track
   // is minutes. Every tap below `atrim`s its own copy, and the output's own
   // `-t` bounds the lot, so the infinite input can never outrun the render.
@@ -589,39 +597,66 @@ export async function renderLofi(opts: {
   if (cuts.length === 0) {
     legs.push(`[music]anull[amix]`);
   } else {
+    // Grouped by FILE rather than walked by drop: `indexOfPath` is the input
+    // index each unique file landed at above, and `dropsOfPath` is which cut
+    // indices share it. A single drop takes no `asplit` at all, so a
+    // one-shot render's graph is byte-identical to the one it had before
+    // repeats existed.
+    const indexOfPath = new Map(uniquePaths.map((p, i) => [p, firstCut + i]));
+    const dropsOfPath = new Map<string, number[]>();
     cuts.forEach((cut, i) => {
-      const dur = probed[i]?.seconds ?? 0;
-      // `atrim` bounds a speech whose container runs longer than its own
-      // audio — a video file whose picture outlasts its sound is the
-      // ordinary case, since `dur` here is the CONTAINER's duration.
-      //
-      // ponytail: no `afade` at this hard `atrim` edge. A speech recording
-      // is usually near-silent at its own end, but a genuine click is
-      // possible on one that does not fade out on its own — and nothing
-      // covers it any more, now that the video no longer dips to black over
-      // the same instant. Add `afade=t=out:st=${dur - d}:d=${d}` (the `d`
-      // the crackle boost's own fades use, `Math.min(FADE, dur / 3)`) the
-      // day a real render audibly clicks; not added now because tuning it
-      // needs a recording to listen to, not a synthetic fixture.
-      //
-      // The vinyl treatment runs on every speech, unconditionally. It used
-      // to be skipped on a cut-in with no audio of its own, which was fed
-      // digital silence by an `anullsrc` stand-in — and that skip was a
-      // correctness fix rather than a saving, because some filters emit NaN
-      // on a zero signal and the NaN reaches the AAC encoder as `Error
-      // submitting audio frame to the encoder: Invalid argument`. There is
-      // no stand-in any more: `probeAudio` above refuses a file with no
-      // audio stream, so every leg here carries a real recording. A
-      // recording that happens to BE silent still reaches these filters, so
-      // the `mode=lin` rule on `acrusher` stays load-bearing.
-      legs.push(
-        `[${firstCut + i}:a]atrim=0:${dur},asetpts=PTS-STARTPTS,` +
-          `highpass=f=${SPEECH_HP},` +
-          `acrusher=bits=${CRUSH_BITS}:mode=lin:mix=${CRUSH_MIX},` +
-          `lowpass=f=${SPEECH_LP},volume=${SPEECH_GAIN},` +
-          `adelay=${Math.round(cut.at * 1000)}:all=1,aresample=${RATE},${fmt}[sp${i}]`,
-      );
+      const list = dropsOfPath.get(cut.path) ?? [];
+      list.push(i);
+      dropsOfPath.set(cut.path, list);
     });
+
+    for (const path of uniquePaths) {
+      const drops = dropsOfPath.get(path) ?? [];
+      const input = indexOfPath.get(path) ?? firstCut;
+      // A single drop takes no `asplit` at all, so a one-shot render's graph
+      // is byte-identical to the one it had before repeats existed.
+      if (drops.length > 1) {
+        const taps = drops.map((i) => `[raw${i}]`).join("");
+        legs.push(`[${input}:a]asplit=${drops.length}${taps}`);
+      }
+      for (const i of drops) {
+        const cut = cuts[i];
+        if (cut === undefined) continue;
+        const dur = probed[i]?.seconds ?? 0;
+        const src = drops.length > 1 ? `[raw${i}]` : `[${input}:a]`;
+        // `atrim` bounds a speech whose container runs longer than its own
+        // audio — a video file whose picture outlasts its sound is the
+        // ordinary case, since `dur` here is the CONTAINER's duration.
+        //
+        // ponytail: no `afade` at this hard `atrim` edge. A speech recording
+        // is usually near-silent at its own end, but a genuine click is
+        // possible on one that does not fade out on its own — and nothing
+        // covers it any more, now that the video no longer dips to black
+        // over the same instant. Add `afade=t=out:st=${dur - d}:d=${d}`
+        // (the `d` the crackle boost's own fades use, `Math.min(FADE, dur /
+        // 3)`) the day a real render audibly clicks; not added now because
+        // tuning it needs a recording to listen to, not a synthetic
+        // fixture.
+        //
+        // The vinyl treatment runs on every speech, unconditionally. It
+        // used to be skipped on a cut-in with no audio of its own, which was
+        // fed digital silence by an `anullsrc` stand-in — and that skip was
+        // a correctness fix rather than a saving, because some filters emit
+        // NaN on a zero signal and the NaN reaches the AAC encoder as
+        // `Error submitting audio frame to the encoder: Invalid argument`.
+        // There is no stand-in any more: `probeAudio` above refuses a file
+        // with no audio stream, so every leg here carries a real recording.
+        // A recording that happens to BE silent still reaches these
+        // filters, so the `mode=lin` rule on `acrusher` stays load-bearing.
+        legs.push(
+          `${src}atrim=0:${dur},asetpts=PTS-STARTPTS,` +
+            `highpass=f=${SPEECH_HP},` +
+            `acrusher=bits=${CRUSH_BITS}:mode=lin:mix=${CRUSH_MIX},` +
+            `lowpass=f=${SPEECH_LP},volume=${SPEECH_GAIN},` +
+            `adelay=${Math.round(cut.at * 1000)}:all=1,aresample=${RATE},${fmt}[sp${i}]`,
+        );
+      }
+    }
     const spLabels = cuts.map((_, i) => `[sp${i}]`).join("");
     legs.push(
       cuts.length === 1
