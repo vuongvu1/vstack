@@ -5,7 +5,7 @@
  *  `MEDIA_DIR` nor `OUT_DIR`, and may read `probeAudio` and nothing else. */
 
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { toolError } from "./errors.ts";
@@ -278,6 +278,47 @@ export const VIZ_BAR = {
  *  one before it. */
 export type Cut = { path: string; at: number };
 
+/** Seconds done, from a `-progress` file's body.
+ *
+ *  ffmpeg APPENDS a key/value block per update rather than rewriting, so the
+ *  file is a log and the last `out_time_us` is the position. Before the
+ *  first frame it writes `N/A`, which must read as 0 rather than NaN — a NaN
+ *  here reaches the panel as a progress bar that renders nothing at all. */
+export function parseProgress(text: string): number {
+  const hits = [...text.matchAll(/out_time_us=(\d+)/g)];
+  const last = hits[hits.length - 1]?.[1];
+  return last === undefined ? 0 : Number(last) / 1e6;
+}
+
+/** ponytail: one global slot, the same assumption `publishProgress` already
+ *  states — two lofi renders cannot overlap in the panel. Unlike publish,
+ *  this route IS reachable without the panel, so two concurrent renders give
+ *  the second's numbers to both pollers. That is a wrong number rather than
+ *  corruption; key it by output name the day it matters. */
+let prog: { phase: "music" | "render"; file: string; total: number } | null = null;
+
+/** How far the current render has got. Reads the progress file ON DEMAND,
+ *  when the client polls, rather than on a timer — so there is no interval
+ *  to leak and no lifecycle to get wrong. */
+export function renderProgress(): { phase: "music" | "render"; done: number; total: number } {
+  if (prog === null) return { phase: "render", done: 0, total: 0 };
+  let done = 0;
+  try {
+    done = parseProgress(readFileSync(prog.file, "utf8"));
+  } catch {
+    // The file does not exist until ffmpeg's first block. Not an error.
+    done = 0;
+  }
+  return { phase: prog.phase, done, total: prog.total };
+}
+
+/** Clears the slot. The route calls this in the same `finally` that sweeps
+ *  the work directory, so a failed render does not leave the panel showing a
+ *  frozen bar from a run that is over. */
+export function clearProgress(): void {
+  prog = null;
+}
+
 /** Boot check for the assets this journey bundles. Hard, like
  *  `checkLongform`'s: a missing file fails a render that is minutes of
  *  encoding away from discovering it. */
@@ -342,6 +383,9 @@ export async function concatMusic(paths: string[], out: string): Promise<string>
   });
   legs.push(`${paths.map((_, i) => `[t${i}]`).join("")}concat=n=${paths.length}:v=0:a=1[out]`);
 
+  const total = probed.reduce((sum, p) => sum + p.seconds, 0);
+  prog = { phase: "music", file: `${out}.progress`, total };
+
   try {
     await run(
       "ffmpeg",
@@ -351,6 +395,7 @@ export async function concatMusic(paths: string[], out: string): Promise<string>
         "-filter_complex", legs.join(";"),
         "-map", "[out]",
         "-c:a", "flac",
+        "-progress", `${out}.progress`,
         "-y", out,
       ],
       { maxBuffer: 16 << 20 },
@@ -444,6 +489,7 @@ export async function renderLofi(opts: {
   // no layering reason to re-derive it the way the ASSET path is re-derived.
   const { seconds } = await probeAudio(music);
   if (!(seconds > 0)) throw new Error(`Could not read a duration from ${music}.`);
+  prog = { phase: "render", file: `${out}.progress`, total: seconds };
 
   // `probeAudio` on a speech too, for the same reason it is used on the
   // track: a speech may be a bare audio file, which `probeFile` refuses
@@ -764,6 +810,7 @@ export async function renderLofi(opts: {
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
+        "-progress", `${out}.progress`,
         "-y", out,
       ],
       { maxBuffer: 16 << 20 },

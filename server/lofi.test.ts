@@ -13,7 +13,9 @@ import {
   VIZ_BAR,
   VIZ_RECT,
   concatMusic,
+  parseProgress,
   renderLofi,
+  renderProgress,
 } from "./lofi.ts";
 
 const run = promisify(execFile);
@@ -247,6 +249,28 @@ describe("FADE", () => {
   });
 });
 
+describe("parseProgress", () => {
+  it("reads the LAST out_time_us block", () => {
+    const text = [
+      "frame=30", "out_time_us=1000000", "progress=continue",
+      "frame=60", "out_time_us=2500000", "progress=continue",
+    ].join("\n");
+    expect(parseProgress(text)).toBeCloseTo(2.5, 3);
+  });
+
+  it("returns 0 for a file ffmpeg has not written to yet", () => {
+    expect(parseProgress("")).toBe(0);
+  });
+
+  it("ignores a trailing partial block", () => {
+    expect(parseProgress("out_time_us=3000000\nprogress=continue\nframe=9")).toBeCloseTo(3, 3);
+  });
+
+  it("survives ffmpeg's N/A before the first frame", () => {
+    expect(parseProgress("out_time_us=N/A\nprogress=continue")).toBe(0);
+  });
+});
+
 describe("renderLofi", () => {
   it("is 1920x1080 and exactly as long as the music", async () => {
     const probed = await probeFile(out);
@@ -256,6 +280,22 @@ describe("renderLofi", () => {
     // `/api/lofi` builds from it cannot come to describe a different file.
     expect(probed.seconds).toBeGreaterThan(29.5);
     expect(probed.seconds).toBeLessThan(30.5);
+  });
+
+  it("leaves a progress file behind that renderProgress reads back", () => {
+    // Permanent rather than the brief's suggested temporary
+    // `console.error(renderProgress())`: this runs immediately after
+    // `beforeAll`'s one `renderLofi` call and before any other test's own
+    // call overwrites the module-scoped slot, so it reads exactly that run's
+    // `<out>.progress` file. A finished ffmpeg run has written through to
+    // (near) the end, so `done` sits close to the music's own duration
+    // rather than at 0 — the failure this guards against is a progress bar
+    // that never renders anything, which a bare `> 0` would not catch if the
+    // parser stopped at the first block instead of the last.
+    const p = renderProgress();
+    expect(p.phase).toBe("render");
+    expect(p.total).toBeGreaterThan(29.5);
+    expect(p.done).toBeGreaterThan(p.total - 1);
   });
 
   it("keeps the audio STREAM itself as long as the music, not just the container", async () => {
