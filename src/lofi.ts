@@ -256,8 +256,11 @@ export function orderByPrefix<T extends { name: string }>(
  *  SKIP_HEAD/SKIP_TAIL boundaries, the by-name refusal — describing live
  *  behaviour instead of an orphaned branch. The same shape `bucketAt` holds
  *  against `floor(x * buckets / w)` and `trims` holds against the empty
- *  array. Mutation-tested: breaking the delegation fails the first test
- *  above and nothing else.
+ *  array. Mutation-tested: breaking the delegation (forcing the `if` to
+ *  `false`) fails both "reduces exactly to troughs when spacing is 0" and
+ *  "reduces to troughs for a negative spacing too" and no other test in the
+ *  file — the two share a non-positive `spacing`, which is the one case this
+ *  line exists to route to `troughs` at all.
  *
  *  With a spacing, the timeline is cut into slots and each slot takes one
  *  drop. Inside a slot the position is still the QUIETEST available, scored
