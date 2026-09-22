@@ -266,7 +266,7 @@ const initial: AppState = {
   mode: "short",
   parts: [],
   tracks: [],
-  spacing: 300,
+  spacing: 60,
   bg: "",
   bgName: "",
   bgId: null,

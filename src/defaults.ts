@@ -104,14 +104,25 @@ export const MAX_SPEECHES = 8;
  *
  *  A sanity bound on the filter graph's size, not a judgement about pacing:
  *  every drop is an `asplit` tap plus an `atrim`, an `adelay` and a crackle
- *  boost leg with two fades. Three hours at the default five-minute spacing
- *  is 36, so this leaves room without pretending there is no bound. */
-export const MAX_DROPS = 120;
+ *  boost leg with two fades.
+ *
+ *  Sized against what the panel's own defaults can now ask for rather than
+ *  against a round number: `MAX_TRACKS` four-minute tracks is about 280
+ *  minutes, and the default spacing is one minute, so a full render wants
+ *  roughly 280 drops. At the old 120 the cap bound on essentially every
+ *  render — two hours in, the rest of the mix silent — which is a limit
+ *  doing harm rather than a backstop.
+ *
+ *  `ponytail:` reasoned from that arithmetic, NOT measured. Nobody has
+ *  rendered a 300-drop graph here; what protects a user who reaches it is
+ *  `fill`'s `capped` flag, which says so in the panel instead of trimming
+ *  the render in silence. Measure it the day someone builds one. */
+export const MAX_DROPS = 300;
 
 /** The most music tracks one render will concatenate.
  *
- *  Sixty four-minute tracks is four hours, past anything this is for. The
- *  bound is on the CONCAT PRE-PASS's input count, which is the one place in
- *  this journey that still grows with the music list — the main graph takes
- *  the pre-pass's single output whatever the list's length. */
-export const MAX_TRACKS = 60;
+ *  Seventy four-minute tracks is about four and a half hours. The bound is
+ *  on the CONCAT PRE-PASS's input count, which is the one place in this
+ *  journey that still grows with the music list — the main graph takes the
+ *  pre-pass's single output whatever the list's length. */
+export const MAX_TRACKS = 70;
