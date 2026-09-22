@@ -17,6 +17,7 @@ import {
   DESCRIPTION_TEMPLATE,
   LONG_DESCRIPTION_TEMPLATE,
   LONG_TAGS_DEFAULT,
+  MAX_DROPS,
   MAX_PARTS,
   MAX_SPEECHES,
   MAX_TRACKS,
@@ -1058,6 +1059,13 @@ async function loadWave(clipUrl: string): Promise<void> {
 let lofiEnv: Float32Array | null = null;
 let lofiSeconds = 0;
 
+/** Whether `MAX_DROPS` — rather than the end of the track — is what stopped
+ *  the last `fill`. Module-scoped beside the envelope rather than added to
+ *  `AppState`, for the reason those two are: it describes the placement set
+ *  currently on screen, nothing persists it, and `place()` writes it in the
+ *  same breath as the `setState` that renders it. */
+let lofiCapped = false;
+
 /** Each track's own `File`, keyed by the upload id `state.tracks` carries.
  *  What lets a re-order or a re-shuffle rebuild the envelope without
  *  re-uploading — a `File` handle does not survive a reload, which is
@@ -1676,6 +1684,7 @@ async function doAddSpeeches(files: File[]): Promise<void> {
 function place(): void {
   const s = getState();
   if (!lofiEnv || s.tracks.length === 0 || s.speeches.length === 0) {
+    lofiCapped = false;
     setState({ placements: [] });
     return;
   }
@@ -1683,9 +1692,13 @@ function place(): void {
   // the repeating case and the one-shot one.
   const found = fill(lofiEnv, lofiSeconds, s.speeches, s.spacing);
   if ("error" in found) {
+    lofiCapped = false;
     setState({ placements: [], error: found.error });
     return;
   }
+  // Before the notifying update, so the panel this triggers reads the flag
+  // that belongs to the placements it is about to draw.
+  lofiCapped = found.capped === true;
   setState({ placements: found.placements, error: "" });
 }
 
@@ -3311,15 +3324,66 @@ function renderLofiPanel(): Node[] {
       drop,
     );
   });
+  // Drops AND files, because with a spacing set the two legitimately differ
+  // — one speech recurs through several quiet stretches — and the drop count
+  // alone cannot say whether every file made it into the render. It used to
+  // say only the former, next to a Render button whose readiness check had
+  // been relaxed from "every speech placed" to "at least one drop" precisely
+  // because the counts now differ by design. Measured: 4 speeches at a
+  // 5-minute spacing over a 12-minute track gives 3 drops, and the fourth
+  // file was simply absent from the render with nothing on screen about it.
+  const placedIds = new Set(s.placements.map((p) => p.id));
+  // Both warnings are suppressed while something is in flight. An upload
+  // batch writes `speeches` once per file and only calls `place()` once the
+  // whole batch has landed, so every render in between legitimately has
+  // speeches no placement has been computed for yet — and a callout naming
+  // the file that is still uploading is a lie the next render takes back.
+  // `busy` is already what the panel disables its own controls on.
+  const missing = locked ? [] : s.speeches.filter((x) => !placedIds.has(x.id));
+  const drops = s.placements.length;
   speechRow.append(
     el(
       "div",
       { className: "bar-row" },
       el("h3", { textContent: `Speeches (${s.speeches.length}/${MAX_SPEECHES})` }),
-      // Drops rather than speeches: with a spacing set the two legitimately
-      // differ, since one speech can recur through several quiet stretches.
-      el("span", { className: "bar-end badge", textContent: `${s.placements.length} drops` }),
+      el("span", {
+        className: "bar-end badge",
+        textContent:
+          `${drops} ${drops === 1 ? "drop" : "drops"} · ` +
+          `${placedIds.size}/${s.speeches.length} files`,
+      }),
     ),
+    // The same `.callout` the status row gives `state.error`, rather than a
+    // treatment of its own: both say "this render will not be what you
+    // asked for", and this one is not a failure the route can report —
+    // a missing speech is silent all the way to someone watching the output,
+    // which is the failure class this codebase treats as cardinal.
+    ...(missing.length === 0
+      ? []
+      : [
+          el("pre", {
+            className: "callout",
+            textContent:
+              `No room left for ${missing.map((x) => x.name).join(", ")} — ` +
+              `${missing.length === 1 ? "it will not be" : "they will not be"} in the render. ` +
+              `A shorter spacing, or a longer track, makes room.`,
+          }),
+        ]),
+    // The cap is the other way a render comes out short of what the panel
+    // implies, and it is the quieter of the two, because every file still
+    // shows as placed. Measured on a flat three-hour track at a one-minute
+    // spacing: ~180 slots against MAX_DROPS' 120, 120 drops made, the last
+    // at 7125.5s of 10800 — the closing hour silent with nothing said.
+    ...(!lofiCapped || locked
+      ? []
+      : [
+          el("pre", {
+            className: "callout",
+            textContent:
+              `Stopped at the ${MAX_DROPS}-drop limit — the rest of the track ` +
+              `carries no speech. A longer spacing spreads them further.`,
+          }),
+        ]),
     ...(rows.length > 0
       ? rows
       : [
