@@ -62,9 +62,9 @@ the long journey and nothing else — the long journey's parts arrive on
 `/api/upload`, every one of the lofi journey's on `/api/upload-audio`, plus
 `docs/specs/2026-09-21-vstack-lofi-longform-design.md`, which supersedes
 nothing and extends the 2026-09-16 doc rather than any other: the music
-becomes a LIST of up to `MAX_TRACKS` (60) tracks, joined into one file
+becomes a LIST of up to `MAX_TRACKS` (70) tracks, joined into one file
 before the render ever probes it; a speech now RECURS on a spacing the
-user sets, up to `MAX_DROPS` (120) placements, with `MAX_SPEECHES`
+user sets, up to `MAX_DROPS` (300) placements, with `MAX_SPEECHES`
 re-scoped to mean distinct uploaded FILES rather than placements; a
 `1_`-prefixed upload plays first and the rest are shuffled once,
 client-side, at add time; and the render reports progress, polled from an
@@ -969,7 +969,7 @@ the probed music length — could come to name a file a different length than
 the one on disk. This graph makes that disagreement structurally
 impossible.
 
-The music is a LIST now, up to `MAX_TRACKS` (60) of them, and the invariant
+The music is a LIST now, up to `MAX_TRACKS` (70) of them, and the invariant
 survives verbatim rather than becoming a sum. `/api/lofi` concatenates the
 tracks with `concatMusic` into ONE file in the route's own temp directory —
 the same directory it already creates for the still's bytes and already
@@ -1192,16 +1192,36 @@ track.** `prevEnd + MIN_GAP` drifts ahead of a slot's own window whenever
 refusal cannot see, since `need` is comfortably inside `step` there. Ending
 the walk at the first such slot stopped the drops partway through.
 Measured on one 45s speech at a 60s spacing over a flat 600s track: 5 drops,
-the last at 284.5s, the closing four and a half minutes silent — against 8
-drops and a last at 482.5s once the slot is skipped instead. `capped` then
+the last at 401s, the closing three minutes silent — against 9 drops and a
+last at 533s once the slot is skipped instead. `capped` then
 distinguishes the cap from the end of the track, and needs BOTH halves: `k
 === MAX_DROPS` alone calls a run capped when the track happened to end on
 the same slot the cap did, which is a warning naming a limit that cost the
 user nothing. All three are mutation-tested in `src/lofi.test.ts`.
 
+**`fill`'s FIRST drop is an intro and deliberately breaks `SKIP_HEAD`.**
+`OPEN_AT` (5-10s) is where slot 0's voice lands, ahead of the fifteen
+seconds `SKIP_HEAD` reserves for the music to establish itself before
+anything interrupts it. Every LATER slot still holds that rule, and
+`troughs` is untouched — so a render with the spacing set to 0 gets no
+intro, which is the price of `fill` reducing to `troughs` exactly. Both
+bounds are shifted back by `FADE` in the search, because the value placed is
+`bestAt + FADE`; searching `OPEN_AT` directly lands the voice half a second
+late. It costs slot 0 its quietest-wins search — a five-second window leaves
+almost no choice — and that is inherent to wanting an intro rather than a
+defect.
+
+It also, silently, cost an existing test its teeth, which is the part worth
+remembering. The skip test above was bounded at `> 5` drops and `> 400s`,
+comfortably clear when the `break` version gave 5 at 284.5s — but an intro
+drop frees `prevEnd` early enough to buy the BROKEN version two more slots,
+and at 7 drops with a last at 401s it passed both bounds. Re-measured and
+re-pinned at `> 7` and `> 500`. A loose bound on a measured quantity is only
+loose until something upstream moves.
+
 **One ffmpeg input per unique speech FILE, `asplit` into its drops.** A
 speech now recurs on a spacing, so a three-hour render at the default
-five-minute spacing plays roughly 36 drops from as few as one recording.
+one-minute spacing plays roughly 180 drops from as few as one recording.
 Opening every drop as its own input would put one input on the graph per
 drop rather than per file, on top of the background, the music, the crackle
 and the mark — the crackle leg already solves exactly this (one input,
@@ -1215,7 +1235,7 @@ repeats existed.
 neither cap is redundant with the other.** A speech recurring split what
 used to be one number into two that measure different things:
 `MAX_SPEECHES` (8) is how many distinct FILES `/api/upload-audio` and the
-panel will accept, one input each; `MAX_DROPS` (120) is how many
+panel will accept, one input each; `MAX_DROPS` (300) is how many
 PLACEMENTS `fill` may hand back, one `asplit` tap and one crackle-boost leg
 each. Checking only the drop count would let eighty distinct uploads
 through under a 120-drop limit — eighty inputs on a graph the file cap
@@ -1926,7 +1946,7 @@ dragging one drop of a REPEATED speech moves only that drop, and that a
 sibling drop bounds the drag like any other neighbour. Both are
 mutation-pinned against the old file-identity semantics — restoring them
 fails exactly those two and nothing else in the file. `fill` gains the slot
-SKIP (8 drops with a last at 482.5s, against the old `break`'s 5 at 284.5s)
+SKIP (9 drops with a last at 533s, against the old `break`'s 7 at 401s)
 and `capped`'s three cases: the cap binding, the track simply running out,
 and the boundary where both happen on the same slot — that last one is the
 only test the `!unreachable(…)` half of the flag decides, and dropping that
