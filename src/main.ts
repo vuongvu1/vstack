@@ -3410,9 +3410,12 @@ function renderLofiBar(): Node[] {
         // pointer for the whole drag and only jumps to where it landed once
         // the trailing `setState` rebuilds the bar — indistinguishable from
         // a drag that silently does nothing until release.
-        const next = clampPlacement(getState().placements, getState().speeches, p.id, want, lofiSeconds);
+        // `p.key`, never `p.id`: with a spacing set one file is dropped
+        // many times, and naming the file would move every one of its drops
+        // onto this instant at once.
+        const next = clampPlacement(getState().placements, getState().speeches, p.key, want, lofiSeconds);
         setQuiet({ placements: next });
-        const mine = next.find((n) => n.id === p.id);
+        const mine = next.find((n) => n.key === p.key);
         if (mine && lofiSeconds > 0) marker.style.left = `${(mine.at / lofiSeconds) * 100}%`;
         drawLofiStrip(strip, canvas);
       };

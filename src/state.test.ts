@@ -826,7 +826,7 @@ describe("the lofi journey's state", () => {
       bg: "/9j/base64",
       bgName: "bg.png",
       speeches: [{ id: "22222222-2222-4222-8222-222222222222", name: "a.mp4", seconds: 6 }],
-      placements: [{ id: "22222222-2222-4222-8222-222222222222", at: 40 }],
+      placements: [{ key: "22222222-2222-4222-8222-222222222222#0", id: "22222222-2222-4222-8222-222222222222", at: 40 }],
     });
     save();
     const stored = readRaw("abc12345678") as Record<string, unknown>;

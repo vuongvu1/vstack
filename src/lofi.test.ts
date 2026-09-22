@@ -150,20 +150,20 @@ describe("clampPlacement", () => {
   ];
 
   it("moves a placement to an ordinary spot with room on both sides", () => {
-    const placements: Placement[] = [{ id: "a", at: 30 }];
-    const out = clampPlacement(placements, speeches, "a", 100, 300);
+    const placements: Placement[] = [{ key: "a#0", id: "a", at: 30 }];
+    const out = clampPlacement(placements, speeches, "a#0", 100, 300);
     expect(out.find((p) => p.id === "a")?.at).toBe(100);
   });
 
   it("clamps against the track's own start", () => {
-    const placements: Placement[] = [{ id: "a", at: 30 }];
-    const out = clampPlacement(placements, speeches, "a", -50, 300);
+    const placements: Placement[] = [{ key: "a#0", id: "a", at: 30 }];
+    const out = clampPlacement(placements, speeches, "a#0", -50, 300);
     expect(out.find((p) => p.id === "a")?.at).toBe(FADE);
   });
 
   it("clamps against the track's own end", () => {
-    const placements: Placement[] = [{ id: "a", at: 30 }];
-    const out = clampPlacement(placements, speeches, "a", 1000, 300);
+    const placements: Placement[] = [{ key: "a#0", id: "a", at: 30 }];
+    const out = clampPlacement(placements, speeches, "a#0", 1000, 300);
     // 300 - 40 (a's own length) - FADE
     expect(out.find((p) => p.id === "a")?.at).toBe(300 - 40 - FADE);
   });
@@ -171,20 +171,20 @@ describe("clampPlacement", () => {
   it("clamps against a neighbour ahead of the drag", () => {
     // b sits at 200; dragging a rightwards must stop MIN_GAP clear of b's start.
     const placements: Placement[] = [
-      { id: "a", at: 30 },
-      { id: "b", at: 200 },
+      { key: "a#0", id: "a", at: 30 },
+      { key: "b#0", id: "b", at: 200 },
     ];
-    const out = clampPlacement(placements, speeches, "a", 190, 300);
+    const out = clampPlacement(placements, speeches, "a#0", 190, 300);
     expect(out.find((p) => p.id === "a")?.at).toBe(200 - MIN_GAP - 40);
   });
 
   it("clamps against a neighbour behind the drag", () => {
     // b sits at 30; dragging a leftwards must stop MIN_GAP clear of b's own end.
     const placements: Placement[] = [
-      { id: "a", at: 200 },
-      { id: "b", at: 30 },
+      { key: "a#0", id: "a", at: 200 },
+      { key: "b#0", id: "b", at: 30 },
     ];
-    const out = clampPlacement(placements, speeches, "a", 40, 300);
+    const out = clampPlacement(placements, speeches, "a#0", 40, 300);
     expect(out.find((p) => p.id === "a")?.at).toBe(30 + 40 + MIN_GAP);
   });
 
@@ -197,16 +197,45 @@ describe("clampPlacement", () => {
   // placement exactly where it was instead.
   it("refuses a drag that leaves no legal position, keeping the placement where it was", () => {
     const placements: Placement[] = [
-      { id: "a", at: 30 },
-      { id: "b", at: 259.5 },
+      { key: "a#0", id: "a", at: 30 },
+      { key: "b#0", id: "b", at: 259.5 },
     ];
-    const out = clampPlacement(placements, speeches, "a", 280, 300);
+    const out = clampPlacement(placements, speeches, "a#0", 280, 300);
     expect(out).toEqual(placements);
   });
 
-  it("returns the placements unchanged for an id it does not know", () => {
-    const placements: Placement[] = [{ id: "a", at: 30 }];
-    expect(clampPlacement(placements, speeches, "ghost", 100, 300)).toBe(placements);
+  // The two tests below are why a placement carries a `key` at all. With a
+  // spacing set, `fill` cycles ONE file into many drops, so `id` stops being
+  // unique across the array — and the old id-keyed version both rewrote
+  // every sibling's `at` (its `map` matched all of them) and hid those
+  // siblings from the MIN_GAP scan (its `others` filter dropped all of
+  // them). Both fail against that version.
+  it("moves only the dragged drop of a repeated speech", () => {
+    const one: Speech[] = [{ id: "a", name: "a.mp3", seconds: 10 }];
+    const placements: Placement[] = [
+      { key: "a#0", id: "a", at: 20 },
+      { key: "a#1", id: "a", at: 120 },
+      { key: "a#2", id: "a", at: 220 },
+    ];
+    const out = clampPlacement(placements, one, "a#1", 140, 600);
+    expect(out.map((p) => p.at)).toEqual([20, 140, 220]);
+  });
+
+  it("bounds a drag by a sibling drop of the same speech", () => {
+    const one: Speech[] = [{ id: "a", name: "a.mp3", seconds: 10 }];
+    const placements: Placement[] = [
+      { key: "a#0", id: "a", at: 20 },
+      { key: "a#1", id: "a", at: 120 },
+    ];
+    // Dragging the first drop rightwards must stop MIN_GAP clear of its own
+    // sibling's start, exactly as it would clear a different speech's.
+    const out = clampPlacement(placements, one, "a#0", 110, 600);
+    expect(out.find((p) => p.key === "a#0")?.at).toBe(120 - MIN_GAP - 10);
+  });
+
+  it("returns the placements unchanged for a key it does not know", () => {
+    const placements: Placement[] = [{ key: "a#0", id: "a", at: 30 }];
+    expect(clampPlacement(placements, speeches, "ghost#0", 100, 300)).toBe(placements);
   });
 });
 
@@ -305,6 +334,55 @@ describe("fill", () => {
     const found = fill(env, 20000, [speech("a", 2)], MIN_GAP);
     if ("error" in found) throw new Error(found.error);
     expect(found.placements.length).toBeLessThanOrEqual(MAX_DROPS);
+  });
+
+  // The cap is the one way this can stop with track still to go, and it used
+  // to do so silently — a 1-minute spacing over three hours is 180 slots
+  // against MAX_DROPS' 120, so the last hour came back empty with nothing
+  // said. The panel's warning reads this flag.
+  it("says so when MAX_DROPS is what stopped it", () => {
+    const env = envOf(20000, []);
+    const found = fill(env, 20000, [speech("a", 2)], MIN_GAP);
+    if ("error" in found) throw new Error(found.error);
+    expect(found.capped).toBe(true);
+  });
+
+  it("does not claim the cap when the end of the track is what stopped it", () => {
+    const env = envOf(600, []);
+    const found = fill(env, 600, [speech("a", 6)], 120);
+    if ("error" in found) throw new Error(found.error);
+    expect(found.capped).toBeUndefined();
+  });
+
+  // The boundary between the two above, and the only case the `unreachable`
+  // half of the flag decides. Here the walk runs all MAX_DROPS iterations —
+  // so the iteration count alone would call it capped — but the slot AFTER
+  // the last one is already past the last instant a speech may be heard at,
+  // so the track ran out in the same breath and there is nothing the cap
+  // took away. Warning here would name a limit that cost the user nothing.
+  it("does not claim the cap when the track ends on the same slot the cap does", () => {
+    const seconds = SKIP_HEAD + MAX_DROPS * MIN_GAP + SKIP_TAIL;
+    const found = fill(envOf(seconds, []), seconds, [speech("a", 2)], MIN_GAP);
+    if ("error" in found) throw new Error(found.error);
+    expect(found.capped).toBeUndefined();
+  });
+
+  // THE skip test. `need` (46) plus MIN_GAP (20) is 66 against a 60s step,
+  // so `prevEnd + MIN_GAP` drifts ahead of each slot's own window and every
+  // second or third slot comes out unreachable — a band the `need > step`
+  // refusal cannot see, since 46 is comfortably inside 60. Ending the walk
+  // there gave 5 drops with the last at 284.5s, leaving the final 4.5
+  // minutes of a 10-minute render silent and saying nothing about it.
+  // Skipping the slot instead carries the drops to the end of the track.
+  it("skips an unreachable slot rather than ending the walk there", () => {
+    const env = envOf(600, []);
+    const found = fill(env, 600, [speech("a", 45)], 60);
+    if ("error" in found) throw new Error(found.error);
+    const last = found.placements[found.placements.length - 1];
+    expect(found.placements.length).toBeGreaterThan(5);
+    // Well inside the last third of a 600s track, which is the whole of what
+    // the old `break` gave up.
+    expect(last?.at).toBeGreaterThan(400);
   });
 
   it("refuses a speech longer than its slot, by name", () => {

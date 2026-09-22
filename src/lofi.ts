@@ -19,10 +19,34 @@ import { MAX_DROPS } from "./defaults.ts";
  *  needs is how long it runs. */
 export type Speech = { id: string; name: string; seconds: number };
 
-/** Where one speech's voice enters the music's timeline. */
-export type Placement = { id: string; at: number };
+/** Where one speech's voice enters the music's timeline.
+ *
+ *  `key` identifies the DROP; `id` identifies the FILE it came from, and
+ *  with a spacing set one file is dropped many times, so `id` is not unique
+ *  across this array. Everything that names a single drop — the drag path's
+ *  `clampPlacement`, the marker it moves — must key on `key`. Keying on `id`
+ *  is what collapsed every drop of a repeated speech onto one instant the
+ *  moment one of its markers was dragged, and it excluded a drop's own
+ *  siblings from the MIN_GAP scan on the way, so `/api/lofi` then refused
+ *  the whole render with "Two speeches overlap" — loud, but naming the
+ *  wrong thing.
+ *
+ *  It is deliberately NOT the array index. `fill` sorts its output by time
+ *  before returning it, so an index is not a stable identity across two
+ *  calls — the same mistake `segmentContaining` and the cutter's
+ *  `activeRange` both exist to keep out of the marking phases.
+ *
+ *  `Placement` is client-only and never persisted, and the body
+ *  `/api/lofi` takes is built as `{ id, at }` per drop, so this field
+ *  reaches neither localStorage nor the wire. */
+export type Placement = { key: string; id: string; at: number };
 
-export type TroughResult = { placements: Placement[] } | { error: string };
+/** `capped` says MAX_DROPS is what stopped `fill`, not the end of the
+ *  track — optional, and present only when it is true, so the
+ *  `fill`-reduces-to-`troughs` identity stays an exact object equality. */
+export type TroughResult =
+  | { placements: Placement[]; capped?: boolean }
+  | { error: string };
 
 /** How much room a speech is given at each of its own edges.
  *
@@ -160,15 +184,28 @@ export function troughs(
       };
     }
     taken.push({ from: bestAt, to: bestAt + need });
-    placements.push({ id: speech.id, at: bestAt + FADE });
+    // One drop per speech here, so the file's own id already identifies it —
+    // but the key is minted in the same `<id>#<n>` shape `fill` uses so that
+    // nothing downstream has to know which of the two produced the array.
+    placements.push({ key: `${speech.id}#0`, id: speech.id, at: bestAt + FADE });
   }
 
   placements.sort((a, b) => a.at - b.at);
   return { placements };
 }
 
-/** Moves one placement, keeping it inside the track and MIN_GAP clear of its
- *  neighbours. The drag path's bound, not a legality rule — `/api/lofi`
+/** Moves one DROP — named by its `key`, never by its file's `id` — keeping
+ *  it inside the track and MIN_GAP clear of its neighbours.
+ *
+ *  A sibling drop of the same speech is a neighbour like any other: the
+ *  `others` filter drops exactly the one placement being moved, so the
+ *  MIN_GAP scan below sees every other drop including the ones cut from the
+ *  same file. Filtering on `id` instead both moved every sibling onto the
+ *  dragged instant (the `map` at the end rewrote all of them) and hid them
+ *  from that scan, so the drag could park two drops of one file on top of
+ *  each other.
+ *
+ *  The drag path's bound, not a legality rule — `/api/lofi`
  *  checks only that speeches fit and do not overlap, so an older body still
  *  renders. Same asymmetry `moveOut`'s `margin` has against `isValidOut`.
  *
@@ -187,12 +224,14 @@ export function troughs(
 export function clampPlacement(
   placements: Placement[],
   speeches: Speech[],
-  id: string,
+  key: string,
   want: number,
   seconds: number,
 ): Placement[] {
-  const others = placements.filter((p) => p.id !== id);
-  const mine = speeches.find((x) => x.id === id);
+  const dragged = placements.find((p) => p.key === key);
+  if (dragged === undefined) return placements;
+  const others = placements.filter((p) => p.key !== key);
+  const mine = speeches.find((x) => x.id === dragged.id);
   if (!mine) return placements;
   let lo = FADE;
   let hi = seconds - mine.seconds - FADE;
@@ -203,7 +242,7 @@ export function clampPlacement(
   }
   if (hi < lo) return placements;
   const at = Math.min(Math.max(want, lo), hi);
-  return placements.map((p) => (p.id === id ? { ...p, at } : p));
+  return placements.map((p) => (p.key === key ? { ...p, at } : p));
 }
 
 /** Play order for a list of uploaded files: a name beginning `1_` goes
@@ -289,6 +328,24 @@ export function fill(
   const step = Math.max(spacing, MIN_GAP);
   const perSec = env.length / seconds;
   const base = Math.max(median(env), 1e-6);
+  // The one condition that ends the walk: this slot's own centre is past the
+  // last instant a speech may be heard at, so every later slot's is too.
+  //
+  // An unusable slot short of that is SKIPPED, not the end of the walk. It
+  // used to break, and the band where that bites is real rather than
+  // pathological: `prevEnd + MIN_GAP` drifts ahead of a slot's window
+  // whenever `speech.seconds + 2 * FADE + MIN_GAP > step`, which the
+  // `need > step` refusal above does not cover. Measured on one 45s speech
+  // at a 60s spacing over a flat 600s track: 5 drops, the last at 284.5s,
+  // and the final four and a half minutes of the render silent with nothing
+  // said about it. Skipping the slot instead gives 8 drops, the last at
+  // 482.5s.
+  const unreachable = (centre: number) => centre >= seconds - SKIP_TAIL;
+  const refuse = (speech: Speech): TroughResult => ({
+    error:
+      `${speech.name} (${Math.round(speech.seconds)}s) does not fit in a ` +
+      `${Math.round(step)}s slot.`,
+  });
   const placements: Placement[] = [];
   // The previous drop's own end, carried across iterations. Consecutive
   // slots abut (slot k's window can run right up to slot k+1's own centre
@@ -296,34 +353,26 @@ export function fill(
   // overlap — which `/api/lofi`'s own "Two speeches overlap" validator would
   // then reject the whole render for.
   let prevEnd = 0;
+  // Hoisted out of the `for` so the cap can be told apart from the end of
+  // the track after it: a `break` leaves this below MAX_DROPS, running out
+  // of iterations leaves it exactly at it.
+  let k = 0;
 
-  for (let k = 0; k < MAX_DROPS; k++) {
+  for (; k < MAX_DROPS; k++) {
     const centre = SKIP_HEAD + k * step;
     const speech = speeches[k % speeches.length];
     if (speech === undefined) break;
     const need = speech.seconds + 2 * FADE;
-    if (need > step) {
-      return {
-        error:
-          `${speech.name} (${Math.round(speech.seconds)}s) does not fit in a ` +
-          `${Math.round(step)}s slot.`,
-      };
-    }
+    if (need > step) return refuse(speech);
     // The slot's own half-step either side, intersected with the track's
     // bounds and with the previous drop's own end. `hi` subtracts `need`
     // because the window has to END inside.
     const lo = Math.max(SKIP_HEAD, centre - step / 2, prevEnd + MIN_GAP);
     const hi = Math.min(centre + step / 2, seconds - SKIP_TAIL - need);
     if (lo > hi) {
-      // Past the end of the track is where the loop stops, not an error —
-      // the render simply holds as many slots as it holds. A FIRST slot that
-      // does not fit is the real failure, and it is the refusal below.
-      if (k > 0) break;
-      return {
-        error:
-          `${speech.name} (${Math.round(speech.seconds)}s) does not fit in a ` +
-          `${Math.round(step)}s slot.`,
-      };
+      if (unreachable(centre)) break;
+      if (k === 0) return refuse(speech);
+      continue;
     }
     let bestAt = -1;
     let bestScore = Infinity;
@@ -338,17 +387,21 @@ export function fill(
       }
     }
     if (bestAt < 0) {
-      if (k > 0) break;
-      return {
-        error:
-          `${speech.name} (${Math.round(speech.seconds)}s) does not fit in a ` +
-          `${Math.round(step)}s slot.`,
-      };
+      if (unreachable(centre)) break;
+      if (k === 0) return refuse(speech);
+      continue;
     }
     prevEnd = bestAt + need;
-    placements.push({ id: speech.id, at: bestAt + FADE });
+    // `k` is the SLOT, and a slot takes at most one drop, so this is unique
+    // across the array by construction — and it survives the sort below,
+    // which an index into the returned array would not.
+    placements.push({ key: `${speech.id}#${k}`, id: speech.id, at: bestAt + FADE });
   }
 
   placements.sort((a, b) => a.at - b.at);
-  return { placements };
+  // The cap bound only if it ran out of iterations with track still to go —
+  // a run that stopped because the next slot was past the end is not capped,
+  // however many drops it happens to have made.
+  const capped = k === MAX_DROPS && !unreachable(SKIP_HEAD + k * step);
+  return capped ? { placements, capped } : { placements };
 }
