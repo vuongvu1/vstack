@@ -803,7 +803,33 @@ export async function renderLofi(opts: {
   // the crackle would sit still through the one moment in the render a
   // viewer is most likely to be watching it. `[a]` is what gets mapped; the
   // second tap is video's problem.
-  legs.push(`[amix]asplit=2[a][aviz]`);
+  //
+  // `apad` FIRST, and it is the `sidechaincompress` truncation one stage
+  // further down — the same silent shape, arriving from a different
+  // direction. `amix ... duration=first` takes the mix's length from
+  // `[ducked]`, `[ducked]` takes its own from `[music]`, and a music input
+  // whose decoded stream EOFs a little short of the duration `probeAudio`
+  // reported for it drags the whole audio stream short with it. The
+  // container and the video track stay full length throughout, so nothing
+  // that reads `format.duration` can see it: measured on a three-track
+  // concat, a 4.836009s audio stream inside a 6.066667s container against a
+  // music file `probeAudio` reports as 6.060408s. Padding the finished mix
+  // to the length this graph already probed puts the floor under every way
+  // a leg can end early rather than under the one that was found first.
+  //
+  // The flac intermediate is NOT the cause, and swapping it for wav is not
+  // the fix. The pad here leaves `concatMusic`'s codec exactly as it was and
+  // closes the gap outright, which is what says the mix's own
+  // `duration=first` is where this lives — a codec can only move how early a
+  // stream EOFs, not whether the mix inherits that EOF. wav would also put
+  // RIFF's 4 GB ceiling inside reach at `MAX_TRACKS`, on a pre-pass already
+  // measured at roughly a gigabyte for three hours.
+  //
+  // Free on every path that did not need it: `apad` emits nothing when the
+  // stream already reaches `whole_dur`, and a single-track render is
+  // byte-identical with and without it — verified by hash, both with a
+  // speech and with none.
+  legs.push(`[amix]apad=whole_dur=${seconds},asplit=2[a][aviz]`);
 
   try {
     await run(

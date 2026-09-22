@@ -60,6 +60,15 @@ let out = "";
 let tone440a = "";
 let tone1760 = "";
 let tone440b = "";
+/** A SHORT 1760 Hz tone — 1.8s, which is between `TRACK_FADE` and
+ *  `2 * TRACK_FADE`. That band is the only one where the `min(TRACK_FADE,
+ *  secs / 3)` clamp changes the answer without also making ffmpeg refuse
+ *  the graph: unclamped, this track's fade-in and fade-out overlap and
+ *  MULTIPLY across its own middle, where at 1.5s or less the fade-out's
+ *  `st` would simply go negative and fail loudly. Asserting on the level
+ *  rather than on either failure mode is `server/longform.test.ts`'s own
+ *  lesson for the identical clamp. */
+let toneShort = "";
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "vstack-lofi-"));
@@ -127,6 +136,12 @@ beforeAll(async () => {
       "-c:a", "aac", path,
     ]);
   }
+
+  toneShort = join(dir, "tshort.m4a");
+  await run("ffmpeg", [
+    "-y", "-f", "lavfi", "-i", "sine=frequency=1760:duration=1.8",
+    "-c:a", "aac", toneShort,
+  ]);
 
   out = join(dir, "out.mp4");
   // One speech at t=12, well clear of both ends. Deliberately the VIDEO
@@ -343,8 +358,13 @@ describe("renderLofi", () => {
     // speech's own end (15s on this fixture: a speech at t=12 that runs 3s).
     // A structural check on the container could never have caught that; this
     // reads the stream's own duration instead.
-    const dur = await audioStreamDuration(out);
-    expect(dur).toBeGreaterThan(29.5);
+    //
+    // Bounded against the music's own probed length rather than at
+    // `> 29.5`: half a second of slack on a thirty-second render is enough
+    // room for a proportional truncation to hide in, which is exactly what
+    // the concatenated-track test below was written for.
+    const { seconds } = await probeAudio(music);
+    expect(await audioStreamDuration(out)).toBeCloseTo(seconds, 1);
   });
 
   it("keeps the music audible near the end of the render", async () => {
@@ -358,6 +378,50 @@ describe("renderLofi", () => {
     const near = await loudness(out, 28, 2, "bandpass=f=220:width_type=h:width=40");
     expect(near.mean).toBeGreaterThan(-40);
   });
+
+  // The ONE test that runs `concatMusic`'s output through `renderLofi`,
+  // which is the path a multi-track render actually takes and the one
+  // nothing on this branch covered: `concatMusic` was tested standalone and
+  // `renderLofi` only ever on a single track, so the gap between them was
+  // invisible from both sides.
+  //
+  // What lived in that gap is the audio STREAM dying early while the
+  // container stayed faithful — the same silent shape the
+  // `sidechaincompress` pad above documents, one stage further down. The
+  // closing `amix ... duration=first` takes its length from `[ducked]`,
+  // which takes its own from `[music]`, and a concatenated track EOFs a
+  // little short of the duration `probeAudio` reports for it; the container
+  // and the video track ran full length throughout. Measured on this
+  // fixture before `renderLofi`'s closing `apad`: a 4.836009s audio stream
+  // inside a 6.066667s container, against a music file `probeAudio` reports
+  // as 6.060408s — a fifth of the render silent. With the pad: 6.06.
+  //
+  // The container assertion cannot stand in for this one. It reads
+  // `format.duration`, which was faithful throughout — and the single-track
+  // assertions beside it were bounded at `> 29.5`, half a second of slack on
+  // a thirty-second render, which is the wrong instrument for a failure that
+  // is a fraction of the whole rather than a fixed offset. Hence
+  // `audioStreamDuration` and a 0.05s window here, and the same treatment
+  // applied to those two above.
+  it("keeps the audio stream full length on a CONCATENATED track set", async () => {
+    const joined = join(dir, "multi.flac");
+    await concatMusic([tone440a, tone1760, tone440b], joined);
+    const multi = join(dir, "multi.mp4");
+    await renderLofi({ background: bg, music: joined, cuts: [{ path: silent, at: 2 }], out: multi });
+
+    // The speech is the DIGITAL SILENCE fixture so nothing but the music and
+    // the crackle is in the stream being measured.
+    const { seconds } = await probeAudio(joined);
+    expect(await audioStreamDuration(multi)).toBeCloseTo(seconds, 1);
+  }, 120_000);
+
+  // Note what is deliberately NOT asserted here: the concat's leg ORDER.
+  // `peakHzAt` finds the loudest BIN, and the render mixes in a
+  // full-spectrum crackle bed that the tones do not outrank — measured, the
+  // peak at t=1.0 inside this render is 2603.93 Hz where the tone is 440.
+  // The order is proved on `concatMusic`'s own output instead, upstream of
+  // the crackle, by the test of that name in the describe block below; a
+  // second copy here would only be measuring the noise.
 
   // THE assertion this feature turns on: a speech is audio, and the picture
   // holds the frame from the first sample to the last. The fixture's speech
@@ -496,7 +560,7 @@ describe("renderLofi", () => {
     const probed = await probeFile(quiet);
     expect(probed.hasAudio).toBe(true);
     expect(probed.seconds).toBeGreaterThan(29.5);
-    expect(await audioStreamDuration(quiet)).toBeGreaterThan(29.5);
+    expect(await audioStreamDuration(quiet)).toBeCloseTo((await probeAudio(music)).seconds, 1);
     expect(isBackground(await pixelAt(quiet, 13, 960, 540))).toBe(true);
   }, 120_000);
 
@@ -815,6 +879,38 @@ describe("concatMusic", () => {
     expect(await peakHzAt(ordered, 1.0)).toBeCloseTo(440, -2);
     expect(await peakHzAt(ordered, 3.0)).toBeCloseTo(1760, -2);
     expect(await peakHzAt(ordered, 5.0)).toBeCloseTo(440, -2);
+  });
+
+  // The clamp the spec claimed was mutation-tested and was not. All three
+  // tone fixtures are 2s, so `min(TRACK_FADE, secs / 3)` is active on every
+  // one of them — but the seam test below survives removing it, because both
+  // numbers it compares move the wrong way to notice. Measured with the
+  // clamp forced to a bare `TRACK_FADE`: its `inside` sample is t=1.0 in the
+  // FIRST track, which has no fade-in at all under the `i > 0` guard and
+  // reads -28 either way, while the seam reads -55.4 — so `seam < inside -
+  // 10` holds by 27 dB and the clamp goes unpinned. What the clamp actually
+  // moves is the MIDDLE track, which is the only one carrying both ramps: at
+  // its own centre, unclamped, a 1.5s fade-in and a 1.5s fade-out multiply
+  // to 0.44 and it measures -31.2 against -24.1 clamped, the 7 dB that
+  // factor predicts.
+  //
+  // Hence a short track in the MIDDLE, for the reason
+  // `server/longform.test.ts` records against the identical clamp: placed
+  // first, its fade-in is suppressed by the `i > 0` guard and can never
+  // overlap anything. Measured on this fixture — middle -24.1 against the
+  // first track's -24 clamped, and -33 against -28 unclamped, which is what
+  // the two-dB bound below reads.
+  it("keeps a short middle track at full level across its own middle", async () => {
+    const shortMid = join(dir, "shortmid.flac");
+    await concatMusic([tone440a, toneShort, tone440b], shortMid);
+    // The middle track runs [2.0, 3.8); 2.9 is its own centre, and the one
+    // instant an unclamped pair of 1.5s ramps attenuates most.
+    const middle = (await loudness(shortMid, 2.9, 0.1)).mean;
+    // The first track's centre, as the reference for "full level" — a raw
+    // dB figure would be a property of the fixture's own amplitude rather
+    // than of the clamp.
+    const first = (await loudness(shortMid, 1.0, 0.1)).mean;
+    expect(middle).toBeGreaterThan(first - 2);
   });
 
   it("dips at each seam and not at the head or tail", async () => {
