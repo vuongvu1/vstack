@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BUCKETS_PER_SEC, FADE, MIN_GAP, SKIP_HEAD, SKIP_TAIL, clampPlacement, fill, orderByPrefix, troughs } from "./lofi.ts";
+import { BUCKETS_PER_SEC, FADE, MIN_GAP, OPEN_AT, SKIP_HEAD, SKIP_TAIL, clampPlacement, fill, orderByPrefix, troughs } from "./lofi.ts";
 import type { Placement, Speech } from "./lofi.ts";
 import { MAX_DROPS } from "./defaults.ts";
 
@@ -371,18 +371,54 @@ describe("fill", () => {
   // so `prevEnd + MIN_GAP` drifts ahead of each slot's own window and every
   // second or third slot comes out unreachable — a band the `need > step`
   // refusal cannot see, since 46 is comfortably inside 60. Ending the walk
-  // there gave 5 drops with the last at 284.5s, leaving the final 4.5
-  // minutes of a 10-minute render silent and saying nothing about it.
-  // Skipping the slot instead carries the drops to the end of the track.
+  // there leaves the tail of the render silent and says nothing about it.
+  //
+  // The bounds are TIGHT against measurement rather than round, and that is
+  // the point. Measured on this fixture: skipping gives 9 drops with the
+  // last at 533s, `break`ing gives 7 with the last at 401s. An earlier
+  // version asserted `> 5` and `> 400`, which the `break` mutation passed
+  // once `OPEN_AT` existed — the intro drop frees `prevEnd` early enough to
+  // buy the broken version two more slots, and the loose bounds could not
+  // tell that from the fix. Re-pinned here against both measured numbers.
   it("skips an unreachable slot rather than ending the walk there", () => {
     const env = envOf(600, []);
     const found = fill(env, 600, [speech("a", 45)], 60);
     if ("error" in found) throw new Error(found.error);
     const last = found.placements[found.placements.length - 1];
-    expect(found.placements.length).toBeGreaterThan(5);
-    // Well inside the last third of a 600s track, which is the whole of what
-    // the old `break` gave up.
-    expect(last?.at).toBeGreaterThan(400);
+    expect(found.placements.length).toBeGreaterThan(7);
+    expect(last?.at).toBeGreaterThan(500);
+  });
+
+  // `OPEN_AT` — the first drop is an intro, not a trough.
+  it("opens on an intro drop inside OPEN_AT, ahead of SKIP_HEAD", () => {
+    const env = envOf(600, []);
+    const found = fill(env, 600, [speech("a", 6)], 60);
+    if ("error" in found) throw new Error(found.error);
+    const first = found.placements[0];
+    expect(first?.at).toBeGreaterThanOrEqual(OPEN_AT.from);
+    expect(first?.at).toBeLessThanOrEqual(OPEN_AT.to);
+    // The whole point: ahead of the fifteen seconds SKIP_HEAD reserves for
+    // every OTHER slot. Reverting slot 0 to the ordinary window fails here.
+    expect(first?.at).toBeLessThan(SKIP_HEAD);
+  });
+
+  it("holds SKIP_HEAD for every slot after the first", () => {
+    const env = envOf(600, []);
+    const found = fill(env, 600, [speech("a", 6)], 60);
+    if ("error" in found) throw new Error(found.error);
+    for (const p of found.placements.slice(1)) {
+      expect(p.at).toBeGreaterThanOrEqual(SKIP_HEAD);
+    }
+  });
+
+  it("gives troughs no intro window — the identity is what protects it", () => {
+    // `fill` at a non-positive spacing IS `troughs`, and `troughs` still
+    // holds SKIP_HEAD for its first placement. This is the test that fails
+    // if OPEN_AT is ever pushed down into the shared path.
+    const env = envOf(600, [{ from: 5, to: 12 }]);
+    const found = fill(env, 600, [speech("a", 6)], 0);
+    if ("error" in found) throw new Error(found.error);
+    expect(found.placements[0]?.at).toBeGreaterThanOrEqual(SKIP_HEAD);
   });
 
   it("refuses a speech longer than its slot, by name", () => {

@@ -74,11 +74,32 @@ export const BUCKETS_PER_SEC = 4;
 export const MIN_GAP = 20;
 
 /** No speech in the opening: the track needs to establish itself before it
- *  is interrupted. */
+ *  is interrupted.
+ *
+ *  `fill` deliberately breaks this for its FIRST drop only — see `OPEN_AT`.
+ *  Every later slot, and every placement `troughs` makes, still holds it. */
 export const SKIP_HEAD = 15;
 
 /** Nor over the ending, which is the track's own resolution. */
 export const SKIP_TAIL = 10;
+
+/** Where the FIRST drop's voice lands, as an intro rather than as a trough.
+ *
+ *  This reverses `SKIP_HEAD` for exactly one drop, on purpose: the opening
+ *  speech introduces the mix, so it belongs at the top of it rather than
+ *  after the fifteen seconds the rule above reserves for the music to
+ *  establish itself. Every later slot keeps that rule.
+ *
+ *  Note what it costs. The window is five seconds wide, so slot 0's
+ *  quietest-wins search has almost no choice left to make and the drop
+ *  lands essentially at a fixed spot rather than on a breakdown. That is
+ *  what an intro is, and it is the one place in this module where position
+ *  beats the envelope.
+ *
+ *  `fill` only. `troughs` is untouched, because `fill` reducing to it
+ *  exactly at a non-positive spacing is a mutation-tested identity — so a
+ *  render with the spacing set to 0 gets no intro slot. */
+export const OPEN_AT = { from: 5, to: 10 };
 
 /** The envelope's midpoint, which is what "quiet for this track" is measured
  *  against.
@@ -364,11 +385,23 @@ export function fill(
     if (speech === undefined) break;
     const need = speech.seconds + 2 * FADE;
     if (need > step) return refuse(speech);
-    // The slot's own half-step either side, intersected with the track's
-    // bounds and with the previous drop's own end. `hi` subtracts `need`
-    // because the window has to END inside.
-    const lo = Math.max(SKIP_HEAD, centre - step / 2, prevEnd + MIN_GAP);
-    const hi = Math.min(centre + step / 2, seconds - SKIP_TAIL - need);
+    // Slot 0 is the intro window (`OPEN_AT`); every later slot is its own
+    // half-step either side, intersected with the track's bounds and with
+    // the previous drop's own end. `hi` subtracts `need` in both cases
+    // because the window has to END inside the track.
+    //
+    // Both intro bounds are shifted back by FADE, because the value pushed
+    // below is `bestAt + FADE` — searching in `OPEN_AT` directly would put
+    // the room reserved around the voice inside the window rather than the
+    // voice itself, and land it half a second late.
+    const lo =
+      k === 0
+        ? Math.max(0, OPEN_AT.from - FADE)
+        : Math.max(SKIP_HEAD, centre - step / 2, prevEnd + MIN_GAP);
+    const hi =
+      k === 0
+        ? Math.min(OPEN_AT.to - FADE, seconds - SKIP_TAIL - need)
+        : Math.min(centre + step / 2, seconds - SKIP_TAIL - need);
     if (lo > hi) {
       if (unreachable(centre)) break;
       if (k === 0) return refuse(speech);
