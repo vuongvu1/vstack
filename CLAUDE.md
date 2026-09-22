@@ -192,7 +192,7 @@ src/thumb.ts       THUMB, renderThumb (any picture → 1280x720 JPEG, stretched)
                    WIDE_IMAGE, renderWide (any picture → 1920x1080 JPEG,
                    cover-cropped — the lofi journey's background)
 src/state.ts       AppState, setState/setQuiet, save/restore
-src/api.ts         13 fetch wrappers
+src/api.ts         15 fetch wrappers
 src/format.ts      mmss / clock / slugify (shared client + server)
 src/player.ts      YT IFrame API wrapper + trim strip
 src/editor.ts      box drag/resize overlay (crops over the <video>, pieces'
@@ -1156,6 +1156,49 @@ earlier version of this claim said the mutation failed only the first of
 the two; re-measured against the whole file rather than a narrowed test
 filter, it fails both.
 
+**A `Placement` is named by its `key`, never by its file's `id`, and never
+by an array index.** `fill` cycles one uploaded file into many drops, so
+`id` stopped being unique across the array the moment repeats shipped —
+`clampPlacement` keyed on it both rewrote every SIBLING drop's `at` (its
+`map` matched all of them) and hid those siblings from its own `MIN_GAP`
+scan (its `others` filter dropped all of them), so one drag collapsed a
+speech's whole set onto one instant and `/api/lofi` then refused the render
+with "Two speeches overlap" — loud, but naming the wrong thing. The key is
+`<id>#<slot>`, minted by both `troughs` (always `#0`) and `fill` (the slot
+index, at most one drop each), so nothing downstream has to know which
+produced the array. Not the array index, because `fill` sorts by time before
+returning — the same rule `segmentContaining` and the cutter's `activeRange`
+already hold. It is client-only: `/api/lofi`'s body is still `{ id, at }`
+per drop, and nothing persists a placement.
+
+**A drop that `fill` could not make is SURFACED, never blocked.** The Render
+button's readiness check was relaxed from "every speech placed" to "at least
+one drop" when repeats shipped, correctly — the two counts differ by design
+now — but nothing replaced what it had been saying. Measured: four speeches
+at a five-minute spacing over a twelve-minute track gives three drops, and
+the fourth file was simply absent from the render. So the badge names both
+numbers (`12 drops · 3/4 files`) and the panel raises the status row's own
+`.callout` naming the files that got nothing, and a second for `fill`'s
+`capped` flag. Neither disables Render: accepting three of four is a
+legitimate choice, and this codebase's rule is that a silently missing
+speech is cardinal, not that every render must be complete. Both callouts
+are suppressed while `busy` — an upload batch writes `speeches` once per
+file and calls `place()` only once, so the renders in between have speeches
+no placement exists for yet.
+
+**`fill` SKIPS an unreachable slot and only `break`s past the end of the
+track.** `prevEnd + MIN_GAP` drifts ahead of a slot's own window whenever
+`speech.seconds + 2 * FADE + MIN_GAP > step` — a band the `need > step`
+refusal cannot see, since `need` is comfortably inside `step` there. Ending
+the walk at the first such slot stopped the drops partway through.
+Measured on one 45s speech at a 60s spacing over a flat 600s track: 5 drops,
+the last at 284.5s, the closing four and a half minutes silent — against 8
+drops and a last at 482.5s once the slot is skipped instead. `capped` then
+distinguishes the cap from the end of the track, and needs BOTH halves: `k
+=== MAX_DROPS` alone calls a run capped when the track happened to end on
+the same slot the cap did, which is a warning naming a limit that cost the
+user nothing. All three are mutation-tested in `src/lofi.test.ts`.
+
 **One ffmpeg input per unique speech FILE, `asplit` into its drops.** A
 speech now recurs on a spacing, so a three-hour render at the default
 five-minute spacing plays roughly 36 drops from as few as one recording.
@@ -1229,6 +1272,43 @@ the last speech's end, in the same band the duck test already measures.
 Removing the `apad` fails both of those and nothing else — proof that a
 structural "right length" check is not a substitute for a behavioural one
 when the two can silently disagree.
+
+**The finished mix is padded too, and that is the SAME bug arriving from a
+second direction.** `[sc]`'s pad fixed the sidechain; the closing
+`amix … duration=first` still inherits its length from `[ducked]`, which
+inherits its own from `[music]`, so a music input whose decoded stream EOFs
+short of the duration `probeAudio` reported drags the whole audio stream
+short with it. Multi-track renders are where this shows, because
+`concatMusic`'s output is the one music file this journey builds rather than
+probes-and-trusts. Measured on a three-track concat: a 4.836009s audio
+stream inside a 6.066667s container, against a music file `probeAudio`
+reports as 6.060408s — a fifth of the render silent, with `format.duration`
+faithful throughout. `[amix]apad=whole_dur=${seconds}` before the `asplit`
+puts the floor under every way a leg can end early rather than under the one
+found first, and it is free where it is not needed: a single-track render is
+byte-identical with and without it, verified by `cmp` both with a speech and
+with none.
+
+**The flac intermediate is not the cause and wav is not the fix.** The pad
+above closes the gap with `concatMusic`'s codec untouched, which is what
+says the mix's own `duration=first` is where this lives — a codec can only
+move how early a stream EOFs, not whether the mix inherits that EOF. wav
+would also put RIFF's 4 GB ceiling inside reach at `MAX_TRACKS`, on a
+pre-pass already measured at roughly a gigabyte for three hours.
+
+**Nothing rendered a CONCATENATED track set end to end, and that is what hid
+the above.** `concatMusic` was tested standalone and `renderLofi` only ever
+on a single track, so the gap between them was invisible from both sides —
+and the single-track audio-stream assertions beside it were bounded at
+`> 29.5`, half a second of slack on a thirty-second render, the wrong
+instrument for a truncation that is a fraction of the whole rather than a
+fixed offset. Those are `toBeCloseTo(seconds, 1)` against the music's own
+probed length now. Note what the concatenated test deliberately does NOT
+assert: the concat's leg ORDER. `peakHzAt` finds the loudest bin and the
+render mixes in a full-spectrum crackle bed the tones do not outrank —
+measured, the peak at t=1.0 inside that render is 2603.93 Hz where the tone
+is 440. The order is proved on `concatMusic`'s own output instead, upstream
+of the crackle.
 
 **The duck is a `sidechaincompress`, not a `volume` gated on
 `enable='between(t,a,b)'`.** A gated step has no attack or release and
@@ -1841,7 +1921,28 @@ guarded invariant; see `task-3-report.md` for the isolated reproduction.
 neighbour's bound, and the drag-past-a-neighbour case that leaves no legal
 position — mutation-pinned by reverting the refusal to the old
 `Math.max(lo, hi)` clamp, which lands the placement 19.5s past a 300s
-track's own end and fails only that one test.
+track's own end and fails only that one test. Two more cover the `key`: that
+dragging one drop of a REPEATED speech moves only that drop, and that a
+sibling drop bounds the drag like any other neighbour. Both are
+mutation-pinned against the old file-identity semantics — restoring them
+fails exactly those two and nothing else in the file. `fill` gains the slot
+SKIP (8 drops with a last at 482.5s, against the old `break`'s 5 at 284.5s)
+and `capped`'s three cases: the cap binding, the track simply running out,
+and the boundary where both happen on the same slot — that last one is the
+only test the `!unreachable(…)` half of the flag decides, and dropping that
+half fails it alone.
+`server/lofi.test.ts` gains the concatenated-render test the audio-stream
+truncation needed (it fails at 4.836009 against 6.060408 with the closing
+`apad` removed, and nothing else does) and the `min(TRACK_FADE, secs / 3)`
+clamp test the spec had been claiming since it shipped. That one needs the
+short track in the MIDDLE, and the reason is measurable rather than
+theoretical: the seam test beside it compares `inside` at t=1.0 — the FIRST
+track's centre, which has no fade-in at all under the `i > 0` guard and
+reads -28 either way — against a seam at -55.4, so it holds by 27 dB with
+the clamp gone. What the clamp actually moves is the middle track, the only
+one carrying both ramps: at its own centre, unclamped, two 1.5s ramps
+multiply to 0.44 and it measures -31.2 against -24.1 clamped. Removing the
+clamp fails the new test alone.
 `beforeAll` carries the same explicit 180s timeout `server/longform.test.ts`
 does, for the identical reason — several real encodes competing for CPU in
 the full suite. `server/ffmpeg.test.ts` gains `probeAudio`'s own three

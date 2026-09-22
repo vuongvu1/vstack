@@ -2,6 +2,22 @@
 
 2026-09-21
 
+> **Amended 2026-09-22.** Four claims below describe something the shipped
+> code does not do. Everything else in this document is still accurate.
+>
+> 1. **`/api/lofi/progress` is a POST, not "a bare GET".** The route section
+>    calls it one. `server/index.ts` answers 405 to every method but POST —
+>    `/out/<name>` is the single GET it serves — so a bare GET would have got
+>    405 rather than the getter. The code is right and the sentence was
+>    wrong; `publishProgress`, which this route was modelled on, is a POST
+>    for the same reason.
+> 2. **A `Placement` carries a `key` as well as an `id`.** The drag path
+>    names a DROP, and with a spacing set one file is many drops, so `id`
+>    stopped being unique across the array the moment repeats shipped.
+> 3. **`fill` SKIPS an unreachable slot.** It used to end the walk at one.
+> 4. **`fill` reports `capped`**, and the panel warns both on that and on an
+>    uploaded speech that got no drop at all. Neither blocks Render.
+
 Extends `docs/specs/2026-09-16-vstack-lofi-design.md` and supersedes nothing.
 The lofi journey keeps its phases (`idle` → `lofi` → `preview`), its route
 (`/api/lofi`), its uploads door (`/api/upload-audio`), its background fork
@@ -227,9 +243,11 @@ that sweeps the work directory.
 hours is itself minutes long and a progress bar that sits at zero through it
 is the problem restated.
 
-The route is `/api/lofi/progress`, a bare GET returning the getter — one
-line, the same as `/api/publish/progress`. Note `server/index.ts` routes on
-exact `req.url` equality, so this is a distinct URL rather than a flag.
+The route is `/api/lofi/progress`, returning the getter — one line, the same
+as `/api/publish/progress`. Note `server/index.ts` routes on exact `req.url`
+equality, so this is a distinct URL rather than a flag. (This paragraph said
+"a bare GET"; it is a POST, like every route here but `/out/`. See the
+amendment at the top.)
 
 **ponytail: one global slot.** Two lofi renders cannot overlap in the panel,
 the same assumption `publishProgress` already states. Unlike publish, this

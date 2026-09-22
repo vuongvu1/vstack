@@ -335,10 +335,11 @@ export async function publishProgress(): Promise<{ sent: number; total: number }
 /** How far the running render has got. Polled while a lofi render is in
  *  flight; `total` of 0 means nothing is running.
  *
- *  A POST to a route that reads like a GET, exactly as `publishProgress` is —
- *  the server routes on `req.url` alone and never checks the method, and
- *  going through the shared `post` helper is what gives this the same
- *  BACKEND_DOWN handling every other call has. */
+ *  A POST to a route that reads like a GET, exactly as `publishProgress` is.
+ *  `server/index.ts` answers 405 to anything but a POST — `/out/` is the one
+ *  GET it serves — so a POST is what this route takes, not merely what it
+ *  tolerates, and going through the shared `post` helper is what gives this
+ *  the same BACKEND_DOWN handling every other call has. */
 export async function lofiProgress(): Promise<{
   phase: "music" | "render";
   done: number;
