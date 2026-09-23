@@ -50,7 +50,7 @@ the result is a list of `youtu.be/<id>?t=` links the user copies out, plus
 `docs/specs/2026-09-16-vstack-lofi-design.md`, which supersedes nothing and
 adds a FOURTH journey beside the short one, the long one and the
 chat-moments dead end: `idle` → `lofi` → `preview`, where a music track, a
-background picture and up to `MAX_SPEECHES` (8) speech clips become one
+background picture and up to `MAX_SPEECHES` (100) speech clips become one
 1920x1080 video, each speech mixed into a quiet stretch of the music,
 band-limited and ducking it. A speech is AUDIO ONLY — it may be uploaded
 as an audio file or a video one, and a video one's picture is discarded.
@@ -1275,12 +1275,12 @@ repeats existed.
 **`MAX_SPEECHES` bounds the graph's INPUTS; `MAX_DROPS` bounds its LEGS, and
 neither cap is redundant with the other.** A speech recurring split what
 used to be one number into two that measure different things:
-`MAX_SPEECHES` (8) is how many distinct FILES `/api/upload-audio` and the
+`MAX_SPEECHES` (100) is how many distinct FILES `/api/upload-audio` and the
 panel will accept, one input each; `MAX_DROPS` (300) is how many
 PLACEMENTS `fill` may hand back, one `asplit` tap and one crackle-boost leg
-each. Checking only the drop count would let eighty distinct uploads
-through under a 120-drop limit — eighty inputs on a graph the file cap
-exists to bound, with the drop count none the wiser. Both are checked in
+each. Checking only the drop count would let three hundred distinct uploads
+through under a 300-drop limit — three hundred inputs on a graph the file
+cap exists to bound, with the drop count none the wiser. Both are checked in
 the panel and again in the route, because the route is reachable without
 the panel — the same posture `MAX_SPEECHES` and `MAX_PARTS` already hold.
 

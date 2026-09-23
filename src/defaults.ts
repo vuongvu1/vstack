@@ -95,10 +95,17 @@ export const MAX_PARTS = 20;
  *  grows with `MAX_DROPS` — one input per file, `asplit` into its drops, the
  *  same shape the crackle leg already has.
  *
- *  Shared client and server, like `MAX_PARTS`: the panel refuses the ninth
+ *  Shared client and server, like `MAX_PARTS`: the panel refuses the 101st
  *  file before it is uploaded, and `/api/lofi` refuses it again because the
- *  route is reachable without the panel. */
-export const MAX_SPEECHES = 8;
+ *  route is reachable without the panel.
+ *
+ *  100 rather than the 8 this shipped with, and it is an INPUT count on the
+ *  ffmpeg graph — one `-i` each, plus the background, the music, the crackle
+ *  and the mark. Raised on request; unmeasured at the top of its range, so
+ *  `ponytail:` if a hundred-file render ever fails, the graph's input count
+ *  is the first thing to measure. `MAX_DROPS` still bounds the LEGS, which
+ *  is the half that grows with every placement. */
+export const MAX_SPEECHES = 100;
 
 /** The most speech placements one render will carry.
  *
