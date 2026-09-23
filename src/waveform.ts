@@ -1,3 +1,5 @@
+import type { Segment } from "./segments.ts";
+
 /** Peak-per-bucket reduction over one decoded audio channel.
  *
  *  This module imports nothing and knows nothing about Web Audio, which is
@@ -63,4 +65,110 @@ export function bucketAt(
   // file has, and the floor below would land on `buckets` exactly.
   if (t >= clipSeconds) return -1;
   return Math.min(buckets - 1, Math.floor((t * buckets) / clipSeconds));
+}
+
+/** The quantile of the envelope taken as the file's noise floor. A low
+ *  percentile rather than a median: a recording that is mostly speech drags
+ *  a median up to speech level, and the floor is meant to describe the gaps
+ *  between takes rather than the takes. */
+const FLOOR_PCTILE = 0.1;
+
+/** How far over that floor a bucket has to sit to count as speech. */
+const OVER_FLOOR = 4;
+
+/** The band the threshold is clamped into, as a fraction of the file's own
+ *  peak. Both halves are load-bearing and each guards a different file.
+ *
+ *  The lower bound guards a clean recording whose gaps are true digital
+ *  zero: the floor is then 0, `floor * OVER_FLOOR` is 0, and every bucket
+ *  including the silent ones clears it — one range over the whole file.
+ *
+ *  The upper bound guards the opposite, a file that is speech almost
+ *  throughout: the floor percentile lands ON speech, the threshold goes
+ *  above the peak, and nothing is found at all. */
+const MIN_FRAC = 0.05;
+const MAX_FRAC = 0.5;
+
+/** The quietest peak a file must reach before any of it is called speech.
+ *  Roughly -26 dBFS.
+ *
+ *  This is the one ABSOLUTE gate here and it is what separates the two flat
+ *  envelopes the relative band cannot tell apart: a file that is nothing but
+ *  noise floor, and a file that is speech from end to end. Both have almost
+ *  no dynamic range; only their level says which is which. */
+const MIN_LEVEL = 0.05;
+
+/** The longest quiet gap bridged rather than split on. A breath between
+ *  words is not a range boundary. */
+const BRIDGE = 0.6;
+
+/** The shortest run kept. Below this it is a click, a chair or a lip
+ *  smack, and a range that short is not worth a file. */
+const MIN_SPEECH = 1;
+
+/** Room left at each edge of a range, so the threshold crossing does not
+ *  clip the first consonant or the tail of the last word. */
+const EDGE = 0.15;
+
+/** The loud stretches of `env`, as ranges in the file's own seconds — the
+ *  cutter's "possibly speech here" guess.
+ *
+ *  Amplitude, not voice: loud music reads as speech, and that is the known
+ *  ceiling. `ponytail:` the upgrade path is ffmpeg's `silencedetect` behind
+ *  a route, which costs a pass over the file and an upload round trip for a
+ *  guess the user is going to adjust on the playhead anyway.
+ *
+ *  Resolution is the envelope's — `decodeTrack` buckets at 4 a second — so
+ *  an edge lands within 250ms and `EDGE` pads outward rather than inward on
+ *  purpose: a range that starts a shade early costs a moment of room tone,
+ *  where one that starts late costs a word. `ponytail:` decode the cutter's
+ *  envelope finer than the lofi journey's the day that is not enough.
+ *
+ *  Takes the envelope rather than an AudioBuffer for the reason `peaks`
+ *  does: the caller owns the decode, so this stays testable under vitest's
+ *  `node` environment. */
+export function speechRanges(env: Float32Array, seconds: number, max: number): Segment[] {
+  const n = env.length;
+  if (n === 0 || !(seconds > 0) || !(max > 0)) return [];
+
+  const sorted = Float32Array.from(env).sort();
+  const peak = sorted[n - 1] ?? 0;
+  if (peak < MIN_LEVEL) return [];
+  const floor = sorted[Math.min(n - 1, Math.floor(n * FLOOR_PCTILE))] ?? 0;
+  const thresh = Math.min(Math.max(floor * OVER_FLOOR, peak * MIN_FRAC), peak * MAX_FRAC);
+
+  // Seconds per bucket, from the file's own length rather than an assumed
+  // rate: `speechRanges` is handed whatever `decodeTrack` produced.
+  const per = seconds / n;
+  const runs: Segment[] = [];
+  let from = -1;
+  // `<= n` so a run still open at the last bucket is closed by the walk
+  // rather than needing a second close after it.
+  for (let b = 0; b <= n; b++) {
+    const loud = b < n && (env[b] ?? 0) >= thresh;
+    if (loud && from < 0) from = b;
+    if (!loud && from >= 0) {
+      runs.push({ start: from * per, end: b * per });
+      from = -1;
+    }
+  }
+
+  const merged: Segment[] = [];
+  for (const run of runs) {
+    const last = merged[merged.length - 1];
+    if (last !== undefined && run.start - last.end < BRIDGE) last.end = run.end;
+    else merged.push({ ...run });
+  }
+
+  // Length is measured BEFORE the pad, so `MIN_SPEECH` describes how much
+  // sound there is rather than how much sound plus padding.
+  const kept = merged
+    .filter((r) => r.end - r.start >= MIN_SPEECH)
+    .map((r) => ({ start: Math.max(0, r.start - EDGE), end: Math.min(seconds, r.end + EDGE) }));
+
+  // Longest first, then back into time order. Keeping the first `max` by
+  // TIME instead would throw away the takes and keep whatever throat-clear
+  // opened the file.
+  kept.sort((a, b) => b.end - b.start - (a.end - a.start));
+  return kept.slice(0, max).sort((a, b) => a.start - b.start);
 }

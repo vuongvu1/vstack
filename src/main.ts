@@ -56,7 +56,7 @@ import {
   setState,
   subscribe,
 } from "./state.ts";
-import { bucketAt, peaks } from "./waveform.ts";
+import { bucketAt, peaks, speechRanges } from "./waveform.ts";
 
 declare global {
   interface Window {
@@ -3792,6 +3792,38 @@ function renderCutting(): Node[] {
     setState({ cutRanges: next, error: "" });
   };
 
+  /** The cutter's guess, from the envelope `pickCutFile` already decoded.
+   *
+   *  Replaces the ranges rather than appending to them: appending then
+   *  capping at MAX_SEGMENTS would silently drop whichever ranges the user
+   *  had marked by hand, and this is a button pressed on a fresh file.
+   *
+   *  A detected end is MEASURED, so it goes into `cutAimedEnds` — unlike
+   *  `+ Range`'s synthetic five seconds, which `editMark` carries. Set Start
+   *  past a detected end is a misclick to refuse, not a length to preserve.
+   *
+   *  `waveSeconds` is the envelope's own axis, not `span`: the two agree for
+   *  every file this phase sees, and using the envelope's keeps the mapping
+   *  honest if a probe ever reports a shorter duration than the decode. */
+  const detect = el("button", {
+    textContent: "Detect",
+    title: "Mark the stretches that sound like speech",
+    disabled: busy || wavePeaks === null,
+  });
+  detect.onclick = () => {
+    const env = wavePeaks;
+    if (env === null) return;
+    const found = normalize(speechRanges(env, waveSeconds, MAX_SEGMENTS), span);
+    if (found.length === 0) {
+      setState({ error: "No speech found in this file." });
+      return;
+    }
+    cutAimedEnds.clear();
+    for (const r of found) cutAimedEnds.add(r.end);
+    activeRange = 0;
+    setState({ cutRanges: found, error: "" });
+  };
+
   const setMarkAt = (which: "start" | "end") => () => {
     const cur = getState();
     const seg = cur.cutRanges[activeRange];
@@ -3888,7 +3920,7 @@ function renderCutting(): Node[] {
     setState({ cutRanges: next, error: "" });
   };
 
-  rows.push(el("div", { className: "bar-row" }, addRange, setStart, setEnd, drop, chips));
+  rows.push(el("div", { className: "bar-row" }, addRange, detect, setStart, setEnd, drop, chips));
 
   const base = el("input", {
     type: "text",

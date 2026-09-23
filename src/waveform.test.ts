@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bucketAt, peaks } from "./waveform.ts";
+import { bucketAt, peaks, speechRanges } from "./waveform.ts";
 
 describe("peaks", () => {
   it("takes the maximum absolute amplitude per bucket", () => {
@@ -106,5 +106,103 @@ describe("bucketAt", () => {
     expect(bucketAt(0, 100, 0, 10, 900)).toBe(-1);
     expect(bucketAt(0, 100, 10, 0, 900)).toBe(-1);
     expect(bucketAt(0, 100, 10, 10, 0)).toBe(-1);
+  });
+});
+
+describe("speechRanges", () => {
+  // The cutter's envelope comes from `decodeTrack`, which buckets at
+  // BUCKETS_PER_SEC. Every fixture below is built at that rate so the
+  // expected seconds are arithmetic rather than approximate.
+  const BPS = 4;
+
+  /** An envelope of `seconds` at `BPS`, loud inside each span and at the
+   *  noise floor everywhere else. */
+  function envelope(
+    seconds: number,
+    loud: Array<[number, number]>,
+    level = 0.8,
+    floor = 0.02,
+  ): Float32Array {
+    const env = new Float32Array(Math.round(seconds * BPS)).fill(floor);
+    for (const [from, to] of loud) {
+      for (let b = Math.round(from * BPS); b < Math.round(to * BPS); b++) env[b] = level;
+    }
+    return env;
+  }
+
+  function expectRanges(out: Array<{ start: number; end: number }>, want: Array<[number, number]>) {
+    expect(out.length).toBe(want.length);
+    out.forEach((seg, i) => {
+      const [start, end] = want[i] ?? [NaN, NaN];
+      expect(seg.start).toBeCloseTo(start, 5);
+      expect(seg.end).toBeCloseTo(end, 5);
+    });
+  }
+
+  it("finds each loud stretch, padded at both edges", () => {
+    const out = speechRanges(envelope(20, [[2, 5], [12, 17]]), 20, 6);
+    expectRanges(out, [[1.85, 5.15], [11.85, 17.15]]);
+  });
+
+  it("bridges a breath between words rather than splitting on it", () => {
+    // 0.4s of quiet, under BRIDGE. Two runs in the envelope, one range out.
+    const out = speechRanges(envelope(20, [[2, 5], [5.4, 8]]), 20, 6);
+    expectRanges(out, [[1.85, 8.15]]);
+  });
+
+  it("drops a blip too short to be speech", () => {
+    // 0.5s, under MIN_SPEECH. The 3s take beside it survives, so an empty
+    // result cannot pass this by rejecting everything.
+    const out = speechRanges(envelope(20, [[2, 2.5], [10, 13]]), 20, 6);
+    expectRanges(out, [[9.85, 13.15]]);
+  });
+
+  it("keeps the LONGEST takes when there are more than `max`, in time order", () => {
+    // Eight takes, each a different length, the long ones deliberately late
+    // so that keeping the first six by time gives a different answer from
+    // keeping the six longest. Mutation-pinned: sorting by start instead of
+    // length before the cap fails this and nothing else in the file.
+    const takes: Array<[number, number]> = [
+      [2, 3.2],   // 1.2
+      [6, 7.4],   // 1.4
+      [10, 12],   // 2.0
+      [15, 18],   // 3.0
+      [21, 25],   // 4.0
+      [28, 33],   // 5.0
+      [36, 42],   // 6.0
+      [45, 52],   // 7.0
+    ];
+    const out = speechRanges(envelope(60, takes), 60, 6);
+    expectRanges(out, [
+      [9.85, 12.15], [14.85, 18.15], [20.85, 25.15],
+      [27.85, 33.15], [35.85, 42.15], [44.85, 52.15],
+    ]);
+  });
+
+  it("returns nothing for digital silence rather than one range over the file", () => {
+    expect(speechRanges(new Float32Array(80), 20, 6)).toEqual([]);
+  });
+
+  it("returns nothing for a file that is only noise floor", () => {
+    expect(speechRanges(envelope(20, []), 20, 6)).toEqual([]);
+  });
+
+  it("gives one range for a file that is speech almost throughout", () => {
+    // The floor percentile is speech-level here, so an unclamped threshold
+    // would sit above the peak and find nothing at all — the case MAX_FRAC
+    // exists for.
+    const out = speechRanges(envelope(20, [[0.5, 19.5]]), 20, 6);
+    expectRanges(out, [[0.35, 19.65]]);
+  });
+
+  it("clamps a range at the file's own bounds", () => {
+    const out = speechRanges(envelope(20, [[0, 3]]), 20, 6);
+    expectRanges(out, [[0, 3.15]]);
+  });
+
+  it("returns nothing for degenerate inputs rather than throwing", () => {
+    expect(speechRanges(new Float32Array(0), 20, 6)).toEqual([]);
+    expect(speechRanges(envelope(20, [[2, 5]]), 0, 6)).toEqual([]);
+    expect(speechRanges(envelope(20, [[2, 5]]), 20, 0)).toEqual([]);
   });
 });

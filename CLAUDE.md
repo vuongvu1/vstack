@@ -1504,6 +1504,39 @@ There is nothing in this phase that could reproduce the stitch drift the
 framing strip's mapping exists to fix, which is why the strip needs no
 mapping of its own.
 
+**`speechRanges`' threshold is clamped into a band and gated on an
+absolute level, and the three bounds each guard a different file.** Detect
+reads the envelope `pickCutFile` already decoded and thresholds it at the
+file's own tenth percentile times `OVER_FLOOR` — a low percentile rather
+than a median, because a recording that is mostly speech drags a median up
+to speech level and the floor is meant to describe the gaps.
+
+That leaves three silent failures, and each bound answers one. A clean
+recording whose gaps are true digital zero has a floor of 0, so
+`floor * OVER_FLOOR` is 0 and every bucket clears it — one range over the
+whole file, which `MIN_FRAC` (a fraction of the peak) prevents. A file that
+is speech almost end to end has its floor percentile land ON speech, so the
+threshold goes above the peak and nothing is found at all — `MAX_FRAC`
+prevents that. And those two flat envelopes are indistinguishable by dynamic
+range: a file of nothing but room tone and a file of wall-to-wall speech
+both have almost none, so only their LEVEL says which is which, which is
+what the absolute `MIN_LEVEL` gate is for and the one thing in this function
+that is not relative to the file.
+
+Padding is outward (`EDGE`) and length is measured BEFORE it, so
+`MIN_SPEECH` describes how much sound there is rather than sound plus
+padding. The cap keeps the LONGEST ranges, not the first `MAX_SEGMENTS` by
+time — mutation-tested, since keeping them by time throws away the takes and
+keeps whatever throat-clear opened the file. It is amplitude and not voice,
+so loud music reads as speech; `ponytail:` at the function, with
+`silencedetect` behind a route as the upgrade path.
+
+Detect REPLACES the ranges rather than appending — appending then capping
+would silently drop whatever the user marked by hand — and every detected
+end goes into `cutAimedEnds`, because a measured end is aimed where
+`+ Range`'s synthetic five seconds is not: `editMark` must refuse a Set
+Start past it rather than carrying the range's length along.
+
 **The cutter writes the module-scoped `wavePeaks`/`waveSeconds` and must
 therefore reset `waveFor`.** `drawWave` reads those two rather than taking
 an envelope — deliberate, `ponytail:`-marked, because the journeys are
@@ -2044,6 +2077,18 @@ long input — just not anything this fixture can demonstrate. Reproducing it
 as a *correctness* failure would need a much longer or non-indexed source,
 which is more than a real-ffmpeg unit test's budget here; the measurements
 are in `.superpowers/sdd/2026-09-21-vstack-audio-cutter/task-2-report.md`.
+
+`src/waveform.test.ts` gains `speechRanges`' nine cases on the model the
+other bottom modules get: two takes found at exactly the padded seconds, a
+0.4s breath bridged into one range, a 0.5s blip dropped (with a real take
+beside it, so an empty answer cannot pass by rejecting everything), eight
+takes capped to the six LONGEST in time order, digital silence and a
+floor-only file both answering nothing, a speech-throughout file answering
+one range (the case `MAX_FRAC` exists for), a range clamped at the file's
+own start, and the degenerate inputs. The cap is mutation-tested: sorting by
+start instead of length before the slice fails that one test and nothing
+else in the file. The Detect button itself has no test, like the rest of the
+DOM surface.
 
 `server/ffmpeg.test.ts` gains `cutName`'s seven cases with the exhaustive
 traversal treatment `isOutName` and `videoIdFrom` get — what `cutName`
