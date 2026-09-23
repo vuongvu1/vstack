@@ -9,6 +9,7 @@ import { probeAudio, probeFile } from "./ffmpeg.ts";
 import {
   FADE,
   LOGO_RECT,
+  logoAt,
   SPIN_SECONDS,
   VIZ_BAR,
   VIZ_RECT,
@@ -633,7 +634,7 @@ describe("renderLofi", () => {
   // what happened: putting the logo at the LEFT edge passed the pixel test
   // outright. The corner is therefore asserted as arithmetic on the rect
   // itself, where nothing can follow it.
-  it("puts the logo rect in the top-right corner", () => {
+  it("starts the mark in the top-right corner", () => {
     const { x, y, side } = LOGO_RECT;
     // Stated as the four GAPS rather than as "x is past the midpoint",
     // which a mark parked at x=1000 would also satisfy. A corner is a small
@@ -658,8 +659,14 @@ describe("renderLofi", () => {
     expect(y % 2).toBe(0);
   });
 
-  it("draws the mark in that rect and nowhere else", async () => {
-    const { x, y, side } = LOGO_RECT;
+  it("draws the mark where logoAt says it is, and nowhere else", async () => {
+    // Crops at `logoAt(4)` rather than at a constant, because the mark
+    // moves now — and that is exactly why the arithmetic above is asserted
+    // separately. A crop that follows the mark proves it is drawn, never
+    // that it is drawn in the right PLACE: point `logoAt` anywhere and this
+    // test's own aim follows it. The mirrored box below is what keeps it
+    // honest.
+    const { x, y, side } = logoAt(4);
     const corner = await boxAt(out, 4, x, y, side);
     const flat = Buffer.alloc(corner.length);
     // The fixture background is flat teal, so a box with nothing drawn in it
@@ -672,16 +679,68 @@ describe("renderLofi", () => {
     }
     expect(boxDiff(corner, flat)).toBeGreaterThan(10);
 
-    // And the MIRRORED box on the left is untouched, which is what makes
-    // this a corner assertion rather than an "is it anywhere" one. Dropping
-    // the overlay's x offset to 0 fails here rather than above.
+    // And the MIRRORED box is untouched. With a moving mark this is what
+    // says `logoAt` agrees with the ffmpeg expression rather than merely
+    // being self-consistent: if the two spellings of the bounce drifted,
+    // the mark would be at the mirrored position (or neither) and one of
+    // these two assertions would fail.
     const mirrored = await boxAt(out, 4, WIDE_W - x - side, y, side);
     expect(boxDiff(mirrored, flat)).toBeLessThan(2);
   }, 120_000);
 
+  // Pure arithmetic, no render — the bounce's own two rules. Kept apart
+  // from the pixel test above for the reason the corner assertion is: a
+  // test that crops wherever `logoAt` points cannot also be what proves
+  // `logoAt` is right.
+  it("keeps the padded box inside the frame at every instant", () => {
+    for (let t = 0; t <= 120; t += 0.37) {
+      const { x, y, side } = logoAt(t);
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(x + side).toBeLessThanOrEqual(WIDE_W);
+      expect(y + side).toBeLessThanOrEqual(WIDE_H);
+      // Even on both axes, for the reason every overlay offset here is.
+      expect(x % 2).toBe(0);
+      expect(y % 2).toBe(0);
+    }
+  });
+
+  it("bounces rather than drifting off or standing still", () => {
+    // Moves at all — the assertion that fails if the expression is ever
+    // replaced by a constant offset again.
+    expect(logoAt(5)).not.toEqual(logoAt(0));
+    // And turns round: over a full horizontal period the mark must visit
+    // both ends of its travel rather than running out of the frame.
+    let min = Infinity;
+    let max = -Infinity;
+    for (let t = 0; t <= 45; t += 0.13) {
+      min = Math.min(min, logoAt(t).x);
+      max = Math.max(max, logoAt(t).x);
+    }
+    expect(min).toBeLessThan(20);
+    expect(max).toBeGreaterThan(WIDE_W - LOGO_RECT.side - 20);
+  });
+
   it(`turns once every ${SPIN_SECONDS}s`, async () => {
-    const { x, y, side } = LOGO_RECT;
-    const at = (t: number) => boxAt(out, t, x, y, side);
+    // Follows the mark, because it no longer sits still.
+    //
+    // That the thresholds below survived the mark moving is fixture-luck
+    // worth writing down rather than a property of the graph. Following the
+    // mark means the crop's BACKGROUND changes too, and at t=10 the box sits
+    // at y=518..944 — well inside the bars' own band. It still measures 1.25
+    // against a full turn (the static mark gave 1.6) because this fixture's
+    // music is a 220 Hz SINE: `showcqt` puts essentially all of its energy
+    // in the leftmost bins, and the box is at x=704..1130 by then, over
+    // empty band. Measured at the other two samples: 19.92 and 20.42.
+    //
+    // Give this fixture broadband music and the crop would carry real bars
+    // that differ between two instants, and the full-turn bound is the one
+    // that would go first. The fix then is a crop that stays clear of the
+    // band, not a looser bound.
+    const at = (t: number) => {
+      const { x, y, side } = logoAt(t);
+      return boxAt(out, t, x, y, side);
+    };
     const zero = await at(0);
 
     // A quarter turn and a half turn must both look different. The HALF turn

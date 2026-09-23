@@ -249,10 +249,99 @@ const VIZ_HI = 7040;
 const VIZ_COLS = 10;
 const VIZ_FILL = 7;
 
-/** Where the spinning box lands, exported for the same reason
- *  `SPIN_SECONDS` is: the test crops exactly this rect out of a real render,
- *  and a second copy of the arithmetic would drift the day the mark moves. */
-export const LOGO_RECT = { x: LOGO_X, y: LOGO_Y, side: LOGO_BOX };
+/** How fast the mark drifts, in pixels a second, on BOTH axes.
+ *
+ *  One speed rather than two, which is what the screensaver this imitates
+ *  does: it travels at 45 degrees and the wander comes from the frame not
+ *  being square, not from the axes disagreeing. Here the travel box is
+ *  1494x654, so the two bounce periods are 39.8s and 17.4s and the path
+ *  takes about 72 minutes to repeat — long enough that nothing short of a
+ *  full-length render could show it.
+ *
+ *  75 px/s crosses the frame in about 20 seconds, roughly the pace of the
+ *  original. A lofi mix is background, and a mark that hurries competes
+ *  with the bars for an attention neither of them should be asking for. */
+const BOUNCE_SPEED = 75;
+
+/** How far the PADDED box may travel on each axis before it turns round.
+ *
+ *  The padded box, never the mark: `LOGO_BOX` is the diagonal, so bouncing
+ *  it is what keeps the spinning arms from being clipped at a wall at 45
+ *  degrees — the same call `LOGO_MARGIN` already makes for a mark that
+ *  stays still. It costs a visible gap: at 0 and 90 degrees the mark
+ *  appears to stop `(LOGO_BOX - LOGO_SIZE) / 2` short of the edge and only
+ *  at 45 does an arm reach it. Bouncing the mark's own square instead would
+ *  touch exactly at the cardinal angles and shear the corners off between
+ *  them, which is the worse half of the same trade. */
+const TRAVEL_X = WIDE.w - LOGO_BOX;
+const TRAVEL_Y = WIDE.h - LOGO_BOX;
+
+/** Phase offsets, in PIXELS along each axis's own sweep rather than in
+ *  seconds, so they share units with the modulus they feed.
+ *
+ *  Chosen so the mark STARTS exactly where it used to sit — `logoAt(0)` is
+ *  the old top-right corner — which keeps the opening frame of every render
+ *  identical to the one it had before the mark could move. `TRAVEL_X -
+ *  LOGO_X` is below the turning point, so x opens heading left; `TRAVEL_Y +
+ *  LOGO_Y` is past it, so y opens heading down. Both therefore start with
+ *  the whole frame in front of them rather than bouncing immediately. */
+const PHASE_X = TRAVEL_X - LOGO_X;
+const PHASE_Y = TRAVEL_Y + LOGO_Y;
+
+/** One axis of the bounce: a triangle wave over `[0, range]`.
+ *
+ *  `abs(mod(u, 2r) - r)` sweeps r -> 0 -> r, which is a bounce with no
+ *  branching and no state — the whole reason this can be an ffmpeg
+ *  expression at all. `overlay`'s `eval` defaults to `frame` (verified on
+ *  this machine's build), so the two strings below are re-read every frame
+ *  for the cost of two modulos. That is nothing like the per-PIXEL `geq`
+ *  the bars' gap mask needs, which is the one place in this graph where an
+ *  expression had to be moved to a smaller canvas to be affordable.
+ *
+ *  Rounded DOWN to even, for the reason every overlay offset in this
+ *  codebase is: an odd offset in yuv420p lands on a half-chroma-sample
+ *  boundary, and a mark that MOVES would shimmer rather than merely sit
+ *  half a sample off. */
+function bounce(u: number, range: number): number {
+  const span = 2 * range;
+  const wrapped = ((u % span) + span) % span;
+  return Math.floor(Math.abs(wrapped - range) / 2) * 2;
+}
+
+/** The ffmpeg spelling of `bounce`, for `overlay`'s `x`/`y`. The two are
+ *  deliberately built from the SAME constants — they are one rule in two
+ *  languages, and `server/lofi.test.ts` proves they agree by cropping a
+ *  real render at `logoAt(t)` and finding the mark there.
+ *
+ *  The caller must pass this as a QUOTED option value (`x='...'`). A
+ *  filtergraph reads `,` as the separator between two filters, so the comma
+ *  inside `mod(a,b)` ends the `overlay` mid-expression and ffmpeg reports
+ *  `No option name near 'auto'` — an error naming the option AFTER the one
+ *  that is actually broken. Quoting the value is the fix rather than
+ *  backslash-escaping the comma, because an escape has to survive being a
+ *  TypeScript template literal as well as a filtergraph token, and `\,` in
+ *  a template literal is just a comma again. */
+function bounceExpr(phase: number, range: number): string {
+  return `2*floor(abs(mod(${BOUNCE_SPEED}*t+${phase},${2 * range})-${range})/2)`;
+}
+
+/** Where the mark's padded box is at `t` seconds. Exported so the test can
+ *  follow it: with the mark moving there is no longer a fixed rect to crop,
+ *  and a second copy of this arithmetic in the test file would drift the
+ *  first time the speed is retuned. */
+export function logoAt(t: number): { x: number; y: number; side: number } {
+  return {
+    x: bounce(BOUNCE_SPEED * t + PHASE_X, TRAVEL_X),
+    y: bounce(BOUNCE_SPEED * t + PHASE_Y, TRAVEL_Y),
+    side: LOGO_BOX,
+  };
+}
+
+/** Where the mark STARTS — `logoAt(0)`, the top-right corner it used to
+ *  hold for the whole render. Kept under its old name because the opening
+ *  frame is still exactly this and the corner is still worth asserting;
+ *  every later instant comes from `logoAt`. */
+export const LOGO_RECT = logoAt(0);
 
 /** The band the bars occupy, and one bar's slot inside it — exported for
  *  the test to crop and to classify columns, same reason as `LOGO_RECT`.
@@ -644,7 +733,10 @@ export async function renderLofi(opts: {
   // alpha, and compositing into a subsampled plane first throws away the
   // colour resolution the mark's edges need.
   legs.push(`[bgx][viz]overlay=0:${WIDE.h - VIZ_HEIGHT}:format=auto[vbars]`);
-  legs.push(`[vbars][logo]overlay=${LOGO_X}:${LOGO_Y}:format=auto,format=yuv420p[v]`);
+  legs.push(
+    `[vbars][logo]overlay=x='${bounceExpr(PHASE_X, TRAVEL_X)}':` +
+      `y='${bounceExpr(PHASE_Y, TRAVEL_Y)}':format=auto,format=yuv420p[v]`,
+  );
 
   const fmt = `aformat=sample_fmts=fltp:channel_layouts=stereo`;
   legs.push(`[1:a]aresample=${RATE},${fmt}[music]`);

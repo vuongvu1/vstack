@@ -1055,6 +1055,36 @@ the wrong version degrades every time the mark is enlarged. Bounding the box
 makes the clearance angle-independent and costs only that the upright mark
 sits `(LOGO_BOX - LOGO_SIZE) / 2` further in than the number suggests.
 
+The mark BOUNCES now, and it is the padded box that bounces for exactly the
+reason `LOGO_MARGIN` bounded it: `TRAVEL_X`/`TRAVEL_Y` are the frame less
+`LOGO_BOX`, so an arm at 45 degrees reaches a wall and never crosses it.
+Bouncing the mark's own 300px square instead would touch the wall exactly at
+0 and 90 and shear the corners off between them — the same defect this
+whole invariant exists to rule out, arriving from the other side. The cost
+is the mirror of the static one: at 0 and 90 the mark appears to stop
+`(LOGO_BOX - LOGO_SIZE) / 2` short of the edge, which reads as a margin
+rather than as a bug.
+
+`bounce` and `bounceExpr` are ONE RULE IN TWO LANGUAGES — the same triangle
+wave `abs(mod(u, 2r) - r)` in TypeScript and in an ffmpeg expression — and
+that duplication is the thing to watch. They are built from the same
+constants, and what proves they agree is `server/lofi.test.ts` cropping a
+real render at `logoAt(t)` and finding the mark there, with the mirrored box
+empty. Drift them and the crop follows the wrong spelling and finds
+background.
+
+Two smaller details of that overlay are load-bearing. `overlay`'s `eval`
+defaults to `frame` (verified on this build), which is what makes a
+per-frame position expression possible at all — and it costs two modulos a
+frame, nothing like the per-PIXEL `geq` the bars' gap mask needed moving to
+a smaller canvas to afford. And both expressions must be passed as QUOTED
+option values (`x='…'`): a filtergraph reads `,` as the separator between
+two filters, so the comma inside `mod(a,b)` ends the `overlay`
+mid-expression and ffmpeg reports `No option name near 'auto'` — an error
+naming the option AFTER the broken one. Backslash-escaping the comma does
+not survive being a TypeScript template literal as well, where `\,` is just
+a comma again.
+
 Three more details of that leg are load-bearing. `format=rgba` comes BEFORE
 `rotate`, because `c=none` fills the swept corners with transparency and an
 opaque input has nowhere to put it — the mark then arrives inside a hard
@@ -1069,6 +1099,17 @@ ten if `FPS` ever changes. `server/lofi.test.ts` samples a quarter turn, a
 HALF turn and a full turn: the half turn is the one that pins the period,
 because a mark spinning twice as fast is back at its starting angle there
 and passes every other assertion.
+
+That spin test now FOLLOWS the mark, and its thresholds surviving the move
+is fixture-luck worth knowing about rather than a property of the graph.
+Following the mark means the crop's background moves too, and by the
+full-turn sample the box sits at y=518..944 — inside the bars' own band. It
+still measures 1.25 against a full turn (1.6 when the mark stood still)
+because the fixture's music is a 220 Hz SINE, so `showcqt` puts essentially
+all of its energy in the leftmost bins while the box is out at x=704 by
+then. The other two samples measure 19.92 and 20.42. Give that fixture
+broadband music and the full-turn bound is the first thing that breaks; the
+answer then is a crop that stays clear of the band, not a looser bound.
 
 The mark is bundled and unconditional — there is no way to turn it off and
 no upload behind it, the same posture the crackle takes. Its input is
