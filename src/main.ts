@@ -3780,6 +3780,10 @@ function buildCutStrip(
         cutAimedEnds.delete(before.end);
         cutAimedEnds.add(moved.end);
       }
+      // The playhead goes to the edge that was released — a plain click on a
+      // handle is how to jump to a range's start or end, and after a drag it
+      // puts the playhead on the new mark so Play checks it at once.
+      cutVideo.currentTime = which === "start" ? moved.start : moved.end;
       const next = normalize(getState().cutRanges, span);
       // Re-aimed by containment after the merge, never by index: the
       // dragged range is the one the user just touched, and a merge can move
@@ -3792,8 +3796,8 @@ function buildCutStrip(
     if (!p.hl || !p.hr || !p.kill) return;
     p.hl.onpointerdown = drag(i, "start");
     p.hr.onpointerdown = drag(i, "end");
-    // Without this a click that ends on a handle bubbles to the strip and
-    // seeks to wherever the drag finished.
+    // Without this the click bubbles to the strip and seeks to the pointer's
+    // pixel rather than to the edge pointer-up already sought.
     p.hl.onclick = p.hr.onclick = (e) => e.stopPropagation();
     p.kill.onclick = (e) => {
       e.stopPropagation();
@@ -4444,7 +4448,8 @@ window.addEventListener("keydown", (e) => {
 
 // Space toggles playback in whichever phase owns a medium — the YouTube
 // iframe while trimming, the fetched clip while framing, the finished file
-// in preview. Idle owns none, so it is a no-op there.
+// in preview, the picked file while cutting. Idle owns none, so it is a no-op
+// there.
 //
 // No label to keep in step: the framing bar's Play/Pause follows `onplay`/
 // `onpause` on the live <video>, and the trimming bar's follows YouTube's
@@ -4490,8 +4495,13 @@ window.addEventListener("keydown", (e) => {
     if (!outVideoEl) return;
     if (outVideoEl.paused) void outVideoEl.play();
     else outVideoEl.pause();
+  } else if (phase === "cutting") {
+    // No src until a file is picked; play() on an empty element rejects.
+    if (cutUrl === "") return;
+    if (cutVideo.paused) void cutVideo.play();
+    else cutVideo.pause();
   } else {
-    return; // idle, stacking and moments own no medium — leave the page's own scroll alone
+    return; // idle, stacking, lofi and moments own no medium — leave the page's own scroll alone
   }
   // Only once something was actually toggled: space scrolls the page by
   // default, and suppressing that on a phase with nothing to play would be

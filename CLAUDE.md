@@ -1613,7 +1613,12 @@ left out, `editMark` would treat it as synthetic and carry it on a Set Start
 past it. And `×` reads live state and shifts `activeRange` down when a range
 before it goes, so Set Start/Set End keep aiming at the range they were
 aiming at. Handles and `×` stop click propagation, or a drag's final click
-seeks the video. They are not built while `busy`, matching `Remove`.
+seeks the video to the pointer's pixel. Pointer-up on a handle — a plain
+click or the end of a drag — moves the playhead to that edge, which is how
+to jump to a range's start or end. Space plays/pauses `cutVideo` here like
+every other phase with a medium; it needs no extra focus handling because
+every marking button re-renders the bar, detaching the focused node. They
+are not built while `busy`, matching `Remove`.
 Verified in a real browser (shrink, merge-on-overlap, delete, playhead
 untouched); DOM, so untested.
 
