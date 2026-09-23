@@ -1600,6 +1600,23 @@ it sets `waveFor = ""`. Without it the framing strip skips its re-decode and
 paints this upload's envelope over someone else's clip — a waveform that
 looks like a waveform and describes the wrong audio.
 
+**The cutter's ranges are dragged and deleted on the strip itself, with the
+framing strip's drop controls re-coloured grass.** Each band gets two
+`.wave-handle.is-keep` edges and a `.wave-x.is-keep`, wired the way
+`dragDrop` wires the framing drops: `setQuiet` plus an in-place reposition
+mid-drag (a render would rebuild the strip under the pointer), one
+`normalize` on pointer-up so dragging into a neighbour merges, and
+`activeRange` re-aimed by `segmentContaining` afterwards — the dragged range
+becomes the active one. Two details are load-bearing. A dragged END goes
+into `cutAimedEnds` (old value out, new in), because dragging is aiming;
+left out, `editMark` would treat it as synthetic and carry it on a Set Start
+past it. And `×` reads live state and shifts `activeRange` down when a range
+before it goes, so Set Start/Set End keep aiming at the range they were
+aiming at. Handles and `×` stop click propagation, or a drag's final click
+seeks the video. They are not built while `busy`, matching `Remove`.
+Verified in a real browser (shrink, merge-on-overlap, delete, playhead
+untouched); DOM, so untested.
+
 **A kept range is `.wave-keep` (grass), never the framing strip's
 `.wave-cut`.** The two strips mean opposite things by a shaded band: on the
 framing strip a band is material the export DROPS, here it is the only

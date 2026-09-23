@@ -3701,22 +3701,113 @@ async function pickCutFile(file: File): Promise<void> {
  *  the identity `src/waveform.test.ts` already pins. No drag handles: the
  *  ranges are aimed with Set Start / Set End, which is the whole reason this
  *  phase could reuse `src/segments.ts` unchanged. */
-function buildCutStrip(span: number, ranges: Segment[]): { el: HTMLElement; stop(): void } {
+function buildCutStrip(
+  span: number,
+  ranges: Segment[],
+  busy: boolean,
+): { el: HTMLElement; stop(): void } {
   const wave = el("div", { className: "wave" });
   const canvas = el("canvas");
   wave.append(canvas);
-  for (const [i, r] of ranges.entries()) {
+  const pct = (t: number) => `${(100 * t) / span}%`;
+  const parts = ranges.map((_, i) => {
     // `wave-keep`, NOT the framing strip's `wave-cut`: the two strips mean
     // opposite things by a shaded band. On the framing strip a band is
     // material the export DROPS; here it is the only material the export
     // keeps. Sharing the recipe painted "this is excluded" grey over
     // exactly the audio that was about to become a file.
     const band = el("div", { className: "wave-keep" });
-    band.style.left = `${(100 * r.start) / span}%`;
-    band.style.width = `${(100 * (r.end - r.start)) / span}%`;
     if (i === activeRange) band.classList.add("is-active");
     wave.append(band);
-  }
+    if (busy) return { band, hl: null, hr: null, kill: null };
+    // The framing strip's drop controls, re-coloured: two edge handles and a
+    // × per range. The band itself takes no pointer events, so the strip's
+    // click-to-seek still works through it.
+    const hl = el("div", { className: "wave-handle is-keep", title: "Drag to move this range's start" });
+    const hr = el("div", { className: "wave-handle is-keep", title: "Drag to move this range's end" });
+    const kill = el("button", { className: "wave-x is-keep", textContent: "×", title: "Remove this range" });
+    wave.append(hl, hr, kill);
+    return { band, hl, hr, kill };
+  });
+  const place = (i: number, r: Segment) => {
+    const p = parts[i];
+    if (p === undefined) return;
+    p.band.style.left = pct(r.start);
+    p.band.style.width = pct(r.end - r.start);
+    if (p.hl) p.hl.style.left = pct(r.start);
+    if (p.hr) p.hr.style.left = pct(r.end);
+    if (p.kill) p.kill.style.left = pct((r.start + r.end) / 2);
+  };
+  ranges.forEach((r, i) => place(i, r));
+
+  /** One range's edge, the framing strip's `dragDrop` in this phase's
+   *  coordinates: bounded by the file on the outside and by its own other
+   *  edge less `MIN_CLIP_S` on the inside. Overlapping a neighbour is legal
+   *  and merges on pointer-up through `normalize`, the same call every other
+   *  mark in this phase makes.
+   *
+   *  Live state throughout, and `setQuiet` mid-drag — a render would rebuild
+   *  this strip under the pointer. The dragged range is repositioned in
+   *  place, and the one notifying update comes at the end. */
+  const drag = (i: number, which: "start" | "end") => (down: PointerEvent) => {
+    down.preventDefault();
+    down.stopPropagation();
+    const before = getState().cutRanges[i];
+    if (before === undefined) return;
+    const box = wave.getBoundingClientRect();
+    const target = down.currentTarget as HTMLElement;
+    target.setPointerCapture(down.pointerId);
+    let moved = before;
+    target.onpointermove = (e) => {
+      const cur = getState().cutRanges[i];
+      if (cur === undefined) return;
+      const t = Math.min(span, Math.max(0, (span * (e.clientX - box.left)) / Math.max(1, box.width)));
+      moved =
+        which === "start"
+          ? { start: Math.min(t, cur.end - MIN_CLIP_S), end: cur.end }
+          : { start: cur.start, end: Math.max(t, cur.start + MIN_CLIP_S) };
+      setQuiet({ cutRanges: getState().cutRanges.map((c, j) => (j === i ? moved : c)) });
+      place(i, moved);
+    };
+    target.onpointerup = () => {
+      target.releasePointerCapture(down.pointerId);
+      target.onpointermove = null;
+      target.onpointerup = null;
+      // Dragging an end IS aiming it. Left out of `cutAimedEnds`, a dragged
+      // end would still read as synthetic, and `editMark` would carry it
+      // along on a Set Start past it rather than refusing.
+      if (which === "end" && moved.end !== before.end) {
+        cutAimedEnds.delete(before.end);
+        cutAimedEnds.add(moved.end);
+      }
+      const next = normalize(getState().cutRanges, span);
+      // Re-aimed by containment after the merge, never by index: the
+      // dragged range is the one the user just touched, and a merge can move
+      // it to a different slot.
+      activeRange = segmentContaining(next, moved.start, moved.end);
+      setState({ cutRanges: next, error: "" });
+    };
+  };
+  parts.forEach((p, i) => {
+    if (!p.hl || !p.hr || !p.kill) return;
+    p.hl.onpointerdown = drag(i, "start");
+    p.hr.onpointerdown = drag(i, "end");
+    // Without this a click that ends on a handle bubbles to the strip and
+    // seeks to wherever the drag finished.
+    p.hl.onclick = p.hr.onclick = (e) => e.stopPropagation();
+    p.kill.onclick = (e) => {
+      e.stopPropagation();
+      // Live state: a drag before this click wrote through `setQuiet`.
+      const cur = getState().cutRanges;
+      const gone = cur[i];
+      if (gone !== undefined) cutAimedEnds.delete(gone.end);
+      const next = cur.filter((_, j) => j !== i);
+      // Keep aiming at the same range when one before it goes.
+      if (i < activeRange) activeRange--;
+      activeRange = Math.max(0, Math.min(activeRange, next.length - 1));
+      setState({ cutRanges: next, error: "" });
+    };
+  });
   const head = el("div", { className: "strip-head" });
   wave.append(head);
   wave.onclick = (e) => {
@@ -3784,7 +3875,7 @@ function renderCutting(): Node[] {
 
   const span = s.cutSeconds;
   stopCutStrip();
-  cutStrip = buildCutStrip(span, s.cutRanges);
+  cutStrip = buildCutStrip(span, s.cutRanges, busy);
   rows.push(el("div", { className: "bar-row" }, cutStrip.el));
 
   const addRange = el("button", {

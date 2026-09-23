@@ -1000,6 +1000,13 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   background: var(--red-9);
 }
 
+/* The cutter's range controls: the drop recipe in grass, because on that
+   strip a band is what the export KEEPS (see `.wave-keep`). */
+.wave-handle.is-keep,
+.wave-x.is-keep {
+  background: var(--grass-9);
+}
+
 /* Drop this cut. Sized off the strip rather than the button recipe: it sits
    on 48px of waveform, and a 32px control there would cover the thing it
    describes. */
