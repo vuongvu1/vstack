@@ -141,3 +141,23 @@ export function defaultDescription(videoId: string): string {
   if (videoId.trim() === "") return DESCRIPTION_TEMPLATE;
   return `Nguồn: https://youtu.be/${videoId}\n\n${DESCRIPTION_TEMPLATE}`;
 }
+
+/** How long the bundled `end_video.mp4` outro runs, in seconds.
+
+ *  Measured, not assumed: `ffprobe` reports 5.040000, and the asset is loud
+ *  right up to its last sample (final second, -20.9 dB mean / -4.9 peak), so
+ *  an amplitude detector finds it as speech every single time.
+ *
+ *  The cutter's Detect subtracts it from the search window, because the file
+ *  it is handed is usually a vstack short and that tail is never what anyone
+ *  is cutting for. The head cannot get a constant of its own — the starter
+ *  screen is `max(1.6, 0.35 + voiceSeconds + 0.45)` and scales with how long
+ *  the title takes to read — so it is excluded by touching t=0 instead.
+ *
+ *  Client-side only today. It lives here rather than in `waveform.ts`
+ *  because it is a fact about a bundled asset rather than about envelopes,
+ *  and `server/starter.ts` owns the asset's path the way it always has —
+ *  `detectTrim` still MEASURES the outro rather than reading this, which is
+ *  the right direction for the server and is why the two do not share it.
+ *  Re-measure if the asset is ever replaced. */
+export const OUTRO_SECONDS = 5.04;

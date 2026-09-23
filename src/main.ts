@@ -21,6 +21,7 @@ import {
   MAX_PARTS,
   MAX_SPEECHES,
   MAX_TRACKS,
+  OUTRO_SECONDS,
   TAGS_DEFAULT,
   UPLOAD_MAX_BYTES,
   YT_TITLE_MAX,
@@ -56,7 +57,7 @@ import {
   setState,
   subscribe,
 } from "./state.ts";
-import { bucketAt, peaks, speechRanges } from "./waveform.ts";
+import { bucketAt, peaks, speechRanges, trimTail } from "./waveform.ts";
 
 declare global {
   interface Window {
@@ -3577,6 +3578,18 @@ let activeRange = 0;
 // soon as normalize merged two of them.
 const cutAimedEnds = new Set<number>();
 
+/** Whether Detect treats the picked file as a vstack short — excluding the
+ *  starter screen at the head and the bundled outro at the tail.
+ *
+ *  Module-scoped and default ON for the reason `playCutOnly` is: this bar is
+ *  rebuilt on every render so a local would reset with it, and it names
+ *  nothing a cut carries, so `save()` would have nothing to store. Default ON
+ *  because the file this phase is handed is usually a short; a checkbox
+ *  rather than an unconditional rule because when it is NOT one, excluding
+ *  the furniture eats a real take at either end and says nothing — the silent
+ *  loss this codebase treats as cardinal. */
+let cutFurniture = true;
+
 function stopCutStrip(): void {
   cutStrip?.stop();
   cutStrip = null;
@@ -3810,12 +3823,46 @@ function renderCutting(): Node[] {
     title: "Mark the stretches that sound like speech",
     disabled: busy || wavePeaks === null,
   });
+  const furniture = el("input", { type: "checkbox", checked: cutFurniture, disabled: busy });
+  furniture.onchange = () => {
+    cutFurniture = furniture.checked;
+  };
+  const furnitureLabel = el(
+    "label",
+    {
+      className: "check",
+      title: `Skip a vstack short's starter screen and its ${OUTRO_SECONDS}s outro`,
+    },
+    furniture,
+    el("span", { textContent: "Skip intro/outro" }),
+  );
+
   detect.onclick = () => {
     const env = wavePeaks;
     if (env === null) return;
-    const found = normalize(speechRanges(env, waveSeconds, MAX_SEGMENTS), span);
+    // The outro is a fixed length, so it comes off the search window before
+    // the search. The starter screen is not — it scales with the title read —
+    // so it is excluded by the one thing that IS fixed about it: the title
+    // hit lands at t=0, so the range it produces is the only one that can
+    // start there.
+    const win = cutFurniture
+      ? trimTail(env, waveSeconds, OUTRO_SECONDS)
+      : { env, seconds: waveSeconds };
+    // MAX_SEGMENTS, not one more to spend on the head range: the cap keeps
+    // the LONGEST ranges, and topping it up would mean slicing by TIME after
+    // the filter — exactly the rule `speechRanges` is mutation-tested
+    // against. The cost is that a short with a full set of body takes can
+    // come back with one fewer.
+    const ranges = speechRanges(win.env, win.seconds, MAX_SEGMENTS).filter(
+      (r) => !cutFurniture || r.start > 0,
+    );
+    const found = normalize(ranges, span);
     if (found.length === 0) {
-      setState({ error: "No speech found in this file." });
+      setState({
+        error: cutFurniture
+          ? "No speech found outside the intro and outro."
+          : "No speech found in this file.",
+      });
       return;
     }
     cutAimedEnds.clear();
@@ -3920,7 +3967,9 @@ function renderCutting(): Node[] {
     setState({ cutRanges: next, error: "" });
   };
 
-  rows.push(el("div", { className: "bar-row" }, addRange, detect, setStart, setEnd, drop, chips));
+  rows.push(
+    el("div", { className: "bar-row" }, addRange, detect, furnitureLabel, setStart, setEnd, drop, chips),
+  );
 
   const base = el("input", {
     type: "text",

@@ -1537,6 +1537,59 @@ end goes into `cutAimedEnds`, because a measured end is aimed where
 `+ Range`'s synthetic five seconds is not: `editMark` must refuse a Set
 Start past it rather than carrying the range's length along.
 
+**The cutter's input is usually a vstack short, and its two ends are
+excluded by two DIFFERENT rules because only one of them has a length.**
+Detect is handed the app's own output more often than not — starter screen,
+body, bundled outro — and an amplitude detector finds both pieces of
+furniture as speech every time. Neither is what anyone is cutting for.
+
+The TAIL has a constant: `end_video.mp4` measures 5.040s and is loud right
+up to its last sample (final second, -20.9 dB mean / -4.9 peak), so
+`OUTRO_SECONDS` in `src/defaults.ts` comes off the search window through
+`trimTail` before `speechRanges` ever runs. Note the direction of that
+sharing — `detectTrim` on the server still MEASURES the outro rather than
+reading the constant, which is correct for it and is why the two do not
+share one number.
+
+The HEAD cannot have one. `starterDuration` is `max(1.6, 0.35 +
+voiceSeconds + 0.45)`, so the starter scales with how long the title takes
+to read and no constant covers both a two-word title and a long one. What
+IS fixed is that the title hit lands at t=0 — so the starter is the only
+range that can start there, and the filter is `r.start > 0` rather than any
+duration at all.
+
+`trimTail` rounds its cut to a whole bucket and moves the reported duration
+to match, rather than rescaling the envelope to `seconds - cut`. Rescaling
+shifts every range by up to one bucket and ONLY on trimmed files, which
+reads as the detector being imprecise rather than as this function;
+mutation-tested. It returns a `subarray` view and is the exact identity at
+`cut <= 0`, so an untrimmed Detect is byte-identical to the call it was
+before this existed.
+
+The exclusion is a CHECKBOX defaulting on, not an unconditional rule.
+"Usually a vstack short" is not always, and on a plain recording the head
+rule eats a take that happens to start at t=0 and the tail rule eats five
+seconds — with nothing on screen to say so. That is the silent loss this
+codebase treats as cardinal, and a checkbox is the cheapest thing that
+answers it. `cutFurniture` is module-scoped and unpersisted for the reasons
+`playCutOnly` is.
+
+Detect asks for `MAX_SEGMENTS` and filters, rather than asking for one more
+to spend on the head range. Topping the cap up would mean slicing by TIME
+after the filter, which is exactly the rule `speechRanges`' cap is
+mutation-tested against. The cost is that a short carrying a full set of
+body takes can come back with one fewer.
+
+The merge case is the known hole: the starter ends on the cue sound with no
+gap before the body, so a body opening on speech within `BRIDGE` (0.6s)
+merges with the starter into one range and the head filter takes the
+body's first phrase with it. Chosen over a fixed head window, which cannot
+merge but throws away real audio on every short title. `ponytail:` the exact
+fix is the server's own signal — the starter screen is ONE frozen frame, so
+`freezedetect` finds its end precisely where `detectTrim` already does —
+and it costs a route, an upload round trip and a video-only assumption this
+phase does not otherwise make.
+
 **The cutter writes the module-scoped `wavePeaks`/`waveSeconds` and must
 therefore reset `waveFor`.** `drawWave` reads those two rather than taking
 an envelope — deliberate, `ponytail:`-marked, because the journeys are
@@ -2088,7 +2141,13 @@ one range (the case `MAX_FRAC` exists for), a range clamped at the file's
 own start, and the degenerate inputs. The cap is mutation-tested: sorting by
 start instead of length before the slice fails that one test and nothing
 else in the file. The Detect button itself has no test, like the rest of the
-DOM surface.
+DOM surface. `trimTail` adds five more: the bucket rate held exact across a
+whole-number cut, the same across `OUTRO_SECONDS`' 20.16-bucket cut (the
+mutation-tested one — returning `seconds - cut` instead of the rounded
+duration fails that test alone), the identity at a non-positive cut, an
+empty answer when the cut swallows the file, and that the result is a view
+on the original buffer rather than a copy. The checkbox and the head filter
+are in `renderCutting` and untested, like the rest of the DOM surface.
 
 `server/ffmpeg.test.ts` gains `cutName`'s seven cases with the exhaustive
 traversal treatment `isOutName` and `videoIdFrom` get — what `cutName`

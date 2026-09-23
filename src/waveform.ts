@@ -172,3 +172,32 @@ export function speechRanges(env: Float32Array, seconds: number, max: number): S
   kept.sort((a, b) => b.end - b.start - (a.end - a.start));
   return kept.slice(0, max).sort((a, b) => a.start - b.start);
 }
+
+/** `env` with `cut` seconds taken off its end, rounded to whole buckets.
+ *
+ *  What the cutter's Detect runs before `speechRanges`, to keep a vstack
+ *  short's bundled outro out of the answer: that asset is a fixed length and
+ *  is loud right up to its last sample, so it is detected as speech every
+ *  time and it is never what the user is cutting for.
+ *
+ *  The cut is rounded to a bucket and the reported duration follows it,
+ *  rather than the envelope being rescaled to an arbitrary length: that
+ *  keeps seconds-per-bucket EXACTLY what it was, so every range
+ *  `speechRanges` then finds sits on the file's own grid. Rescaling instead
+ *  would move every range by up to one bucket, and only on files that were
+ *  trimmed — a drift that looks like the detector being imprecise rather
+ *  than like this function.
+ *
+ *  A view rather than a copy, so trimming a five-minute envelope is free,
+ *  and the identity at `cut <= 0` so an untrimmed Detect is the exact call
+ *  it was before this existed. */
+export function trimTail(
+  env: Float32Array,
+  seconds: number,
+  cut: number,
+): { env: Float32Array; seconds: number } {
+  const n = env.length;
+  if (!(cut > 0) || n === 0 || !(seconds > 0)) return { env, seconds };
+  const keep = Math.max(0, n - Math.round((cut * n) / seconds));
+  return { env: env.subarray(0, keep), seconds: (keep * seconds) / n };
+}

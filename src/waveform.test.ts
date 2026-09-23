@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bucketAt, peaks, speechRanges } from "./waveform.ts";
+import { bucketAt, peaks, speechRanges, trimTail } from "./waveform.ts";
 
 describe("peaks", () => {
   it("takes the maximum absolute amplitude per bucket", () => {
@@ -204,5 +204,50 @@ describe("speechRanges", () => {
     expect(speechRanges(new Float32Array(0), 20, 6)).toEqual([]);
     expect(speechRanges(envelope(20, [[2, 5]]), 0, 6)).toEqual([]);
     expect(speechRanges(envelope(20, [[2, 5]]), 20, 0)).toEqual([]);
+  });
+});
+
+describe("trimTail", () => {
+  it("drops whole buckets off the end and keeps the bucket rate exact", () => {
+    // 80 buckets over 20s is 0.25s each. Cutting 5s must leave 60 buckets
+    // over 15s — the SAME 0.25s a bucket, so a range `speechRanges` then
+    // finds lands on the file's own grid rather than a rescaled one.
+    const out = trimTail(new Float32Array(80), 20, 5);
+    expect(out.env.length).toBe(60);
+    expect(out.seconds).toBeCloseTo(15, 10);
+    expect(out.seconds / out.env.length).toBeCloseTo(20 / 80, 10);
+  });
+
+  it("rounds the cut to a whole bucket rather than rescaling the rest", () => {
+    // 5.04s is not a whole number of 0.25s buckets: 20.16 of them. Keeping
+    // 60 (rounding 59.84 up) is what holds the rate exact — the reported
+    // seconds move to the bucket boundary instead of the envelope
+    // stretching to meet an arbitrary length.
+    const out = trimTail(new Float32Array(80), 20, 5.04);
+    expect(out.env.length).toBe(60);
+    expect(out.seconds / out.env.length).toBeCloseTo(20 / 80, 10);
+  });
+
+  it("is the identity for a non-positive cut", () => {
+    const env = new Float32Array([1, 2, 3, 4]);
+    expect(trimTail(env, 4, 0).env).toBe(env);
+    expect(trimTail(env, 4, -1).env).toBe(env);
+    expect(trimTail(env, 4, 0).seconds).toBe(4);
+  });
+
+  it("returns nothing when the cut swallows the whole file", () => {
+    // A file shorter than the outro is not a vstack short, and an empty
+    // envelope is what `speechRanges` already answers [] for.
+    expect(trimTail(new Float32Array(80), 20, 20).env.length).toBe(0);
+    expect(trimTail(new Float32Array(80), 20, 25).env.length).toBe(0);
+  });
+
+  it("keeps a view, never a copy", () => {
+    // subarray, so a five-minute envelope costs nothing to trim.
+    const env = new Float32Array(80);
+    env[10] = 0.5;
+    const out = trimTail(env, 20, 5);
+    expect(out.env.buffer).toBe(env.buffer);
+    expect(out.env[10]).toBe(0.5);
   });
 });
