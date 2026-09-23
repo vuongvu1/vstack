@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DESCRIPTION_TEMPLATE,
+  defaultDescription,
   LONG_DESCRIPTION_TEMPLATE,
   LONG_TAGS_DEFAULT,
   TAGS_DEFAULT,
@@ -107,4 +108,20 @@ describe("the long-form defaults", () => {
     expect(LONG_TAGS_DEFAULT.length).toBeLessThan(400);
   });
 
+});
+
+describe("defaultDescription", () => {
+  it("credits the source video above the template", () => {
+    const d = defaultDescription("dQw4w9WgXcQ");
+    expect(d.startsWith("Nguồn: https://youtu.be/dQw4w9WgXcQ")).toBe(true);
+    expect(d).toContain(DESCRIPTION_TEMPLATE);
+  });
+
+  // The cached-clip path and every record written before this existed must
+  // read exactly as they did — a bare "Nguồn: https://youtu.be/" line is
+  // worse than no line at all.
+  it("falls back to the bare template for a blank id", () => {
+    expect(defaultDescription("")).toBe(DESCRIPTION_TEMPLATE);
+    expect(defaultDescription("  ")).toBe(DESCRIPTION_TEMPLATE);
+  });
 });

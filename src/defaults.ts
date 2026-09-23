@@ -126,3 +126,18 @@ export const MAX_DROPS = 300;
  *  journey that still grows with the music list — the main graph takes the
  *  pre-pass's single output whatever the list's length. */
 export const MAX_TRACKS = 70;
+
+/** The short journey's description, with the source video credited on top.
+ *
+ *  Short-journey only: a stack or a lofi mix has no single source video to
+ *  point at, which is why this takes an id rather than `LONG_DESCRIPTION_TEMPLATE`
+ *  growing one too. A blank id falls back to the bare template, so the
+ *  cached-clip path and any older stored record still read exactly as before.
+ *
+ *  ponytail: the bare video link, not `?t=<clipStart>` — a credit points at
+ *  the video, and a deep link would need the mark carried in here too. Add
+ *  the timestamp the day someone wants the exact moment. */
+export function defaultDescription(videoId: string): string {
+  if (videoId.trim() === "") return DESCRIPTION_TEMPLATE;
+  return `Nguồn: https://youtu.be/${videoId}\n\n${DESCRIPTION_TEMPLATE}`;
+}

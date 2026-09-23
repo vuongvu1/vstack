@@ -14,7 +14,7 @@ import { GUTTER } from "./frame.ts";
 import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER, moveBy, resizeFromCorner } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
 import {
-  DESCRIPTION_TEMPLATE,
+  defaultDescription,
   LONG_DESCRIPTION_TEMPLATE,
   LONG_TAGS_DEFAULT,
   MAX_DROPS,
@@ -1430,7 +1430,7 @@ async function doExport(): Promise<void> {
       // whatever was already typed — retyping the metadata is exactly the
       // work this phase exists to remove.
       ytTitle: getState().ytTitle || defaultTitle(starterTitle),
-      ytDescription: getState().ytDescription || DESCRIPTION_TEMPLATE,
+      ytDescription: getState().ytDescription || defaultDescription(s.videoId),
       ytTags: getState().ytTags || TAGS_DEFAULT,
       // A fresh file has not been published, whatever the last one did, and
       // its thumbnail state belongs to that upload rather than this file.
