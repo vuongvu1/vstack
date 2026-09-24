@@ -29,8 +29,8 @@ describe("troughs", () => {
   it("places a speech inside the one quiet hole", () => {
     // 120s of music, quiet from 40s to 60s. A 6s speech needs 7s of room.
     const env = envOf(120, [{ from: 40, to: 60 }]);
-    const [p] = ok(troughs(env, 120, [{ id: "a", name: "a.mp4", seconds: 6 }]));
-    expect(p?.id).toBe("a");
+    const [p] = ok(troughs(env, 120, [{ path: "a", name: "a.mp4", seconds: 6 }]));
+    expect(p?.path).toBe("a");
     // `at` is where the speech's own picture starts — FADE past the window.
     expect(p?.at).toBeGreaterThanOrEqual(40);
     expect((p?.at ?? 0) + 6).toBeLessThanOrEqual(60);
@@ -40,21 +40,21 @@ describe("troughs", () => {
     const env = envOf(240, [{ from: 40, to: 60 }, { from: 150, to: 175 }]);
     const out = ok(
       troughs(env, 240, [
-        { id: "a", name: "a.mp4", seconds: 6 },
-        { id: "b", name: "b.mp4", seconds: 6 },
+        { path: "a", name: "a.mp4", seconds: 6 },
+        { path: "b", name: "b.mp4", seconds: 6 },
       ]),
     );
     expect(out).toHaveLength(2);
     expect(out[0]?.at).toBeLessThan(out[1]?.at ?? 0);
-    expect(new Set(out.map((p) => p.id))).toEqual(new Set(["a", "b"]));
+    expect(new Set(out.map((p) => p.path))).toEqual(new Set(["a", "b"]));
   });
 
   it("keeps MIN_GAP between two speeches sharing one long hole", () => {
     const env = envOf(240, [{ from: 40, to: 150 }]);
     const out = ok(
       troughs(env, 240, [
-        { id: "a", name: "a.mp4", seconds: 6 },
-        { id: "b", name: "b.mp4", seconds: 6 },
+        { path: "a", name: "a.mp4", seconds: 6 },
+        { path: "b", name: "b.mp4", seconds: 6 },
       ]),
     );
     const [first, second] = [...out].sort((x, y) => x.at - y.at);
@@ -74,12 +74,12 @@ describe("troughs", () => {
     quiet(150, 162, 0.05); // 12s, room for the 6s speech only
     const out = ok(
       troughs(env, 300, [
-        { id: "short", name: "short.mp4", seconds: 6 },
-        { id: "long", name: "long.mp4", seconds: 20 },
+        { path: "short", name: "short.mp4", seconds: 6 },
+        { path: "long", name: "long.mp4", seconds: 20 },
       ]),
     );
     expect(out).toHaveLength(2);
-    const long = out.find((p) => p.id === "long");
+    const long = out.find((p) => p.path === "long");
     expect(long?.at).toBeGreaterThanOrEqual(40);
     expect((long?.at ?? 0) + 20).toBeLessThanOrEqual(70);
   });
@@ -88,14 +88,14 @@ describe("troughs", () => {
     // 105s of speech needs 106s of window, and a 120s track has only
     // 120 - SKIP_HEAD - SKIP_TAIL = 95 to offer.
     const env = envOf(120, [{ from: 40, to: 48 }]);
-    const r = troughs(env, 120, [{ id: "a", name: "long.mp4", seconds: 105 }]);
+    const r = troughs(env, 120, [{ path: "a", name: "long.mp4", seconds: 105 }]);
     expect("error" in r && r.error).toContain("long.mp4");
   });
 
   it("will not place a speech in the opening or over the ending", () => {
     // The only quiet stretches are inside SKIP_HEAD and inside SKIP_TAIL.
     const env = envOf(120, [{ from: 0, to: SKIP_HEAD }, { from: 120 - SKIP_TAIL, to: 120 }]);
-    const out = ok(troughs(env, 120, [{ id: "a", name: "a.mp4", seconds: 4 }]));
+    const out = ok(troughs(env, 120, [{ path: "a", name: "a.mp4", seconds: 4 }]));
     expect(out[0]?.at).toBeGreaterThanOrEqual(SKIP_HEAD);
     expect((out[0]?.at ?? 0) + 4).toBeLessThanOrEqual(120 - SKIP_TAIL);
   });
@@ -103,8 +103,8 @@ describe("troughs", () => {
   it("is stable across repeated calls", () => {
     const env = envOf(240, [{ from: 40, to: 60 }, { from: 150, to: 175 }]);
     const speeches = [
-      { id: "a", name: "a.mp4", seconds: 6 },
-      { id: "b", name: "b.mp4", seconds: 8 },
+      { path: "a", name: "a.mp4", seconds: 6 },
+      { path: "b", name: "b.mp4", seconds: 8 },
     ];
     expect(troughs(env, 240, speeches)).toEqual(troughs(env, 240, speeches));
   });
@@ -113,7 +113,7 @@ describe("troughs", () => {
     // The hole is exactly the speech plus its two dips and nothing more, so
     // there is exactly one legal window and its position is arithmetic.
     const env = envOf(120, [{ from: 50, to: 50 + 6 + 2 * FADE }]);
-    const out = ok(troughs(env, 120, [{ id: "a", name: "a.mp4", seconds: 6 }]));
+    const out = ok(troughs(env, 120, [{ path: "a", name: "a.mp4", seconds: 6 }]));
     expect(out[0]?.at).toBeCloseTo(50 + FADE, 1);
   });
 
@@ -132,60 +132,60 @@ describe("troughs", () => {
     quiet(150, 180, 0.02); // 30s hole, the only place a 20s speech fits
     const out = ok(
       troughs(env, 300, [
-        { id: "short", name: "short.mp4", seconds: 6 },
-        { id: "long", name: "long.mp4", seconds: 20 },
+        { path: "short", name: "short.mp4", seconds: 6 },
+        { path: "long", name: "long.mp4", seconds: 20 },
       ]),
     );
     expect(out).toHaveLength(2);
     // Processing was [long, short] but returned order must be chronological [short, long]
-    expect(out[0]?.id).toBe("short");
-    expect(out[1]?.id).toBe("long");
+    expect(out[0]?.path).toBe("short");
+    expect(out[1]?.path).toBe("long");
   });
 });
 
 describe("clampPlacement", () => {
   const speeches: Speech[] = [
-    { id: "a", name: "a.mp4", seconds: 40 },
-    { id: "b", name: "b.mp4", seconds: 40 },
+    { path: "a", name: "a.mp4", seconds: 40 },
+    { path: "b", name: "b.mp4", seconds: 40 },
   ];
 
   it("moves a placement to an ordinary spot with room on both sides", () => {
-    const placements: Placement[] = [{ key: "a#0", id: "a", at: 30 }];
+    const placements: Placement[] = [{ key: "a#0", path: "a", at: 30 }];
     const out = clampPlacement(placements, speeches, "a#0", 100, 300);
-    expect(out.find((p) => p.id === "a")?.at).toBe(100);
+    expect(out.find((p) => p.path === "a")?.at).toBe(100);
   });
 
   it("clamps against the track's own start", () => {
-    const placements: Placement[] = [{ key: "a#0", id: "a", at: 30 }];
+    const placements: Placement[] = [{ key: "a#0", path: "a", at: 30 }];
     const out = clampPlacement(placements, speeches, "a#0", -50, 300);
-    expect(out.find((p) => p.id === "a")?.at).toBe(FADE);
+    expect(out.find((p) => p.path === "a")?.at).toBe(FADE);
   });
 
   it("clamps against the track's own end", () => {
-    const placements: Placement[] = [{ key: "a#0", id: "a", at: 30 }];
+    const placements: Placement[] = [{ key: "a#0", path: "a", at: 30 }];
     const out = clampPlacement(placements, speeches, "a#0", 1000, 300);
     // 300 - 40 (a's own length) - FADE
-    expect(out.find((p) => p.id === "a")?.at).toBe(300 - 40 - FADE);
+    expect(out.find((p) => p.path === "a")?.at).toBe(300 - 40 - FADE);
   });
 
   it("clamps against a neighbour ahead of the drag", () => {
     // b sits at 200; dragging a rightwards must stop MIN_GAP clear of b's start.
     const placements: Placement[] = [
-      { key: "a#0", id: "a", at: 30 },
-      { key: "b#0", id: "b", at: 200 },
+      { key: "a#0", path: "a", at: 30 },
+      { key: "b#0", path: "b", at: 200 },
     ];
     const out = clampPlacement(placements, speeches, "a#0", 190, 300);
-    expect(out.find((p) => p.id === "a")?.at).toBe(200 - MIN_GAP - 40);
+    expect(out.find((p) => p.path === "a")?.at).toBe(200 - MIN_GAP - 40);
   });
 
   it("clamps against a neighbour behind the drag", () => {
     // b sits at 30; dragging a leftwards must stop MIN_GAP clear of b's own end.
     const placements: Placement[] = [
-      { key: "a#0", id: "a", at: 200 },
-      { key: "b#0", id: "b", at: 30 },
+      { key: "a#0", path: "a", at: 200 },
+      { key: "b#0", path: "b", at: 30 },
     ];
     const out = clampPlacement(placements, speeches, "a#0", 40, 300);
-    expect(out.find((p) => p.id === "a")?.at).toBe(30 + 40 + MIN_GAP);
+    expect(out.find((p) => p.path === "a")?.at).toBe(30 + 40 + MIN_GAP);
   });
 
   // The bug this function exists to fix. A 300s track, two 40s speeches: a
@@ -197,35 +197,35 @@ describe("clampPlacement", () => {
   // placement exactly where it was instead.
   it("refuses a drag that leaves no legal position, keeping the placement where it was", () => {
     const placements: Placement[] = [
-      { key: "a#0", id: "a", at: 30 },
-      { key: "b#0", id: "b", at: 259.5 },
+      { key: "a#0", path: "a", at: 30 },
+      { key: "b#0", path: "b", at: 259.5 },
     ];
     const out = clampPlacement(placements, speeches, "a#0", 280, 300);
     expect(out).toEqual(placements);
   });
 
   // The two tests below are why a placement carries a `key` at all. With a
-  // spacing set, `fill` cycles ONE file into many drops, so `id` stops being
-  // unique across the array — and the old id-keyed version both rewrote
+  // spacing set, `fill` cycles ONE file into many drops, so the path stops being
+  // unique across the array — and the old file-keyed version both rewrote
   // every sibling's `at` (its `map` matched all of them) and hid those
   // siblings from the MIN_GAP scan (its `others` filter dropped all of
   // them). Both fail against that version.
   it("moves only the dragged drop of a repeated speech", () => {
-    const one: Speech[] = [{ id: "a", name: "a.mp3", seconds: 10 }];
+    const one: Speech[] = [{ path: "a", name: "a.mp3", seconds: 10 }];
     const placements: Placement[] = [
-      { key: "a#0", id: "a", at: 20 },
-      { key: "a#1", id: "a", at: 120 },
-      { key: "a#2", id: "a", at: 220 },
+      { key: "a#0", path: "a", at: 20 },
+      { key: "a#1", path: "a", at: 120 },
+      { key: "a#2", path: "a", at: 220 },
     ];
     const out = clampPlacement(placements, one, "a#1", 140, 600);
     expect(out.map((p) => p.at)).toEqual([20, 140, 220]);
   });
 
   it("bounds a drag by a sibling drop of the same speech", () => {
-    const one: Speech[] = [{ id: "a", name: "a.mp3", seconds: 10 }];
+    const one: Speech[] = [{ path: "a", name: "a.mp3", seconds: 10 }];
     const placements: Placement[] = [
-      { key: "a#0", id: "a", at: 20 },
-      { key: "a#1", id: "a", at: 120 },
+      { key: "a#0", path: "a", at: 20 },
+      { key: "a#1", path: "a", at: 120 },
     ];
     // Dragging the first drop rightwards must stop MIN_GAP clear of its own
     // sibling's start, exactly as it would clear a different speech's.
@@ -234,7 +234,7 @@ describe("clampPlacement", () => {
   });
 
   it("returns the placements unchanged for a key it does not know", () => {
-    const placements: Placement[] = [{ key: "a#0", id: "a", at: 30 }];
+    const placements: Placement[] = [{ key: "a#0", path: "a", at: 30 }];
     expect(clampPlacement(placements, speeches, "ghost#0", 100, 300)).toBe(placements);
   });
 });
@@ -281,7 +281,11 @@ describe("orderByPrefix", () => {
 });
 
 describe("fill", () => {
-  const speech = (id: string, seconds: number): Speech => ({ id, name: `${id}.mp3`, seconds });
+  const speech = (path: string, seconds: number): Speech => ({
+  path,
+  name: `${path}.mp3`,
+  seconds,
+});
 
   it("reduces exactly to troughs when spacing is 0", () => {
     // THE identity. This is what keeps every troughs test above describing
@@ -311,7 +315,7 @@ describe("fill", () => {
     const env = envOf(600, []);
     const found = fill(env, 600, [speech("a", 6), speech("b", 6)], 120);
     if ("error" in found) throw new Error(found.error);
-    expect(found.placements.map((p) => p.id)).toEqual(["a", "b", "a", "b", "a", "b"]);
+    expect(found.placements.map((p) => p.path)).toEqual(["a", "b", "a", "b", "a", "b"]);
   });
 
   it("returns placements in time order", () => {

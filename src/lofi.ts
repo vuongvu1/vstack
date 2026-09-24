@@ -10,22 +10,25 @@
 
 import { MAX_DROPS } from "./defaults.ts";
 
-/** One uploaded speech, as the panel knows it. `seconds` is what
- *  `/api/upload-audio` probed; `name` is the local filename, for the error
- *  message and the list row only.
+/** One speech, as the panel knows it. `path` is its absolute location on
+ *  this machine — the folder scan reports it and `/api/lofi` renders from
+ *  it, so a speech is never copied anywhere. `seconds` is what the scan's
+ *  `probeAudio` measured; `name` is the bare filename, for the list row, the
+ *  error message and `orderByPrefix`'s `1_` test.
  *
  *  A speech may be an audio file or a video one, and the distinction never
  *  reaches this module: only its audio is ever rendered, so all a placement
  *  needs is how long it runs. */
-export type Speech = { id: string; name: string; seconds: number };
+export type Speech = { path: string; name: string; seconds: number };
 
 /** Where one speech's voice enters the music's timeline.
  *
- *  `key` identifies the DROP; `id` identifies the FILE it came from, and
- *  with a spacing set one file is dropped many times, so `id` is not unique
- *  across this array. Everything that names a single drop — the drag path's
- *  `clampPlacement`, the marker it moves — must key on `key`. Keying on `id`
- *  is what collapsed every drop of a repeated speech onto one instant the
+ *  `key` identifies the DROP; `path` identifies the FILE it came from, and
+ *  with a spacing set one file is dropped many times, so `path` is not
+ *  unique across this array. Everything that names a single drop — the drag
+ *  path's `clampPlacement`, the marker it moves — must key on `key`. Keying
+ *  on the file is what collapsed every drop of a repeated speech onto one
+ *  instant the
  *  moment one of its markers was dragged, and it excluded a drop's own
  *  siblings from the MIN_GAP scan on the way, so `/api/lofi` then refused
  *  the whole render with "Two speeches overlap" — loud, but naming the
@@ -37,9 +40,9 @@ export type Speech = { id: string; name: string; seconds: number };
  *  `activeRange` both exist to keep out of the marking phases.
  *
  *  `Placement` is client-only and never persisted, and the body
- *  `/api/lofi` takes is built as `{ id, at }` per drop, so this field
- *  reaches neither localStorage nor the wire. */
-export type Placement = { key: string; id: string; at: number };
+ *  `/api/lofi` takes is built as `{ path, at }` per drop, so `key` reaches
+ *  neither localStorage nor the wire. */
+export type Placement = { key: string; path: string; at: number };
 
 /** `capped` says MAX_DROPS is what stopped `fill`, not the end of the
  *  track — optional, and present only when it is true, so the
@@ -208,7 +211,7 @@ export function troughs(
     // One drop per speech here, so the file's own id already identifies it —
     // but the key is minted in the same `<id>#<n>` shape `fill` uses so that
     // nothing downstream has to know which of the two produced the array.
-    placements.push({ key: `${speech.id}#0`, id: speech.id, at: bestAt + FADE });
+    placements.push({ key: `${speech.path}#0`, path: speech.path, at: bestAt + FADE });
   }
 
   placements.sort((a, b) => a.at - b.at);
@@ -221,7 +224,7 @@ export function troughs(
  *  A sibling drop of the same speech is a neighbour like any other: the
  *  `others` filter drops exactly the one placement being moved, so the
  *  MIN_GAP scan below sees every other drop including the ones cut from the
- *  same file. Filtering on `id` instead both moved every sibling onto the
+ *  same file. Filtering on the path instead both moved every sibling onto the
  *  dragged instant (the `map` at the end rewrote all of them) and hid them
  *  from that scan, so the drag could park two drops of one file on top of
  *  each other.
@@ -252,12 +255,12 @@ export function clampPlacement(
   const dragged = placements.find((p) => p.key === key);
   if (dragged === undefined) return placements;
   const others = placements.filter((p) => p.key !== key);
-  const mine = speeches.find((x) => x.id === dragged.id);
+  const mine = speeches.find((x) => x.path === dragged.path);
   if (!mine) return placements;
   let lo = FADE;
   let hi = seconds - mine.seconds - FADE;
   for (const other of others) {
-    const otherSeconds = speeches.find((x) => x.id === other.id)?.seconds ?? 0;
+    const otherSeconds = speeches.find((x) => x.path === other.path)?.seconds ?? 0;
     if (other.at < want) lo = Math.max(lo, other.at + otherSeconds + MIN_GAP);
     else hi = Math.min(hi, other.at - MIN_GAP - mine.seconds);
   }
@@ -428,7 +431,7 @@ export function fill(
     // `k` is the SLOT, and a slot takes at most one drop, so this is unique
     // across the array by construction — and it survives the sort below,
     // which an index into the returned array would not.
-    placements.push({ key: `${speech.id}#${k}`, id: speech.id, at: bestAt + FADE });
+    placements.push({ key: `${speech.path}#${k}`, path: speech.path, at: bestAt + FADE });
   }
 
   placements.sort((a, b) => a.at - b.at);

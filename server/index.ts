@@ -11,7 +11,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
@@ -51,7 +51,15 @@ import { fetchChat, parseChat, peaks } from "./chat.ts";
 import { ensureMask } from "./mask.ts";
 import type { Trim } from "./longform.ts";
 import { checkLongform, detectTrim, keptRange, stackWide } from "./longform.ts";
-import { checkLofi, clearProgress, concatMusic, renderLofi, renderProgress } from "./lofi.ts";
+import {
+  checkLofi,
+  clearProgress,
+  concatMusic,
+  renderLofi,
+  renderProgress,
+  scanFolder,
+  trackEnvelope,
+} from "./lofi.ts";
 import {
   END_PATH,
   VOICE,
@@ -189,6 +197,57 @@ const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
  *  magnitude of headroom, and — like `PNG_MAX` — it exists only so a bad
  *  request cannot be a memory-sized one. */
 const JPEG_MAX = 8 << 20;
+
+/** A path on THIS machine, supplied by the client.
+ *
+ *  This is the loosest client string in the API and it is deliberate, so it
+ *  is worth stating what it is not. `isUploadId` validates a UUID the server
+ *  itself minted; `isOutName` matches only what `slugify` + `mmss` can emit;
+ *  `/api/export`'s `digest` is eight hex characters. Each of those exists so
+ *  that no caller can name a file the server did not already choose. The
+ *  lofi journey's folders break that on purpose: the whole point is to
+ *  render a music library where it already sits rather than copy gigabytes
+ *  into `media/uploads/` per session, and a library lives wherever the user
+ *  keeps it.
+ *
+ *  What that costs is bounded by what this app can do with a file. A
+ *  drive-by page can already POST here — no route checks `Origin`, which is
+ *  documented and accepted — so it could now name a directory and have its
+ *  audio mixed into an .mp4 on the user's own Desktop. Nothing is uploaded
+ *  by that: publishing is a separate, explicit action on a name that must
+ *  pass `isOutName`. So the exposure is local disclosure into a local file,
+ *  not exfiltration.
+ *
+ *  Absoluteness is checked BEFORE `resolve`, not after: `resolve` makes any
+ *  input absolute by joining it to the server's own cwd, so checking
+ *  afterwards would accept `../../etc` and silently interpret it relative to
+ *  the repo. `resolve` still runs, to normalise `.` and `..` out of a path
+ *  that is already absolute, so what reaches ffmpeg is what gets checked. */
+function absPath(v: unknown, name: string): string {
+  const given = str(v, name);
+  if (!isAbsolute(given)) throw new HttpError(400, `${name} must be an absolute path.`);
+  return resolve(given);
+}
+
+/** `absPath` that must name a directory. */
+function mediaDir(v: unknown, name: string): string {
+  const path = absPath(v, name);
+  if (!existsSync(path)) throw new HttpError(404, `No such folder: ${path}`);
+  if (!statSync(path).isDirectory()) throw new HttpError(400, `Not a folder: ${path}`);
+  return path;
+}
+
+/** `absPath` that must name a regular file.
+ *
+ *  `isFile` rather than "exists", because a directory or a device node
+ *  reaches ffmpeg perfectly happily and fails there with a message about a
+ *  demuxer instead of about the path the caller got wrong. */
+function mediaFile(v: unknown, name: string): string {
+  const path = absPath(v, name);
+  if (!existsSync(path)) throw new HttpError(404, `No such file: ${path}`);
+  if (!statSync(path).isFile()) throw new HttpError(400, `Not a file: ${path}`);
+  return path;
+}
 
 /** The long-form thumbnail, stretched to 1280x720 in the browser (see
  *  `renderThumb`) and arriving as bare base64 for the same reason the title
@@ -920,6 +979,53 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // every path from a UUID `isUploadId` has already reduced to 36 characters
   // of hex and dashes, and the picture is bytes with a signature rather than
   // a name.
+  // Reads a folder the user named and reports what this journey could use
+  // from it. Nothing is copied: the paths answered here are the paths
+  // `/api/lofi` renders from, which is the whole reason the lofi journey no
+  // longer uploads its music and its speeches.
+  if (req.url === "/api/lofi/scan") {
+    const raw = await json<Record<string, unknown>>(req);
+    const dir = mediaDir(raw.dir, "dir");
+    // Which list this is decides BOTH the cap and whether envelopes are
+    // built, which is why it is one field rather than two: a speech needs
+    // only its duration, and building an 8 kHz decode per speech would pay
+    // for an envelope nothing reads.
+    const kind = str(raw.kind, "kind");
+    if (kind !== "music" && kind !== "speech") {
+      return send(res, 400, { error: 'kind must be "music" or "speech".' });
+    }
+    const { files, skipped } = await scanFolder(dir);
+    if (files.length === 0) {
+      return send(res, 404, { error: `No audio files in ${dir}` });
+    }
+    // Capped HERE rather than after the envelopes, so an oversized folder
+    // costs one probe each instead of one full decode each. The panel checks
+    // the same constants, but this route is reachable without the panel —
+    // the posture every other cap in this file holds.
+    const cap = kind === "music" ? MAX_TRACKS : MAX_SPEECHES;
+    if (files.length > cap) {
+      return send(res, 400, {
+        error: `That folder has ${files.length} files — the limit is ${cap}.`,
+      });
+    }
+    // Rounded to four places: the envelope is a 0..1 ranking input, and full
+    // float64 JSON for seventy four-minute tracks is megabytes of digits
+    // nothing reads.
+    const withEnv = await Promise.all(
+      files.map(async (f) =>
+        kind === "music"
+          ? {
+              ...f,
+              env: Array.from(await trackEnvelope(f.path, f.seconds), (v) =>
+                Math.round(v * 1e4) / 1e4,
+              ),
+            }
+          : f,
+      ),
+    );
+    return send(res, 200, { files: withEnv, skipped });
+  }
+
   if (req.url === "/api/lofi") {
     const raw = await json<Record<string, unknown>>(req);
     const title = readTitle(raw.title, "title");
@@ -972,20 +1078,17 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // pin and the shuffle, because the filename never crosses the wire.
     const tracks = raw.music;
     if (!Array.isArray(tracks) || tracks.length === 0) {
-      return send(res, 400, { error: "music must be a non-empty array of upload ids." });
+      return send(res, 400, { error: "music must be a non-empty array of paths." });
     }
     if (tracks.length > MAX_TRACKS) {
       return send(res, 400, { error: `At most ${MAX_TRACKS} tracks.` });
     }
-    const trackPaths: string[] = [];
-    for (const id of tracks) {
-      if (!isUploadId(id)) return send(res, 400, { error: "Bad music id." });
-      const path = uploadPath(id);
-      if (!existsSync(path)) {
-        return send(res, 404, { error: "That music upload is no longer on disk." });
-      }
-      trackPaths.push(path);
-    }
+    // Absolute paths now, not upload ids — see `absPath` for why this API
+    // grew its loosest client string here and what that does and does not
+    // cost. Re-checked rather than trusted from the scan: the scan and the
+    // render are two requests, and a file can be moved or renamed between
+    // them.
+    const trackPaths = tracks.map((t) => mediaFile(t, "music"));
 
     const speeches = raw.speeches;
     if (!Array.isArray(speeches) || speeches.length === 0) {
@@ -1002,16 +1105,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       if (entry === null || typeof entry !== "object") {
         return send(res, 400, { error: "Each speech must be an object." });
       }
-      const { id, at } = entry as { id?: unknown; at?: unknown };
-      if (!isUploadId(id)) return send(res, 400, { error: "Bad upload id." });
+      const { path: given, at } = entry as { path?: unknown; at?: unknown };
       if (typeof at !== "number" || !Number.isFinite(at) || at < 0) {
         return send(res, 400, { error: "Each speech needs a finite at >= 0." });
       }
-      const path = uploadPath(id);
-      if (!existsSync(path)) {
-        return send(res, 404, { error: "One of those uploads is no longer on disk." });
-      }
-      cuts.push({ path, at });
+      cuts.push({ path: mediaFile(given, "speech path"), at });
     }
     cuts.sort((a, b) => a.at - b.at);
     const distinct = new Set(cuts.map((c) => c.path));

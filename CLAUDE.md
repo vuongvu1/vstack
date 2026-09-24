@@ -49,8 +49,8 @@ to. It writes no `segments`, fetches no video and reaches no other phase —
 the result is a list of `youtu.be/<id>?t=` links the user copies out, plus
 `docs/specs/2026-09-16-vstack-lofi-design.md`, which supersedes nothing and
 adds a FOURTH journey beside the short one, the long one and the
-chat-moments dead end: `idle` → `lofi` → `preview`, where a music track, a
-background picture and up to `MAX_SPEECHES` (100) speech clips become one
+chat-moments dead end: `idle` → `lofi` → `preview`, where a folder of music,
+a background picture and up to `MAX_SPEECHES` (100) speech clips become one
 1920x1080 video, each speech mixed into a quiet stretch of the music,
 band-limited and ducking it. A speech is AUDIO ONLY — it may be uploaded
 as an audio file or a video one, and a video one's picture is discarded.
@@ -59,11 +59,14 @@ the track runs; a bundled mark spins in the top-right corner of every one
 of them, and a band of frequency bars runs along the bottom.
 It shares `preview`, `/out/`, the publish panel and `media/uploads/` with
 the long journey and nothing else — the long journey's parts arrive on
-`/api/upload`, every one of the lofi journey's on `/api/upload-audio`, plus
+`/api/upload`, and the lofi journey's animated background on
+`/api/upload-audio` — its music and its speeches are not uploaded at all,
+but scanned from folders the user names and read in place, plus
 `docs/specs/2026-09-21-vstack-lofi-longform-design.md`, which supersedes
 nothing and extends the 2026-09-16 doc rather than any other: the music
-becomes a LIST of up to `MAX_TRACKS` (70) tracks, joined into one file
-before the render ever probes it; a speech now RECURS on a spacing the
+becomes a LIST of up to `MAX_TRACKS` (70) tracks — a FOLDER the user names,
+scanned by `/api/lofi/scan` and rendered from where it sits — joined into
+one file before the render ever probes it; a speech now RECURS on a spacing the
 user sets, up to `MAX_DROPS` (300) placements, with `MAX_SPEECHES`
 re-scoped to mean distinct uploaded FILES rather than placements; a
 `1_`-prefixed upload plays first and the rest are shuffled once,
@@ -141,7 +144,11 @@ server/lofi.ts     WIDE, FADE, TRACK_FADE, CRACKLE_PATH, LOGO_PATH/LOGO_RECT/
                    or a looped GIF, for the whole track, with every speech
                    mixed in as AUDIO ONLY, one input per unique speech
                    FILE), parseProgress/renderProgress/clearProgress (the
-                   `-progress` file, polled)
+                   `-progress` file, polled; also ticked into the server
+                   log, since a poll can stop while a render cannot),
+                   scanFolder/trackEnvelope (a named folder's usable media
+                   and the loudness envelope, built here rather than in the
+                   browser now that the bytes never reach it)
 server/cut.ts      MP3_QUALITY, cutMp3 (the cutter's one ffmpeg pass, run
                    once per range)
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
@@ -172,7 +179,7 @@ server/ytdlp.ts    videoIdFrom, probe, fetchWindow, parseClipName, listClips
 server/chat.ts     ChatMsg/Moment, BIN/WIN/LAG/TOP/MIN_GAP/SKIP_HEAD,
                    fetchChat (chat replay -> media/<id>/chat.json),
                    parseChat, peaks (the scorer)
-server/index.ts    17 routes (16 POST + GET /out/<name>), serveOut range
+server/index.ts    18 routes (17 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
@@ -192,7 +199,7 @@ src/thumb.ts       THUMB, renderThumb (any picture → 1280x720 JPEG, stretched)
                    WIDE_IMAGE, renderWide (any picture → 1920x1080 JPEG,
                    cover-cropped — the lofi journey's background)
 src/state.ts       AppState, setState/setQuiet, save/restore
-src/api.ts         15 fetch wrappers
+src/api.ts         16 fetch wrappers
 src/format.ts      mmss / clock / slugify (shared client + server)
 src/player.ts      YT IFrame API wrapper + trim strip
 src/editor.ts      box drag/resize overlay (crops over the <video>, pieces'
@@ -941,6 +948,35 @@ than 16:9 scaled to a fixed height overflows the frame, so the foreground
 is `scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2`
 — fits inside on both axes, even on both, for any input aspect.
 
+**The lofi journey takes FOLDER PATHS, and that is this API's one loose
+client string — deliberately, and it is the exception that proves the other
+three.** `isUploadId` validates a UUID the server minted; `isOutName` matches
+only what `slugify` + `mmss` can emit; `/api/export`'s `digest` is eight hex
+characters. Each exists so no caller can name a file the server did not
+already choose. `/api/lofi/scan` and `/api/lofi` break that on purpose:
+`absPath` requires only that a path be absolute and resolve to a real
+directory (or file), because the whole point is to render a music library
+where it already sits rather than copy gigabytes into `media/uploads/` per
+session — and a library lives wherever the user keeps it.
+
+What that costs is bounded by what this app does with a file. A drive-by page
+can already POST here (no route checks `Origin`, documented and accepted), so
+it could now name a directory and have its audio mixed into an `.mp4` on the
+user's own Desktop. Nothing leaves the machine by that route: publishing is a
+separate, explicit action on a name that must pass `isOutName`. Local
+disclosure into a local file, not exfiltration. That is the trade, it was
+made knowingly, and the three gates above are still the rule everywhere else.
+
+Two details of `absPath` are load-bearing. Absoluteness is checked BEFORE
+`resolve`, because `resolve` makes any input absolute by joining it to the
+server's own cwd — checking afterwards would accept `../../etc` and silently
+interpret it against the repo. And `mediaFile` tests `isFile` rather than
+mere existence, since a directory or a device node reaches ffmpeg happily and
+fails there with a message about a demuxer rather than about the path the
+caller got wrong. `/api/lofi` re-checks every path rather than trusting the
+scan that produced it: the scan and the render are two requests, and a file
+can move between them.
+
 **`isUploadId` is the third client-string gate in this API, and the
 strictest.** `isOutName` validates a name the client chose; `/api/export`'s
 `digest` validates eight hex characters the client computed; this validates
@@ -1287,6 +1323,51 @@ and the mark — the crackle leg already solves exactly this (one input,
 unique path, and only `asplit`s a path that has more than one drop, so a
 one-shot render's graph stays byte-identical to the one it had before
 repeats existed.
+
+**The loudness envelope is built SERVER-SIDE now, and `peaks` is shared
+rather than reimplemented.** The browser used to decode every track in an
+8 kHz mono `OfflineAudioContext` to build the envelope `troughs`/`fill` place
+against. Folders removed the bytes from the browser, so `trackEnvelope` in
+`server/lofi.ts` decodes through ffmpeg instead — and reduces through the
+SAME `peaks` from `src/waveform.ts`, imported across the client/server line
+the way `ytdlp.ts` already reaches for `geometry.ts`'s `PAD`. That import is
+the point: two spellings of one bucketing rule is the `bounce`/`bounceExpr`
+hazard, and here it was avoidable outright.
+
+What is NOT shared is the decode, and that difference is real: ffmpeg's
+resampler and WebAudio's do not agree sample for sample, so a placement can
+land a bucket (250 ms) from where the browser would have put it. Acceptable
+because the envelope RANKS candidate windows by quietness rather than
+measuring anything, and nothing downstream asserts on which bucket won.
+`server/lofi.test.ts` therefore pins the SHAPE — a loud half reads louder
+than a silent one — and deliberately not bit-equality, which would be
+claiming something this function does not provide. Its 0.1 bound describes
+the fixture rather than the function: lavfi's `sine` emits at about -18 dB on
+this build, so the loud half peaks at 0.130 — which is also exactly what
+ffmpeg's own `astats` reports for that file, i.e. the decode agrees with
+ffmpeg to five figures.
+
+`decodeTrack` in `src/main.ts` survives as the CUTTER's, not the placer's.
+
+**A folder scan REPLACES its list rather than appending, and reports what it
+skipped.** A folder is the unit: scanning a second music folder means "use
+that one instead", where appending would silently mix two libraries with no
+way to drop one short of a reload. A file that carries a media extension and
+turns out to have no audio stream is named in a callout rather than dropped
+silently — a track missing from a render with nothing on screen to explain it
+is the failure this journey already refuses a silent upload to avoid. A file
+with a NON-media extension is ignored outright and is not reported: a real
+music folder has cover art and a `.DS_Store` in it, and calling those
+skipped is noise.
+
+The folder field is a TEXT input, and that is forced rather than chosen: a
+browser never reveals a picked file's absolute path — `<input type="file">`
+gives bytes and a bare name, and the File System Access API hands back a
+handle rather than a location. `orderByPrefix` still works because the scan
+reports each filename, so the `1_` pin and the shuffle are unchanged.
+`lofiMusicDir`/`lofiSpeechDir` are module-scoped and unpersisted, the posture
+`lofiEnv` and `lofiCapped` hold; `ponytail:` a localStorage key of its own —
+the `saveVoice` shape — the day retyping a path each session grates.
 
 **`MAX_SPEECHES` bounds the graph's INPUTS; `MAX_DROPS` bounds its LEGS, and
 neither cap is redundant with the other.** A speech recurring split what
@@ -2392,9 +2473,11 @@ Deliberate: re-rendering a stack after a title fix must not mean
 re-uploading a gigabyte. `listClips` cannot reach it — it walks per-video
 directories and matches `CLIP_RE`, and a UUID at the top level is neither.
 `reportCache` counts it, so the boot log shows it growing. The lofi journey
-grows the same directory the same way, from a second door: both its music
-and its speeches land as `<uuid>.mp4` through `/api/upload-audio`, whatever
-they actually are — ffmpeg dispatches on content rather than the `.mp4`
+NO LONGER grows it for music or speech — those are read in place from a
+folder the user names, which is what makes a seventy-track render possible
+without a multi-gigabyte copy first — but its animated GIF background still
+lands there, as does the cutter's input. Both arrive as `<uuid>.mp4` through
+`/api/upload-audio`, whatever they actually are — ffmpeg dispatches on content rather than the `.mp4`
 extension, so an .mp3 in a `.mp4` name needs no exception anywhere in
 `ffmpeg.ts`, and neither does the `.mp3` name the crackle asset wears over
 AAC. Re-rendering a lofi mix after a title or marker fix is the same

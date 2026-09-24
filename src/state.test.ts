@@ -819,14 +819,12 @@ describe("the lofi journey's state", () => {
     setState({
       phase: "framing",
       videoId: "abc12345678",
-      tracks: [
-        { id: "11111111-1111-4111-8111-111111111111", name: "1_track.mp3", seconds: 200 },
-      ],
+      tracks: [{ path: "/Users/x/Music/1_track.mp3", name: "1_track.mp3", seconds: 200 }],
       spacing: 300,
       bg: "/9j/base64",
       bgName: "bg.png",
-      speeches: [{ id: "22222222-2222-4222-8222-222222222222", name: "a.mp4", seconds: 6 }],
-      placements: [{ key: "22222222-2222-4222-8222-222222222222#0", id: "22222222-2222-4222-8222-222222222222", at: 40 }],
+      speeches: [{ path: "/Users/x/Voice/a.mp4", name: "a.mp4", seconds: 6 }],
+      placements: [{ key: "/Users/x/Voice/a.mp4#0", path: "/Users/x/Voice/a.mp4", at: 40 }],
     });
     save();
     const stored = readRaw("abc12345678") as Record<string, unknown>;

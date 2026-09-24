@@ -6,10 +6,13 @@
 
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
+import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { clock } from "../src/format.ts";
+import { BUCKETS_PER_SEC } from "../src/lofi.ts";
+import { peaks } from "../src/waveform.ts";
 import { toolError } from "./errors.ts";
 import { probeAudio } from "./ffmpeg.ts";
 
@@ -468,6 +471,125 @@ function logProgress(): () => void {
   }, LOG_EVERY_MS);
   timer.unref();
   return () => clearInterval(timer);
+}
+
+/** What a scanned folder offers the panel. `path` is absolute and is what
+ *  `/api/lofi` is handed back — the file is never copied anywhere. */
+export type ScannedFile = { name: string; path: string; seconds: number };
+
+/** Extensions `scanFolder` will even look at.
+ *
+ *  An extension test rather than a probe of everything in the folder,
+ *  because a real music folder holds cover art, a .DS_Store and a tracklist,
+ *  and spawning an ffprobe per JPEG to learn it is a JPEG is both slow and
+ *  noisy. Video extensions are here for the same reason `/api/upload-audio`
+ *  accepts a video: a speech may be a screen recording, and only its audio
+ *  is ever used. */
+const MEDIA_EXT = new Set([
+  ".aac", ".aif", ".aiff", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".wma",
+  ".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm",
+]);
+
+/** Everything in `dir` this journey could use, with the durations probed.
+ *
+ *  The folder REPLACES uploading for this journey, so these paths are read
+ *  in place by ffmpeg and nothing is ever copied into `media/uploads/`.
+ *
+ *  Sorted by name, and by codepoint rather than `localeCompare`: the panel
+ *  then applies `orderByPrefix`, whose whole contract is that a `1_` file
+ *  comes first, and a collation that varies with the host's ICU build would
+ *  make the rest of that order differ between machines for no reason.
+ *
+ *  A file that carries a media extension and turns out to have no audio
+ *  stream is REPORTED rather than dropped or fatal. Dropping it silently is
+ *  a track missing from a render with nothing to explain it — the failure
+ *  class this journey already refuses a no-audio upload to avoid — and
+ *  failing the whole scan means one stray file in a folder of seventy
+ *  blocks all of them. */
+export async function scanFolder(dir: string): Promise<{
+  files: ScannedFile[];
+  skipped: string[];
+}> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    throw new Error(`Could not read the folder ${dir}.`);
+  }
+  const names = entries
+    .filter((e) => e.isFile() && MEDIA_EXT.has(extname(e.name).toLowerCase()))
+    .map((e) => e.name)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+
+  const files: ScannedFile[] = [];
+  const skipped: string[] = [];
+  for (const name of names) {
+    const path = join(dir, name);
+    try {
+      const { seconds } = await probeAudio(path);
+      if (seconds > 0) files.push({ name, path, seconds });
+      else skipped.push(name);
+    } catch {
+      skipped.push(name);
+    }
+  }
+  return { files, skipped };
+}
+
+/** The rate the envelope is built at. 8 kHz mono, matching what the browser
+ *  decoded at before the scan existed — a rate chosen there because it is
+ *  the difference between 19 MB and 230 MB for a six-minute track, and kept
+ *  here so the two produce envelopes of the same shape. */
+const ENV_RATE = 8000;
+
+/** Enough for roughly a four-hour track at `ENV_RATE` in 32-bit floats. A
+ *  cap, not an allocation. */
+const ENV_MAX_BYTES = 512 << 20;
+
+/** The loudness envelope `troughs`/`fill` place speeches against.
+ *
+ *  `peaks` is IMPORTED from `src/waveform.ts` rather than reimplemented,
+ *  and that is the point of this function's shape: the browser used to build
+ *  this envelope itself, and the two would otherwise be one rule in two
+ *  languages — the hazard `bounce`/`bounceExpr` already carries. Sharing the
+ *  bucketing leaves only the DECODE differing, and ffmpeg's resampler and
+ *  WebAudio's will not agree sample for sample. That is acceptable because
+ *  the envelope RANKS candidate windows by quietness rather than measuring
+ *  anything: a placement can land a bucket (250 ms) from where the browser
+ *  would have put it, and no assertion downstream depends on which.
+ *
+ *  `seconds` comes from the caller's own probe rather than being re-probed
+ *  here, so the bucket count is the same number `scanFolder` already
+ *  reported and the panel's timeline cannot disagree with the envelope
+ *  drawn on it. */
+export async function trackEnvelope(path: string, seconds: number): Promise<Float32Array> {
+  const buckets = Math.max(1, Math.round(seconds * BUCKETS_PER_SEC));
+  let stdout: Buffer;
+  try {
+    ({ stdout } = await run(
+      "ffmpeg",
+      [
+        "-v", "error",
+        "-i", path,
+        "-map", "0:a:0",
+        "-ac", "1",
+        "-ar", String(ENV_RATE),
+        "-f", "f32le",
+        "-",
+      ],
+      { maxBuffer: ENV_MAX_BYTES, encoding: "buffer" },
+    ));
+  } catch (err) {
+    throw toolError("ffmpeg", err);
+  }
+  // `slice` rather than a view over `stdout`: a Float32Array needs its byte
+  // offset to be a multiple of 4, and a Buffer handed back by execFile sits
+  // wherever in the pool it landed. Slicing copies into a fresh, 0-offset
+  // ArrayBuffer, which is aligned by construction. The trailing remainder is
+  // dropped — a partial float is not a sample.
+  const usable = stdout.length - (stdout.length % 4);
+  const aligned = stdout.buffer.slice(stdout.byteOffset, stdout.byteOffset + usable);
+  return peaks(new Float32Array(aligned), buckets);
 }
 
 /** Boot check for the assets this journey bundles. Hard, like

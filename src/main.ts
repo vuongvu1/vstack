@@ -1067,20 +1067,37 @@ let lofiSeconds = 0;
  *  same breath as the `setState` that renders it. */
 let lofiCapped = false;
 
-/** Each track's own `File`, keyed by the upload id `state.tracks` carries.
- *  What lets a re-order or a re-shuffle rebuild the envelope without
- *  re-uploading — a `File` handle does not survive a reload, which is
- *  consistent with `tracks` itself not persisting. */
-const trackFiles = new Map<string, File>();
+/** The last folder named for each list, so a re-render keeps what was typed
+ *  — the panel is rebuilt on every `setState` and an uncontrolled field
+ *  would empty itself the moment a scan finished.
+ *
+ *  Module-scoped and NOT persisted, the same posture `lofiEnv` and
+ *  `lofiCapped` hold: it describes the panel currently on screen. `ponytail:`
+ *  a localStorage key of its own — the `saveVoice` shape — the day retyping
+ *  a path each session grates. */
+let lofiMusicDir = "";
+let lofiSpeechDir = "";
 
-/** Decodes a picked music File into the envelope `troughs` scores, through
- *  the same 8 kHz mono OfflineAudioContext `loadWave` uses — that bounds the
- *  decode at ~8000 floats a second regardless of the source's rate, which
- *  for a six-minute track is the difference between 19 MB and 230 MB.
+/** Each track's own loudness envelope, keyed by the absolute path
+ *  `state.tracks` carries. The scan builds these once server-side; holding
+ *  them is what lets a re-order or a re-shuffle rebuild the concatenated
+ *  envelope without a second round trip. Not persisted, consistent with
+ *  `tracks` itself. */
+const trackEnvs = new Map<string, Float32Array>();
+
+/** Decodes a picked File into an envelope, through the same 8 kHz mono
+ *  OfflineAudioContext `loadWave` uses — that bounds the decode at ~8000
+ *  floats a second regardless of the source's rate, which for a six-minute
+ *  track is the difference between 19 MB and 230 MB.
+ *
+ *  The CUTTER's, now that the lofi journey reads its folder server-side and
+ *  gets its envelope from `trackEnvelope`. Both still reduce through
+ *  `peaks`, so the two agree on bucketing and differ only in which resampler
+ *  produced the samples.
  *
  *  Unlike `loadWave` this one must NOT swallow its failures: a flat strip is
- *  a cosmetic loss on the framing bar, but here the envelope is what places
- *  every speech. */
+ *  a cosmetic loss on the framing bar, but here the envelope is what the
+ *  cutter's Detect thresholds against. */
 async function decodeTrack(file: File): Promise<{ env: Float32Array; seconds: number }> {
   const Ctor = window.OfflineAudioContext ?? window.webkitOfflineAudioContext;
   if (!Ctor) throw new Error("This browser cannot decode audio.");
@@ -1524,48 +1541,50 @@ async function doStack(): Promise<void> {
   });
 }
 
-/** Uploads tracks and rebuilds the concatenated envelope.
+/** Reads a music folder and rebuilds the concatenated envelope.
  *
- *  The envelope is built PER TRACK and appended, never by decoding the whole
- *  timeline at once: `decodeTrack` resamples into an 8 kHz mono
- *  OfflineAudioContext and reduces straight to `BUCKETS_PER_SEC`, so one
- *  track at a time is a few MB where three hours in one go is not. Three
- *  hours reduces to about 43k floats.
+ *  REPLACES the whole track list rather than appending to it. A folder is
+ *  the unit here — scanning a second folder means "use that one instead",
+ *  where an append would silently mix two libraries and leave no way to drop
+ *  one of them short of a reload.
  *
- *  `orderByPrefix` runs over the whole list once here, on add — never inside
- *  `place()`, which also consumes `spacing` and would otherwise re-roll the
- *  shuffle on every spacing change. `↻ Shuffle` is the only other place a
- *  re-roll happens. */
-async function doPickMusic(files: File[]): Promise<void> {
-  await guard("Reading the tracks…", async () => {
-    const existing = getState().tracks;
-    if (existing.length + files.length > MAX_TRACKS) {
-      setState({
-        error: `That's ${existing.length + files.length} tracks — the limit is ${MAX_TRACKS}.`,
-      });
-      return;
-    }
+ *  The envelope is built per track SERVER-SIDE now (`trackEnvelope`), and
+ *  appended here in play order exactly as the browser's own decode used to
+ *  be. Both spellings share `peaks`, so only the decode differs — see
+ *  `trackEnvelope` for why a bucket of drift is acceptable in a value that
+ *  ranks windows rather than measuring them.
+ *
+ *  `orderByPrefix` runs over the whole list once here, on scan — never
+ *  inside `place()`, which also consumes `spacing` and would otherwise
+ *  re-roll the shuffle on every spacing change. `↻ Shuffle` is the only
+ *  other place a re-roll happens. */
+async function doScanMusic(dir: string): Promise<void> {
+  if (dir.trim() === "") return;
+  await guard("Reading the folder…", async () => {
+    const { files, skipped } = await api.lofiScan(dir.trim(), "music");
+    trackEnvs.clear();
     const added: UploadTrack[] = [];
-    for (const file of files) {
-      const { seconds } = await decodeTrack(file);
-      // `api.upload`'s own `duration` (the server's `ffprobe` reading of the
-      // same file) is discarded here — two measurements of one track, not a
-      // bug. `seconds` from `decodeTrack` is what the envelope was built
-      // against, so it has to stay the axis `fill` and `clampPlacement` both
-      // measure in; probing again server-side is what lets `/api/lofi` bound
-      // cuts against a number it trusts independently of the client.
-      const { id } = await api.upload(file, true);
-      // Held so a re-order or a re-shuffle can rebuild the envelope without
-      // re-uploading. A `File` handle does not survive a reload, which is
-      // consistent with `tracks` itself not persisting.
-      trackFiles.set(id, file);
-      added.push({ id, name: file.name, seconds });
+    for (const f of files) {
+      // `env` is present for every music file the route answers with; the
+      // guard is the type's, not a case that happens.
+      if (f.env) trackEnvs.set(f.path, Float32Array.from(f.env));
+      added.push({ path: f.path, name: f.name, seconds: f.seconds });
     }
-    const tracks = orderByPrefix([...existing, ...added]);
-    await rebuildLofiEnv(tracks);
+    const tracks = orderByPrefix(added);
+    rebuildLofiEnv(tracks);
     // A new track set invalidates every position: they were found against
     // the old envelope.
-    setState({ tracks, placements: [] });
+    setState({
+      tracks,
+      placements: [],
+      // Named rather than counted: a file silently absent from a render is
+      // the failure this journey refuses a silent upload to avoid, and the
+      // scan is the only moment anyone can act on it.
+      error:
+        skipped.length === 0
+          ? ""
+          : `Skipped (no audio stream): ${skipped.join(", ")}`,
+    });
     place();
   });
 }
@@ -1577,15 +1596,14 @@ async function doPickMusic(files: File[]): Promise<void> {
  *  decode is the cheap part (8 kHz mono) and a cache keyed on a list that
  *  reorders is a second thing to keep in sync; `ponytail:` — key it by id the
  *  day a fifty-track list feels slow. */
-async function rebuildLofiEnv(tracks: UploadTrack[]): Promise<void> {
+function rebuildLofiEnv(tracks: UploadTrack[]): void {
   const parts: Float32Array[] = [];
   let total = 0;
   for (const track of tracks) {
-    const file = trackFiles.get(track.id);
-    if (file === undefined) continue;
-    const { env, seconds } = await decodeTrack(file);
+    const env = trackEnvs.get(track.path);
+    if (env === undefined) continue;
     parts.push(env);
-    total += seconds;
+    total += track.seconds;
   }
   const joined = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
   let at = 0;
@@ -1639,35 +1657,33 @@ async function doPickBackground(file: File): Promise<void> {
   });
 }
 
-async function doAddSpeeches(files: File[]): Promise<void> {
-  if (files.length === 0) return;
-  await guard("Uploading…", async () => {
-    const existing = getState().speeches.length;
-    if (existing + files.length > MAX_SPEECHES) {
-      throw new Error(
-        `That's ${existing + files.length} speeches — the limit is ${MAX_SPEECHES}.`,
-      );
-    }
-    for (const [i, file] of files.entries()) {
-      setState({ busy: `Uploading ${i + 1}/${files.length}…` });
-      // Uploaded through the AUDIO route, the same one the music track
-      // takes: a speech may be a bare recording with no video stream at
-      // all, which `/api/upload`'s `probeFile` refuses outright. It is also
-      // the check that keeps a silent video out of the list — it can only
-      // contribute silence to the mix, and the render would never say so.
-      const { id, duration } = await api.upload(file, true);
-      // Live state, not a snapshot: each iteration appends to what the
-      // previous one wrote.
-      setState({
-        speeches: [...getState().speeches, { id, name: file.name, seconds: duration }],
-      });
-    }
-    // Ordered once, over the whole list, after every upload in this batch has
-    // landed — never inside `place()`, which also fires on a spacing edit and
-    // would otherwise re-roll a shuffle the panel had already shown the user
-    // a different order for. `fill` cycles speeches in list order when
-    // `spacing` is set, so this is what decides which one opens the render.
-    setState({ speeches: orderByPrefix(getState().speeches) });
+/** Reads a speech folder. REPLACES the list, for `doScanMusic`'s reason.
+ *
+ *  No envelope and no upload: a speech contributes only its own audio at a
+ *  position the music's envelope decides, so all the scan needs from it is
+ *  how long it runs. The route's `probeAudio` is still the gate that keeps a
+ *  file with no audio stream out of the list — it can only contribute a
+ *  silent stretch to a render that never shows it. */
+async function doScanSpeeches(dir: string): Promise<void> {
+  if (dir.trim() === "") return;
+  await guard("Reading the folder…", async () => {
+    const { files, skipped } = await api.lofiScan(dir.trim(), "speech");
+    // Ordered once, over the whole list — never inside `place()`, which also
+    // fires on a spacing edit and would otherwise re-roll a shuffle the panel
+    // had already shown the user a different order for. `fill` cycles
+    // speeches in list order when `spacing` is set, so this is what decides
+    // which one opens the render.
+    const speeches = orderByPrefix(
+      files.map((f) => ({ path: f.path, name: f.name, seconds: f.seconds })),
+    );
+    setState({
+      speeches,
+      placements: [],
+      error:
+        skipped.length === 0
+          ? ""
+          : `Skipped (no audio stream): ${skipped.join(", ")}`,
+    });
     place();
   });
 }
@@ -1677,7 +1693,7 @@ async function doAddSpeeches(files: File[]): Promise<void> {
  *  user overriding one position, and re-detecting would throw it away.
  *
  *  Consumes `s.speeches` and `s.tracks` as they stand — no `orderByPrefix`
- *  here. The shuffle happens exactly once, in `doPickMusic`/`doAddSpeeches`
+ *  here. The shuffle happens exactly once, in `doScanMusic`/`doScanSpeeches`
  *  on add and in `↻ Shuffle` on demand, and is stored in state; re-rolling it
  *  on every call to `place()` (which also fires on every spacing edit) would
  *  silently reshuffle a mix the panel had already shown the user a different
@@ -1734,10 +1750,10 @@ async function doLofi(): Promise<void> {
     try {
       const out = await api.lofi({
         title,
-        music: getState().tracks.map((t) => t.id),
+        music: getState().tracks.map((t) => t.path),
         ...(bgId === null ? { image: getState().bg } : { bgId }),
         thumb: getState().thumb,
-        speeches: getState().placements.map((p) => ({ id: p.id, at: p.at })),
+        speeches: getState().placements.map((p) => ({ path: p.path, at: p.at })),
         // In-memory, like the export's: a reload between two renders strands
         // the older file, which is the accepted cost of not persisting a
         // field whose only job is naming a file to delete.
@@ -3170,23 +3186,55 @@ function renderMomentsPanel(): Node[] {
 /** The left column during `lofi`: the three pickers and the speech list.
  *  Modelled on `renderStackPanel` — same column, same overrides of
  *  `.source`'s `place-items: center`. */
+/** A folder field and its Scan button.
+ *
+ *  A TEXT field rather than a picker, and that is forced rather than chosen:
+ *  a browser never reveals a picked file's absolute path — `<input
+ *  type="file">` gives bytes and a bare name, and even the File System
+ *  Access API hands back a handle rather than a location. Reading a library
+ *  in place therefore means the user naming it, so paste a path from Finder
+ *  (Cmd+Opt+C copies one) or type it.
+ *
+ *  Enter scans, so the common case never needs the mouse. */
+function folderRow(
+  value: string,
+  placeholder: string,
+  locked: boolean,
+  onScan: (dir: string) => void,
+): HTMLElement {
+  const field = el("input", {
+    type: "text",
+    className: "field-grow",
+    placeholder,
+    ariaLabel: placeholder,
+    value,
+    disabled: locked,
+  });
+  const scan = el("button", { textContent: "Scan", disabled: locked });
+  scan.onclick = () => onScan(field.value);
+  field.onkeydown = (e: KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onScan(field.value);
+    }
+  };
+  return el("div", { className: "bar-row" }, field, scan);
+}
+
 function renderLofiPanel(): Node[] {
   const s = getState();
   const locked = Boolean(s.busy);
 
   const musicRow = el("div", { className: "lofi-row" });
-  const musicPicker = el("input", {
-    type: "file",
-    accept: "audio/*",
-    multiple: true,
-    disabled: locked || s.tracks.length >= MAX_TRACKS,
-  });
-  musicPicker.onchange = () => {
-    const files = [...(musicPicker.files ?? [])];
-    // Cleared so picking the same file(s) twice fires a second change event.
-    musicPicker.value = "";
-    if (files.length > 0) void doPickMusic(files);
-  };
+  const musicPicker = folderRow(
+    lofiMusicDir,
+    "Music folder, e.g. /Users/you/Music/lofi",
+    locked,
+    (dir) => {
+      lofiMusicDir = dir;
+      void doScanMusic(dir);
+    },
+  );
   const shuffleBtn = el("button", {
     className: "btn-gray",
     textContent: "↻ Shuffle",
@@ -3239,7 +3287,7 @@ function renderLofiPanel(): Node[] {
             textContent: `(${i + 1}/${s.tracks.length}) ${t.name} — ${clock(t.seconds)}`,
           }),
         )
-      : [el("p", { className: "stack-empty", textContent: "Pick one or more music files." })]),
+      : [el("p", { className: "stack-empty", textContent: "Name a folder of music and Scan." })]),
     el("div", { className: "bar-row" }, spacingInput),
     musicPicker,
   );
@@ -3279,17 +3327,15 @@ function renderLofiPanel(): Node[] {
   // Still a hint rather than a gate: the server's `probeAudio` is what
   // decides, and it asks the only question that matters (does ffmpeg find
   // an audio stream in these bytes) rather than trusting an extension.
-  const speechPicker = el("input", {
-    type: "file",
-    accept: "audio/*,video/*",
-    multiple: true,
-    disabled: locked || s.speeches.length >= MAX_SPEECHES,
-  });
-  speechPicker.onchange = () => {
-    const files = [...(speechPicker.files ?? [])];
-    speechPicker.value = "";
-    void doAddSpeeches(files);
-  };
+  const speechPicker = folderRow(
+    lofiSpeechDir,
+    "Speech folder, e.g. /Users/you/Music/voice",
+    locked,
+    (dir) => {
+      lofiSpeechDir = dir;
+      void doScanSpeeches(dir);
+    },
+  );
   // Time-ordered by `at`, not by upload order: the list reads top-to-bottom
   // the same way the strip reads left-to-right, so removing the one that
   // plays third means reading the third row rather than hunting for
@@ -3297,12 +3343,12 @@ function renderLofiPanel(): Node[] {
   // yet (the moment between an upload landing and `place()` completing)
   // sorts to the end rather than in front of ones already placed.
   const ordered = [...s.speeches].sort((a, b) => {
-    const atA = s.placements.find((p) => p.id === a.id)?.at ?? Infinity;
-    const atB = s.placements.find((p) => p.id === b.id)?.at ?? Infinity;
+    const atA = s.placements.find((p) => p.path === a.path)?.at ?? Infinity;
+    const atB = s.placements.find((p) => p.path === b.path)?.at ?? Infinity;
     return atA - atB;
   });
   const rows = ordered.map((speech) => {
-    const at = s.placements.find((p) => p.id === speech.id);
+    const at = s.placements.find((p) => p.path === speech.path);
     const drop = el("button", {
       textContent: "✕",
       ariaLabel: `Remove ${speech.name}`,
@@ -3311,7 +3357,7 @@ function renderLofiPanel(): Node[] {
     drop.onclick = () => {
       // Live state, the rule every handler here follows: the list is written
       // by quiet updates during a drag, so a snapshot would revert one.
-      setState({ speeches: getState().speeches.filter((x) => x.id !== speech.id) });
+      setState({ speeches: getState().speeches.filter((x) => x.path !== speech.path) });
       place();
     };
     return el(
@@ -3333,14 +3379,14 @@ function renderLofiPanel(): Node[] {
   // because the counts now differ by design. Measured: 4 speeches at a
   // 5-minute spacing over a 12-minute track gives 3 drops, and the fourth
   // file was simply absent from the render with nothing on screen about it.
-  const placedIds = new Set(s.placements.map((p) => p.id));
+  const placedPaths = new Set(s.placements.map((p) => p.path));
   // Both warnings are suppressed while something is in flight. An upload
   // batch writes `speeches` once per file and only calls `place()` once the
   // whole batch has landed, so every render in between legitimately has
   // speeches no placement has been computed for yet — and a callout naming
   // the file that is still uploading is a lie the next render takes back.
   // `busy` is already what the panel disables its own controls on.
-  const missing = locked ? [] : s.speeches.filter((x) => !placedIds.has(x.id));
+  const missing = locked ? [] : s.speeches.filter((x) => !placedPaths.has(x.path));
   const drops = s.placements.length;
   speechRow.append(
     el(
@@ -3351,7 +3397,7 @@ function renderLofiPanel(): Node[] {
         className: "bar-end badge",
         textContent:
           `${drops} ${drops === 1 ? "drop" : "drops"} · ` +
-          `${placedIds.size}/${s.speeches.length} files`,
+          `${placedPaths.size}/${s.speeches.length} files`,
       }),
     ),
     // The same `.callout` the status row gives `state.error`, rather than a
@@ -3390,7 +3436,7 @@ function renderLofiPanel(): Node[] {
       : [
           el("p", {
             className: "stack-empty",
-            textContent: "Add audio or video files. Only the sound is used, and it drops into the quiet parts.",
+            textContent: "Name a folder of recordings and Scan. Only the sound is used, and it drops into the quiet parts.",
           }),
         ]),
     speechPicker,
@@ -3451,11 +3497,12 @@ function renderLofiBar(): Node[] {
   const canvas = el("canvas", { className: "lofi-wave" });
   strip.append(canvas);
 
-  const secondsOf = (id: string) => getState().speeches.find((x) => x.id === id)?.seconds ?? 0;
+  const secondsOf = (path: string) =>
+    getState().speeches.find((x) => x.path === path)?.seconds ?? 0;
 
   for (const p of s.placements) {
     const marker = el("div", { className: "lofi-marker", title: `${clock(p.at)}` });
-    const width = lofiSeconds > 0 ? (secondsOf(p.id) / lofiSeconds) * 100 : 0;
+    const width = lofiSeconds > 0 ? (secondsOf(p.path) / lofiSeconds) * 100 : 0;
     marker.style.left = `${lofiSeconds > 0 ? (p.at / lofiSeconds) * 100 : 0}%`;
     marker.style.width = `${width}%`;
     marker.onpointerdown = (e: PointerEvent) => {
@@ -3475,7 +3522,7 @@ function renderLofiBar(): Node[] {
         // pointer for the whole drag and only jumps to where it landed once
         // the trailing `setState` rebuilds the bar — indistinguishable from
         // a drag that silently does nothing until release.
-        // `p.key`, never `p.id`: with a spacing set one file is dropped
+        // `p.key`, never `p.path`: with a spacing set one file is dropped
         // many times, and naming the file would move every one of its drops
         // onto this instant at once.
         const next = clampPlacement(getState().placements, getState().speeches, p.key, want, lofiSeconds);

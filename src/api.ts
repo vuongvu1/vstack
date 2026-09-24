@@ -148,19 +148,47 @@ export async function stack(body: {
   return (await post("/api/stack", body)).json() as Promise<StackResult>;
 }
 
+/** One media file a folder scan found. `env` is the loudness envelope at
+ *  `BUCKETS_PER_SEC`, present for music only — a speech needs its duration
+ *  and nothing else, and building a decode per speech would pay for an
+ *  envelope nothing reads. */
+export type ScannedFile = {
+  name: string;
+  path: string;
+  seconds: number;
+  env?: number[];
+};
+
+/** Everything in a folder this journey could use.
+ *
+ *  `skipped` names files that carried a media extension and turned out to
+ *  have no audio stream. They are reported rather than dropped: a track
+ *  missing from a render with nothing on screen to explain it is the failure
+ *  this journey already refuses a silent upload to avoid. */
+export async function lofiScan(
+  dir: string,
+  kind: "music" | "speech",
+): Promise<{ files: ScannedFile[]; skipped: string[] }> {
+  return (await post("/api/lofi/scan", { dir, kind })).json() as Promise<{
+    files: ScannedFile[];
+    skipped: string[];
+  }>;
+}
+
 /** What `/api/lofi` answers with — the same three fields `/api/stack` and
  *  `/api/export` return, `url` already carrying the file's mtime. */
 export type LofiResult = { name: string; url: string; size: number };
 
 /** Renders the track, the picture and the placed speeches into one
- *  1920x1080 file. `music` and every `speeches[].id` are the UUIDs `upload`
- *  returned; `image` is bare base64 JPEG at 1920x1080, cover-cropped by
- *  `renderWide` — the render's own background, held for every frame. */
+ *  1920x1080 file. `music` and every `speeches[].path` are ABSOLUTE paths on
+ *  this machine, reported by `lofiScan` and read in place; `image` is bare
+ *  base64 JPEG at 1920x1080, cover-cropped by `renderWide` — the render's
+ *  own background, held for every frame. */
 export async function lofi(body: {
   title: string;
-  /** The uploaded tracks IN PLAY ORDER. The client has already applied the
-   *  `1_` pin and the shuffle, because the original filename never crosses
-   *  this wire — the server sees ids and no names. */
+  /** The tracks' paths IN PLAY ORDER. The client has already applied the
+   *  `1_` pin and the shuffle — the server renders this order as given and
+   *  never re-reads the folder. */
   music: string[];
   /** Omitted when `bgId` is sent: a still the render never shows would be a
    *  lie rather than a spare. Exactly one of the two. */
@@ -175,7 +203,7 @@ export async function lofi(body: {
    *  1920x1080 cover-crop is the wrong shape and the wrong file-size budget
    *  for a 16:9 thumbnail surface. */
   thumb: string;
-  speeches: { id: string; at: number }[];
+  speeches: { path: string; at: number }[];
   /** The previous render's name, so a title edit does not strand the file it
    *  replaces. Omitted on the first render of a session. */
   prev?: string;

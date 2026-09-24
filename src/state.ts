@@ -25,9 +25,11 @@ export type Phase =
  *  something readable to show, and deliberately never sent anywhere. */
 export type UploadPart = { id: string; name: string; duration: number };
 
-/** One uploaded lofi music track. The same shape the single `music` field
- *  carried inline, named now that it is an array element. */
-export type UploadTrack = { id: string; name: string; seconds: number };
+/** One lofi music track, as the folder scan reported it. `path` is its
+ *  absolute location on this machine — the track is read where it sits and
+ *  is never copied into `media/uploads/`, which is what lets a seventy-track
+ *  library be rendered without a multi-gigabyte upload first. */
+export type UploadTrack = { path: string; name: string; seconds: number };
 
 export type AppState = {
   phase: Phase;

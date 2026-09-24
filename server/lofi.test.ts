@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { BUCKETS_PER_SEC } from "../src/lofi.ts";
 import { probeAudio, probeFile } from "./ffmpeg.ts";
 import {
   FADE,
@@ -18,6 +19,8 @@ import {
   progressLine,
   renderLofi,
   renderProgress,
+  scanFolder,
+  trackEnvelope,
 } from "./lofi.ts";
 
 const run = promisify(execFile);
@@ -57,6 +60,13 @@ let noaudio = "";
  *  divides into the 30s track so "it looped" is checkable by arithmetic. */
 let gif = "";
 let out = "";
+/** A directory `scanFolder` walks: two media files, a non-media file it must
+ *  ignore outright, and a media-EXTENSION file with no audio stream, which
+ *  it must report as skipped rather than fail the whole scan over. */
+let scanDir = "";
+/** 4s built as 2s of a loud sine then 2s of digital silence — the fixture
+ *  that makes an envelope's SHAPE checkable rather than just its length. */
+let loudThenQuiet = "";
 /** Three 2s tones for `concatMusic`'s own fixtures — see the tests below for
  *  why the frequencies rather than the lengths are what prove the order. */
 let tone440a = "";
@@ -143,6 +153,33 @@ beforeAll(async () => {
   await run("ffmpeg", [
     "-y", "-f", "lavfi", "-i", "sine=frequency=1760:duration=1.8",
     "-c:a", "aac", toneShort,
+  ]);
+
+  scanDir = join(dir, "scan");
+  await mkdir(scanDir, { recursive: true });
+  // Named so that plain name order is NOT the order they were created in —
+  // the scan sorts, and a fixture that is already sorted cannot show it.
+  await run("ffmpeg", [
+    "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+    "-c:a", "aac", join(scanDir, "b-second.m4a"),
+  ]);
+  await run("ffmpeg", [
+    "-y", "-f", "lavfi", "-i", "sine=frequency=660:duration=2",
+    "-c:a", "aac", join(scanDir, "a-first.m4a"),
+  ]);
+  await writeFile(join(scanDir, "notes.txt"), "not media");
+  await run("ffmpeg", [
+    "-y", "-f", "lavfi", "-i", "color=c=red:s=64x64:d=1",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", join(scanDir, "silentfilm.mp4"),
+  ]);
+
+  loudThenQuiet = join(dir, "loudquiet.m4a");
+  await run("ffmpeg", [
+    "-y",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=2",
+    "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]",
+    "-map", "[a]", "-c:a", "aac", loudThenQuiet,
   ]);
 
   out = join(dir, "out.mp4");
@@ -317,6 +354,69 @@ describe("progressLine", () => {
     expect(progressLine({ phase: "render", done: 61, total: 60 })).toBe(
       "rendering 100% (00:01:01/00:01:00)",
     );
+  });
+});
+
+describe("scanFolder", () => {
+  it("finds the media files with their durations, in name order", async () => {
+    const { files } = await scanFolder(scanDir);
+    expect(files.map((f) => f.name)).toEqual(["a-first.m4a", "b-second.m4a"]);
+    expect(files[0]?.seconds).toBeCloseTo(2, 0);
+    expect(files[1]?.seconds).toBeCloseTo(3, 0);
+    expect(files[0]?.path).toBe(join(scanDir, "a-first.m4a"));
+  });
+
+  // A real music folder has cover art, a .DS_Store and a tracklist in it.
+  // Those are not failures and must not be reported as any.
+  it("ignores a non-media extension outright", async () => {
+    const { files, skipped } = await scanFolder(scanDir);
+    expect(files.some((f) => f.name === "notes.txt")).toBe(false);
+    expect(skipped).not.toContain("notes.txt");
+  });
+
+  // The loud half of the split: a file that LOOKS like media and has no
+  // audio stream is the one case worth naming, because silently dropping it
+  // is a track missing from a render nobody can explain.
+  it("reports a media file with no audio stream as skipped", async () => {
+    const { files, skipped } = await scanFolder(scanDir);
+    expect(skipped).toEqual(["silentfilm.mp4"]);
+    expect(files.some((f) => f.name === "silentfilm.mp4")).toBe(false);
+  });
+
+  it("refuses a directory that is not there, by name", async () => {
+    const missing = join(dir, "no-such-folder");
+    await expect(scanFolder(missing)).rejects.toThrow(missing);
+  });
+});
+
+describe("trackEnvelope", () => {
+  // The length is what `fill` indexes against: BUCKETS_PER_SEC buckets a
+  // second, the same rate the browser's own decode produced before the
+  // scan existed.
+  it("returns BUCKETS_PER_SEC buckets a second", async () => {
+    const env = await trackEnvelope(loudThenQuiet, 4);
+    expect(env.length).toBe(4 * BUCKETS_PER_SEC);
+  });
+
+  // Deliberately NOT bit-equality against the browser's decode: ffmpeg's
+  // resampler and WebAudio's are different code and will not agree sample
+  // for sample. The envelope is a RANKING input for finding quiet stretches,
+  // so what has to hold is the shape — a loud half reads louder than a
+  // silent one — and claiming more than that would be claiming something
+  // this function does not provide.
+  it("reads the loud half louder than the silent half", async () => {
+    const env = await trackEnvelope(loudThenQuiet, 4);
+    const half = env.length / 2;
+    const loud = Math.max(...env.slice(0, half));
+    const quiet = Math.max(...env.slice(half));
+    // 0.1 describes the FIXTURE, not a property of the function: lavfi's
+    // `sine` emits at about -18 dB on this build rather than full scale, so
+    // the loud half peaks at 0.130 — which is also exactly what ffmpeg's own
+    // `astats` reports for this file (-17.689 dB), i.e. the decode agrees
+    // with ffmpeg to five figures. Raise the fixture's amplitude before
+    // raising this bound.
+    expect(loud).toBeGreaterThan(0.1);
+    expect(quiet).toBeLessThan(0.01);
   });
 });
 
