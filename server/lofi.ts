@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { clock } from "../src/format.ts";
 import { toolError } from "./errors.ts";
 import { probeAudio } from "./ffmpeg.ts";
 
@@ -409,6 +410,66 @@ export function clearProgress(): void {
   prog = null;
 }
 
+/** One line of progress, for the SERVER LOG rather than for the panel.
+ *
+ *  The panel polls `/api/lofi/progress` and renders its own bar; this exists
+ *  because that poll can stop — a closed tab, a reload, a dropped proxy
+ *  connection — while the render itself carries on to the end. A render is
+ *  minutes to hours of encoding, so losing all visibility into it because a
+ *  browser went away is the wrong failure, and the log is the one place that
+ *  cannot disconnect from the process doing the work.
+ *
+ *  `clock` rather than `mmss`, because `mmss` is the FILENAME spelling (no
+ *  separator, and minutes past 59 rather than an hour field) and a
+ *  three-hour render logs `02:41:12` here where `mmss` would say `16112`.
+ *
+ *  The percent is clamped at 100: ffmpeg's last block can land marginally
+ *  past the duration `probeAudio` reported, and `101%` reads as a defect in
+ *  the renderer rather than as the rounding it is. A `total` of 0 — what
+ *  `renderProgress` reports before either function has probed anything —
+ *  gives 0 rather than the NaN the division would otherwise produce. */
+export function progressLine(p: {
+  phase: "music" | "render";
+  done: number;
+  total: number;
+}): string {
+  const what = p.phase === "music" ? "joining tracks" : "rendering";
+  const pct = p.total > 0 ? Math.min(100, Math.round((p.done / p.total) * 100)) : 0;
+  return `${what} ${pct}% (${clock(p.done)}/${clock(p.total)})`;
+}
+
+/** How often the log ticker WAKES. What it prints is decided by the percent
+ *  having moved, so this is a resolution floor rather than a line rate. */
+const LOG_EVERY_MS = 10_000;
+
+/** Starts logging this render's progress; returns the stop.
+ *
+ *  Started and stopped by the two functions that already own `prog` and the
+ *  `.progress` file itself, in the same `finally` that removes it — the same
+ *  "each function cleans up its own litter" rule that kept the sidecar out of
+ *  `server/index.ts`. A route-level ticker would need to know when a render
+ *  began, which is exactly what these two already know and nothing else does.
+ *
+ *  Logs only when the whole percent MOVES, so a three-hour render is about a
+ *  hundred lines rather than one every ten seconds for three hours. The timer
+ *  is `unref`'d: a stop that somehow never ran must not hold the process open
+ *  at exit. */
+function logProgress(): () => void {
+  let last = -1;
+  const timer = setInterval(() => {
+    const p = renderProgress();
+    // Before ffmpeg's first block there is nothing to report and no
+    // denominator to report it against.
+    if (p.total <= 0) return;
+    const pct = Math.min(100, Math.round((p.done / p.total) * 100));
+    if (pct === last) return;
+    last = pct;
+    console.warn(`vstack: lofi ${progressLine(p)}`);
+  }, LOG_EVERY_MS);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
 /** Boot check for the assets this journey bundles. Hard, like
  *  `checkLongform`'s: a missing file fails a render that is minutes of
  *  encoding away from discovering it. */
@@ -475,6 +536,7 @@ export async function concatMusic(paths: string[], out: string): Promise<string>
 
   const total = probed.reduce((sum, p) => sum + p.seconds, 0);
   prog = { phase: "music", file: `${out}.progress`, total };
+  const stopLog = logProgress();
 
   try {
     await run(
@@ -499,6 +561,7 @@ export async function concatMusic(paths: string[], out: string): Promise<string>
     // `force: true` because ffmpeg may have died before its first block,
     // before the file was ever created — that must not raise a second error
     // masking the first.
+    stopLog();
     await rm(`${out}.progress`, { force: true });
   }
   return out;
@@ -588,6 +651,7 @@ export async function renderLofi(opts: {
   const { seconds } = await probeAudio(music);
   if (!(seconds > 0)) throw new Error(`Could not read a duration from ${music}.`);
   prog = { phase: "render", file: `${out}.progress`, total: seconds };
+  const stopLog = logProgress();
 
   // `probeAudio` on a speech too, for the same reason it is used on the
   // track: a speech may be a bare audio file, which `probeFile` refuses
@@ -958,6 +1022,7 @@ export async function renderLofi(opts: {
     // a filename convention to keep in sync with. `force: true` for the same
     // reason as above — a render can fail before ffmpeg writes its first
     // progress block.
+    stopLog();
     await rm(`${out}.progress`, { force: true });
   }
   return out;

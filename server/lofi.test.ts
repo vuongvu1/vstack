@@ -15,6 +15,7 @@ import {
   VIZ_RECT,
   concatMusic,
   parseProgress,
+  progressLine,
   renderLofi,
   renderProgress,
 } from "./lofi.ts";
@@ -284,6 +285,38 @@ describe("parseProgress", () => {
 
   it("survives ffmpeg's N/A before the first frame", () => {
     expect(parseProgress("out_time_us=N/A\nprogress=continue")).toBe(0);
+  });
+});
+
+describe("progressLine", () => {
+  it("names the phase, the percent and both clocks", () => {
+    expect(progressLine({ phase: "render", done: 430, total: 3600 })).toBe(
+      "rendering 12% (00:07:10/01:00:00)",
+    );
+  });
+
+  it("calls the pre-pass by its own name", () => {
+    expect(progressLine({ phase: "music", done: 30, total: 120 })).toBe(
+      "joining tracks 25% (00:00:30/00:02:00)",
+    );
+  });
+
+  // A total of 0 is what `renderProgress` reports before either function has
+  // probed anything. Dividing by it gives NaN or Infinity, and a log line
+  // reading `NaN%` is worse than no line — so the CALLER skips these, and
+  // this pins the value it tests against.
+  it("reports 0% rather than NaN for a total of 0", () => {
+    expect(progressLine({ phase: "render", done: 0, total: 0 })).toBe(
+      "rendering 0% (00:00:00/00:00:00)",
+    );
+  });
+
+  // ffmpeg's last block can land marginally past the duration probed from
+  // the source. 101% reads as a bug in the renderer rather than as rounding.
+  it("clamps past the end rather than reporting over 100%", () => {
+    expect(progressLine({ phase: "render", done: 61, total: 60 })).toBe(
+      "rendering 100% (00:01:01/00:01:00)",
+    );
   });
 });
 

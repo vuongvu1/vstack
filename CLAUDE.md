@@ -466,6 +466,22 @@ function clean up its own litter needs none. Found in review, not by a
 test — the failure is a `.progress` file left on the Desktop beside every
 finished render, not a wrong answer anything asserts on.
 
+The same two functions also TICK that file into the server log, and the
+reason is that the panel's poll can stop while the render cannot. A closed
+tab, a reload or a dropped proxy connection ends the polling; ffmpeg carries
+on to the end and writes the file. Losing every trace of an hour-long render
+because a browser went away is the wrong failure, so `logProgress` starts
+beside each `prog = {...}` and stops in the same `finally` that removes the
+sidecar — never the route, for the reason above. It logs only when the whole
+percent MOVES, which is what keeps a three-hour render to about a hundred
+lines rather than one every ten seconds, and the timer is `unref`'d so a stop
+that somehow never ran cannot hold the process open at exit. Note the two
+phases log very differently in practice: the render ticks throughout (measured
+at 17/35/53/70/88% on a four-minute fixture), while the music pre-pass joins
+sixty minutes of audio in 5.5s — audio-only, no video encode — so it usually
+finishes inside one tick and prints nothing at all. That is the pre-pass being
+fast rather than the ticker being broken.
+
 **Uploads are private and there is no option.** An unaudited YouTube Data API
 project has every `videos.insert` locked to private viewing. `buildSnippet`
 hardcodes `privacyStatus: "private"` and `selfDeclaredMadeForKids: false` —
