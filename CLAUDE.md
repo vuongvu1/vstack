@@ -1366,8 +1366,13 @@ gives bytes and a bare name, and the File System Access API hands back a
 handle rather than a location. `orderByPrefix` still works because the scan
 reports each filename, so the `1_` pin and the shuffle are unchanged.
 `lofiMusicDir`/`lofiSpeechDir` are module-scoped and unpersisted, the posture
-`lofiEnv` and `lofiCapped` hold; `ponytail:` a localStorage key of its own —
-the `saveVoice` shape — the day retyping a path each session grates.
+`lofiEnv` and `lofiCapped` hold, and they are SEEDED with this machine's own
+two folders (`~/Desktop/vstack/lofi` and `~/Desktop/vstack/speeches`) so the
+ordinary run is Scan, Scan, Render. `ponytail:` hardcoded rather than read
+from a localStorage key of their own — the `saveVoice` shape — which is what
+to write the day a second machine runs this or the folders move. The seed is
+a default and not an assumption: `mediaDir` still has to find the folder, so
+a stale one costs a 404 callout rather than a wrong render.
 
 **`MAX_SPEECHES` bounds the graph's INPUTS; `MAX_DROPS` bounds its LEGS, and
 neither cap is redundant with the other.** A speech recurring split what

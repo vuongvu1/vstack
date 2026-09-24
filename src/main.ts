@@ -1072,11 +1072,16 @@ let lofiCapped = false;
  *  would empty itself the moment a scan finished.
  *
  *  Module-scoped and NOT persisted, the same posture `lofiEnv` and
- *  `lofiCapped` hold: it describes the panel currently on screen. `ponytail:`
- *  a localStorage key of its own — the `saveVoice` shape — the day retyping
- *  a path each session grates. */
-let lofiMusicDir = "";
-let lofiSpeechDir = "";
+ *  `lofiCapped` hold: it describes the panel currently on screen.
+ *
+ *  Seeded with this machine's own two folders so the ordinary run is Scan,
+ *  Scan, Render rather than two paths typed from memory. `ponytail:` they
+ *  are hardcoded rather than read from a localStorage key of their own —
+ *  the `saveVoice` shape — which is what to write the day a second machine
+ *  runs this or the folders move. A wrong seed costs one 404 callout, not a
+ *  wrong render: `mediaDir` still has to find the folder. */
+let lofiMusicDir = "/Users/vuhoangvuong/Desktop/vstack/lofi";
+let lofiSpeechDir = "/Users/vuhoangvuong/Desktop/vstack/speeches";
 
 /** Each track's own loudness envelope, keyed by the absolute path
  *  `state.tracks` carries. The scan builds these once server-side; holding
