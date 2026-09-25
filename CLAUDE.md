@@ -137,8 +137,9 @@ server/longform.ts WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK,
                    stackWide (the long journey's one ffmpeg pass)
 server/lofi.ts     WIDE, FADE, TRACK_FADE, CRACKLE_PATH, LOGO_PATH/LOGO_RECT/
                    SPIN_SECONDS, spinAt/SPIN_EXPR (the wobbling spin, one
-                   rule in two languages), BREATH_SECONDS/GLOW_SECONDS,
-                   LOGO_FILTER (the mark's whole chain), VIZ_RECT/VIZ_BAR,
+                   rule in two languages), LOGO_REACH, hitsAt/markScaleAt
+                   (wall hits and the size each one picks), LOGO_FILTER
+                   (the mark's whole chain), VIZ_RECT/VIZ_BAR,
                    checkLofi,
                    concatMusic (the music pre-pass — several tracks dipped
                    at each seam into one file, or one track untouched),
@@ -1110,15 +1111,26 @@ the wrong version degrades every time the mark is enlarged. Bounding the box
 makes the clearance angle-independent and costs only that the upright mark
 sits `(LOGO_BOX - LOGO_SIZE) / 2` further in than the number suggests.
 
-The mark BOUNCES now, and it is the padded box that bounces for exactly the
-reason `LOGO_MARGIN` bounded it: `TRAVEL_X`/`TRAVEL_Y` are the frame less
-`LOGO_BOX`, so an arm at 45 degrees reaches a wall and never crosses it.
-Bouncing the mark's own 300px square instead would touch the wall exactly at
-0 and 90 and shear the corners off between them — the same defect this
-whole invariant exists to rule out, arriving from the other side. The cost
-is the mirror of the static one: at 0 and 90 the mark appears to stop
-`(LOGO_BOX - LOGO_SIZE) / 2` short of the edge, which reads as a margin
-rather than as a bug.
+The mark BOUNCES now, and it turns round on the DRAWING'S REACH rather than
+on its padded box. `LOGO_REACH` (165) is the farthest opaque pixel from the
+box's centre — 164.4px, measured off the asset — and rotation cannot move
+it, so it is the drawing's reach at EVERY angle. The box may therefore hang
+past a wall by exactly its transparent margin beyond that (`OVERHANG`, 48px,
+even-floored), and `TRAVEL_X`/`TRAVEL_Y` are the frame less the box PLUS an
+overhang at each end. The drawing then meets the wall at a hit, and nothing
+is clipped at 45 degrees or anywhere else, which is the point of this whole
+invariant.
+
+It used to bounce the padded box itself, which kept the no-clipping promise
+but left the drawing turning back about 100px short of the wall — invisible
+while nothing happened at a hit, and glaring once the size and glow colour
+started changing there (below). The honest limit of the fix: contact is
+exact only when the farthest part of the drawing — feet or head — points at
+the wall. With the round vinyl facing it the mark stops about 40px short,
+and a smaller size adds up to ~23px more. Contact at every angle needs a
+travel that changes with the angle, which one triangle wave cannot express.
+`LOGO_REACH` is re-measured from the asset by a test, so a replacement logo
+that reaches further fails there rather than being clipped at a wall.
 
 `bounce` and `bounceExpr` are ONE RULE IN TWO LANGUAGES — the same triangle
 wave `abs(mod(u, 2r) - r)` in TypeScript and in an ffmpeg expression — and
@@ -1127,6 +1139,13 @@ constants, and what proves they agree is `server/lofi.test.ts` cropping a
 real render at `logoAt(t)` and finding the mark there, with the mirrored box
 empty. Drift them and the crop follows the wrong spelling and finds
 background.
+
+That crop test is COARSE, and the edge-touching bounce is what exposed it:
+dropping the 48px overhang from the ffmpeg side alone, `logoAt` untouched,
+passed every test in the file, because a mark 48px off still overlaps the
+crop. A sharper one now takes the centroid of every pixel well away from the
+background in a window round `logoAt(2)` and requires it within 4px of the
+box's centre; the same mutation fails it at 45.35.
 
 Two smaller details of that overlay are load-bearing. `overlay`'s `eval`
 defaults to `frame` (verified on this build), which is what makes a
@@ -1172,27 +1191,63 @@ unchanged frame for frame. The value has to be QUOTED (`a='...'`) for the
 same reason `bounceExpr`'s does — the comma inside `mod(t,10)` would
 otherwise end the `rotate` mid-expression.
 
-**The mark carries three appearance effects on top of the spin and the
-bounce, and every one of them leaves the POSITION contract alone.** The bounce is exactly as
-it was — `bounce`/`bounceExpr`/`logoAt` are untouched — because a wandering
-path was offered and turned down in favour of the DVD wall-bounce. What
-moves is the picture inside the padded box: breathing, a gentle hue swing,
-and a cycling glow. Their periods (5.7, 13 and 19s, against the spin's 10)
-are deliberately incommensurate, and that is where the variety comes from:
-no per-frame `random()`, which is reproducible across runs (measured) but
-white noise frame to frame, so it strobes.
+**On every wall hit the mark takes a new SIZE and its glow a new COLOUR, and
+holds both until the next hit — and nothing about either changes between
+hits.** The DVD screensaver's own trick. Neither touches the position
+contract; both are keyed to the hit COUNT.
 
-- **No wobble on the spin, and that is a reversal worth knowing about.** A
-  wobbling spin — an extra `sin` on the angle, so the speed swelled, eased
-  and turned back about an eighth of the time — shipped for one review and
-  was removed at the user's request. A pure-TS test pins a constant forward
-  rate so it does not creep back in. If it is ever wanted again, the extra
-  term must be `mod`'d into its own period like the spin is, or the angle
-  stops being bounded.
+- **`hitsAt(t)` counts wall hits on both axes.** A triangle wave over
+  `[0, range]` touches a wall each time its argument crosses a multiple of
+  `range`, so the count is `floor(u_x / TRAVEL_X) + floor(u_y / TRAVEL_Y)`
+  less its value at t=0 — a pure function of `t`, spelled again as
+  `HITS_EXPR` inside `LOGO_FILTER`. One rule in two languages again, and
+  proven twice: a pure-TS test requires every step of the count to land
+  within three frames of a frame where `logoAt` visibly turns round, and
+  the render test below requires the GRAPH's size and colour to step at the
+  hit `hitsAt` names. A CORNER is both walls on one frame and steps the
+  count by two — still one visible change. The first corner is at 8m49s,
+  and the path brings one round every lap (17m40s; the travel box is
+  1590x750, which reduces to a tidy 53/25). The first version of the
+  pure-TS test counted steps rather than their size and came up one short
+  on exactly that corner.
+- **Size steps along a golden-ratio sequence**, `1 - 0.15 * frac(h * phi)`
+  for hit `h`: full size on the opening frame, neighbouring hits always well
+  apart, never a visible pattern. SHRINK ONLY, because a mark larger than
+  `LOGO_SIZE` would put its corners past `LOGO_BOX` and `rotate` would shear
+  them. `pad` needs `eval=frame` to follow a `scale=eval=frame`: it computes
+  its offset once by default, and a resized mark then sat 31px off-centre
+  in its box.
+- **The glow turns by the golden ANGLE (137.5 degrees) on each hit**, an
+  instant snap, so every colour lands far round the wheel from the last. It
+  is built at an EIGHTH of the box, one flat colour whose ALPHA alone is
+  blurred, recoloured by one `hue` rotation — each a measured saving over
+  the first version (quarter size, all four planes blurred, three per-pixel
+  sines): 3.95s against 2.88s per 60s of the logo leg alone, the halos
+  indistinguishable. The vinyl is round, so the halo stays inside the box
+  at every angle.
+- **The character keeps her own colours.** A hue shift on the mark itself
+  was tried twice and removed: a full rotation turns her skin green, blue
+  or violet at every angle but zero, and even the ±30 degree swing that
+  survived one review was taken out when the colour change moved to the
+  hits.
+
+Measured on the real chain at the first long-quiet hit (8.83s, size 1.000
+→ 0.907): opaque area 0.822 against the 0.823 the sizes predict, then
+1.0002 two seconds later at another angle; glow colour moving 308.8 across
+the hit and 0.1 after it.
+
+**Three continuous versions came before this, and each went after one
+review at the user's request** — worth knowing before any is "improved"
+back in. A WOBBLING spin (an extra `sin` on the angle, so the speed swelled,
+eased and turned back an eighth of the time): the spin is steady again,
+and a pure-TS test pins a constant forward rate. BREATHING on a 5.7s cycle,
+and the glow walking the wheel every 19s: both replaced by the per-hit
+steps above. And the ±30 degree hue swing: gone.
+
 - **`spinAt` and `SPIN_EXPR` are ONE RULE IN TWO LANGUAGES**, the
   `bounce`/`bounceExpr` pair's twin — kept as a pair even for a plain spin,
-  because the mark's picture now changes for three other reasons, so a test
-  that only checked the composed mark kept changing would pass with the spin
+  because the mark's picture changes for other reasons too, so a test that
+  only checked the composed mark kept changing would pass with the spin
   frozen solid. What proves they agree is `server/lofi.test.ts` rendering
   the expression over time and a CONSTANT angle computed by `spinAt` for the
   same instant, on a still copy of the mark, and requiring the pictures to
@@ -1202,39 +1257,17 @@ white noise frame to frame, so it strobes.
   against a bound of 1. It runs at 2 fps for the reason the ceiling test did
   — every effect here is a function of the timestamp, not of how many frames
   it took to reach it.
-- **Breathing SHRINKS only, and `pad` needs `eval=frame` to follow it.**
-  Growing past `LOGO_SIZE` would put the mark's diagonal past `LOGO_BOX` and
-  `rotate` would shear its corners. And `pad` computes its offset ONCE by
-  default, while `scale=eval=frame` changes the size under it every frame —
-  measured, the shrunk mark sat 31px off-centre in its box until `pad` was
-  told `eval=frame`, after which its centroid is at 213.0/212.2 in a
-  426 box. The test asserts the opaque-area ratio (0.723, i.e. 0.85²) AND
-  the centroid.
-- **The hue swing is capped at ±30 degrees because the mark is a
-  character.** A full hue rotation was rendered and looked at first: at
-  every angle but zero her skin goes green, blue or violet. Thirty degrees
-  moves the shirt teal-to-blue and leaves the face alone. It runs BEFORE
-  `pad`, on the ~300px mark rather than the mostly-transparent 426 box.
-- **The glow is built at an EIGHTH of the box, one flat colour whose ALPHA
-  alone is blurred, cycled by one `hue` rotation.** Each of those is a
-  measured saving over the first version (quarter size, all four planes
-  blurred, colour walked by three per-pixel sines): 3.95s against 2.88s per
-  60s of the logo leg alone, with the two halos indistinguishable side by
-  side. The vinyl is round, so the halo's spread stays inside the 426 box at
-  every angle — nothing is clipped as it turns.
 
 The full-render spin test no longer pins the period — it used to require a
-full turn to match t=0, and nothing matches t=0 any more once four effects
-on four unrelated periods are layered on the mark. It asserts only that the
-composed render keeps moving; the period lives in the agreement test above,
-where the angle can be isolated.
+full turn to match t=0, and the size and glow no longer promise that. It
+asserts only that the composed render keeps moving; the period lives in the
+agreement test above, where the angle can be isolated.
 
-**Those effects cost render time, and it was measured rather than
-guessed.** A 60s render went 14s → 19.5s with everything on, i.e. about
-+40%, which takes a three-hour mix from roughly 42 minutes to 59. Per 60s
-of the logo leg in isolation (1.6s with the spin alone): the glow is the
-largest share, the hue swing next, breathing under a second. The first cut
-was +150% (35s), almost all of it the bars' rainbow — see the bars below.
+**Render cost, measured.** A 60s render: 14s before any of this, 15.7s now
+— about +12%, most of it the glow. On the way it was +150% (the bars'
+rainbow spelled per pixel, see below) and then +40% (the continuous
+breathing, hue swing and glow cycle, all per frame); the per-hit version is
+cheaper because nothing but the glow's recolour does work between hits.
 
 The mark is bundled and unconditional — there is no way to turn it off and
 no upload behind it, the same posture the crackle takes. Its input is
@@ -2245,11 +2278,18 @@ across time and asserts only that it keeps changing; the PERIOD and the
 `spinAt` on a still mark (0.000 at six instants, 14.23 with the `mod`
 dropped), and two pure-TS tests pin `spinAt` itself: bounded by one turn
 across four days of timeline, and a steady forward rate of one turn per
-`SPIN_SECONDS` — the test that keeps the removed wobble out. Breathing is pinned
-on the shipped `LOGO_FILTER` by opaque area (0.723) and by centroid — the
-latter is what catches `pad` without `eval=frame` (31px off). The glow is
-pinned by its soft-alpha pixels (21,730 against the bare mark's 881) and by
-their mean colour moving 276 across a third of `GLOW_SECONDS`.
+`SPIN_SECONDS` — the test that keeps the removed wobble out. Position is
+pinned twice: pure arithmetic that the DRAWING (box centre ± `LOGO_REACH`)
+stays inside the frame and reaches within 5px of all four walls, and the
+centroid test within 4px of `logoAt`'s centre (45.35 with the overhang
+dropped from the ffmpeg side only). `LOGO_REACH` is re-measured off the
+asset. The hits: `hitsAt` steps within three frames of every turn `logoAt`
+makes, a corner counting two; and on the shipped `LOGO_FILTER` across a real
+hit, the opaque area follows the size `markScaleAt` names (shifting the
+graph's hit count by 100px of travel fails it, 0.9998 against 0.823) and
+holds to within 2% two seconds later, the glow's colour jumps and then
+holds, and a mark at its smallest size stays centred in its box (31px off
+without `pad`'s `eval=frame`).
 
 The bar tests measure DISTANCE from the teal, not brightness, since the
 bars went coloured — a rainbow bar can be darker than the background, or

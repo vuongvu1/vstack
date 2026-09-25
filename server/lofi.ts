@@ -228,29 +228,33 @@ export function spinAt(t: number): number {
  *  QUOTED, for the comma reason `bounceExpr` records. */
 export const SPIN_EXPR = `2*PI*mod(t,${SPIN_SECONDS})/${SPIN_SECONDS}`;
 
-/** Breathing: the mark shrinks to `BREATH_MIN` of `LOGO_SIZE` and back once
- *  every `BREATH_SECONDS`, starting full-size at t=0.
+/** On every wall hit the mark takes a new SIZE and its glow a new COLOUR,
+ *  and holds both until the next hit — the DVD screensaver's own trick.
+ *  Nothing about either changes BETWEEN hits.
  *
- *  SHRINK ONLY, and that is geometry rather than taste. `LOGO_BOX` is the
- *  diagonal of `LOGO_SIZE`; a mark breathing larger than that would put its
- *  corners past the box `rotate` renders into, and they would be sheared at
- *  45 degrees — the very defect the diagonal pad exists to prevent. */
-const BREATH_MIN = 0.85;
-export const BREATH_SECONDS = 5.7;
+ *  Size steps along a golden-ratio sequence, `1 - (1 - SIZE_MIN) *
+ *  frac(h * phi)` for the h-th hit: neighbouring hits always land well
+ *  apart and the run never falls into a visible pattern, and hit 0 — the
+ *  opening frame — is full size. SHRINK ONLY, and that is geometry rather
+ *  than taste: `LOGO_BOX` is the diagonal of `LOGO_SIZE`, and a mark larger
+ *  than that would put its corners past the box `rotate` renders into.
+ *
+ *  The glow's colour turns by the golden ANGLE on each hit, so every colour
+ *  is far round the wheel from the one before it. An instant snap, not a
+ *  fade — that is the effect being imitated.
+ *
+ *  Both replaced continuous versions (breathing on a 5.7s cycle, the glow
+ *  walking the wheel every 19s, and a gentle ±30 degree hue swing on the
+ *  mark itself) after one review, at the user's request. The hue swing went
+ *  altogether: the character keeps her own colours. */
+const SIZE_MIN = 0.85;
+const GOLDEN = 0.6180339887498949;
+const GOLDEN_ANGLE = 137.50776405003785;
 
-/** A gentle hue swing on the mark itself: at most `HUE_SWING` degrees either
- *  way over `HUE_SECONDS`. Gentle on purpose — the mark is a character, and
- *  a full hue rotation turns her skin green, blue and violet for most of
- *  each cycle (rendered and looked at before this was written). Thirty
- *  degrees moves her shirt from teal to blue and leaves her face alone. */
-const HUE_SWING = 30;
-const HUE_SECONDS = 13;
-
-/** The coloured halo behind the vinyl, cycling once round the colour wheel
- *  every `GLOW_SECONDS`.
+/** The halo behind the vinyl.
  *
  *  Built at an EIGHTH of the box's size and scaled back up, one flat colour
- *  whose ALPHA alone is blurred, and cycled by a single `hue` rotation —
+ *  whose ALPHA alone is blurred, and recoloured by a single `hue` rotation —
  *  every one of those is a measured saving over the first version, which
  *  worked at a quarter size, blurred all four planes, and walked the colour
  *  with three per-pixel sines. Timed on 60s of the logo leg alone: 3.95s
@@ -261,11 +265,10 @@ const HUE_SECONDS = 13;
  *  eighth-size pixels; `GLOW_GAIN` lifts the blurred alpha back up so the
  *  halo reads near the edge rather than fading out the instant it leaves
  *  the mark. */
-export const GLOW_SECONDS = 19;
 const GLOW_SIGMA = 1.75;
 const GLOW_GAIN = 1.6;
-/** The colour the halo starts from; `hue` walks it round the wheel. A
- *  saturated magenta, so every hue it is rotated through stays vivid. */
+/** The colour the halo starts from at hit 0; each hit turns it on round the
+ *  wheel. A saturated magenta, so every hue it is turned to stays vivid. */
 const GLOW_COLOUR = { r: 255, g: 40, b: 200 };
 
 /** The square the mark rotates INSIDE, and it must be at least the mark's
@@ -291,6 +294,20 @@ const LOGO_BOX = Math.ceil((LOGO_SIZE * Math.SQRT2) / 2) * 2;
 const even = (v: number) => Math.floor(v / 2) * 2;
 const LOGO_X = even(WIDE.w - LOGO_MARGIN - LOGO_BOX);
 const LOGO_Y = even(LOGO_MARGIN);
+
+/** How far the DRAWING reaches from the centre of its box: the farthest
+ *  opaque pixel, which rotation cannot move, so it is the drawing's reach
+ *  at every angle. Measured off the asset at `LOGO_SIZE` — 164.4px — and
+ *  rounded up; `server/lofi.test.ts` measures it again from the file, so a
+ *  new logo that reaches further fails there instead of being clipped at a
+ *  wall. */
+export const LOGO_REACH = 165;
+
+/** How far the padded box may hang past a wall: exactly its transparent
+ *  margin beyond `LOGO_REACH`, floored to even for the overlay-offset
+ *  reason. This is what lets the drawing itself TOUCH the wall at a hit
+ *  rather than turning round with the empty corner of its box. */
+const OVERHANG = even(LOGO_BOX / 2 - LOGO_REACH);
 
 /** The frequency bars along the bottom, drawn from the render's own finished
  *  mix — music, speech and crackle together, not the music alone.
@@ -333,39 +350,52 @@ const VIZ_FILL = 7;
  *  One speed rather than two, which is what the screensaver this imitates
  *  does: it travels at 45 degrees and the wander comes from the frame not
  *  being square, not from the axes disagreeing. Here the travel box is
- *  1494x654, so the two bounce periods are 39.8s and 17.4s and the path
- *  takes about 72 minutes to repeat — long enough that nothing short of a
- *  full-length render could show it.
+ *  1590x750, so the two bounce periods are 42.4s and 20s and the PATH
+ *  repeats every 17m40s — much sooner than the 72 minutes the smaller box
+ *  gave before the bounce turned on the drawing's reach, because 1590/750
+ *  is the tidy 53/25. What a viewer watches does not repeat with it: the
+ *  size and glow colour step along golden-ratio sequences keyed to the hit
+ *  COUNT, which only ever grows. The path does bring a true corner hit
+ *  round every lap — the first at 8m49s — which is the screensaver's own
+ *  party trick rather than a defect.
  *
  *  75 px/s crosses the frame in about 20 seconds, roughly the pace of the
  *  original. A lofi mix is background, and a mark that hurries competes
  *  with the bars for an attention neither of them should be asking for. */
 const BOUNCE_SPEED = 75;
 
-/** How far the PADDED box may travel on each axis before it turns round.
+/** How far the box travels on each axis before it turns round: the frame
+ *  less the box, PLUS an `OVERHANG` at each end.
  *
- *  The padded box, never the mark: `LOGO_BOX` is the diagonal, so bouncing
- *  it is what keeps the spinning arms from being clipped at a wall at 45
- *  degrees — the same call `LOGO_MARGIN` already makes for a mark that
- *  stays still. It costs a visible gap: at 0 and 90 degrees the mark
- *  appears to stop `(LOGO_BOX - LOGO_SIZE) / 2` short of the edge and only
- *  at 45 does an arm reach it. Bouncing the mark's own square instead would
- *  touch exactly at the cardinal angles and shear the corners off between
- *  them, which is the worse half of the same trade. */
-const TRAVEL_X = WIDE.w - LOGO_BOX;
-const TRAVEL_Y = WIDE.h - LOGO_BOX;
+ *  It turns round on the drawing's REACH, not on the padded box. The box is
+ *  the diagonal of the square image, but the drawing inside it is a round
+ *  vinyl and a figure, and bouncing the box left the drawing turning back
+ *  roughly 100px short of the wall — invisible while nothing happened at a
+ *  hit, glaring once the size and colour change there. `LOGO_REACH` is the
+ *  drawing's reach at EVERY angle, so letting the box overhang by its
+ *  transparent margin still clips nothing, at 45 degrees or anywhere else.
+ *
+ *  Exact contact happens only when the farthest part of the drawing — the
+ *  feet or the head — points at the wall; with the round vinyl facing it,
+ *  the mark stops about 40px short, and a smaller size adds up to another
+ *  ~23px. Contact at every angle would need a travel that changes with the
+ *  angle, which a per-frame triangle wave cannot express. */
+const TRAVEL_X = WIDE.w - LOGO_BOX + 2 * OVERHANG;
+const TRAVEL_Y = WIDE.h - LOGO_BOX + 2 * OVERHANG;
 
 /** Phase offsets, in PIXELS along each axis's own sweep rather than in
  *  seconds, so they share units with the modulus they feed.
  *
  *  Chosen so the mark STARTS exactly where it used to sit — `logoAt(0)` is
  *  the old top-right corner — which keeps the opening frame of every render
- *  identical to the one it had before the mark could move. `TRAVEL_X -
- *  LOGO_X` is below the turning point, so x opens heading left; `TRAVEL_Y +
- *  LOGO_Y` is past it, so y opens heading down. Both therefore start with
+ *  identical to the one it had before the mark could move. Both are
+ *  measured from the overhung start of the sweep (`+ OVERHANG`), since the
+ *  sweep now begins that far off-frame. `TRAVEL_X - (LOGO_X + OVERHANG)` is
+ *  below the turning point, so x opens heading left; `TRAVEL_Y + (LOGO_Y +
+ *  OVERHANG)` is past it, so y opens heading down. Both therefore start with
  *  the whole frame in front of them rather than bouncing immediately. */
-const PHASE_X = TRAVEL_X - LOGO_X;
-const PHASE_Y = TRAVEL_Y + LOGO_Y;
+const PHASE_X = TRAVEL_X - (LOGO_X + OVERHANG);
+const PHASE_Y = TRAVEL_Y + (LOGO_Y + OVERHANG);
 
 /** One axis of the bounce: a triangle wave over `[0, range]`.
  *
@@ -401,8 +431,39 @@ function bounce(u: number, range: number): number {
  *  TypeScript template literal as well as a filtergraph token, and `\,` in
  *  a template literal is just a comma again. */
 function bounceExpr(phase: number, range: number): string {
-  return `2*floor(abs(mod(${BOUNCE_SPEED}*t+${phase},${2 * range})-${range})/2)`;
+  return `2*floor(abs(mod(${BOUNCE_SPEED}*t+${phase},${2 * range})-${range})/2)-${OVERHANG}`;
 }
+
+/** Hits so far on one axis, counted from wherever the phase starts it: a
+ *  triangle wave over `[0, range]` touches a wall each time its argument
+ *  crosses a multiple of `range`. */
+const axisHits = (u: number, range: number) => Math.floor(u / range);
+const HITS_AT_ZERO = axisHits(PHASE_X, TRAVEL_X) + axisHits(PHASE_Y, TRAVEL_Y);
+
+/** Wall hits since the render began, on both axes together — a corner is
+ *  two at once. The TypeScript spelling of `HITS_EXPR`; the two are one
+ *  rule in two languages, like `bounce` and `bounceExpr`, and
+ *  `server/lofi.test.ts` checks this one steps exactly where `logoAt` turns
+ *  round and that the graph's size and colour step at the same instants. */
+export function hitsAt(t: number): number {
+  return (
+    axisHits(BOUNCE_SPEED * t + PHASE_X, TRAVEL_X) +
+    axisHits(BOUNCE_SPEED * t + PHASE_Y, TRAVEL_Y) -
+    HITS_AT_ZERO
+  );
+}
+const HITS_EXPR =
+  `(floor((${BOUNCE_SPEED}*t+${PHASE_X})/${TRAVEL_X})+` +
+  `floor((${BOUNCE_SPEED}*t+${PHASE_Y})/${TRAVEL_Y})-${HITS_AT_ZERO})`;
+
+/** The mark's size at `t`, as a fraction of `LOGO_SIZE`. */
+export function markScaleAt(t: number): number {
+  const g = hitsAt(t) * GOLDEN;
+  return 1 - (1 - SIZE_MIN) * (g - Math.floor(g));
+}
+const SCALE_EXPR =
+  `${LOGO_SIZE}*(1-${(1 - SIZE_MIN).toFixed(4)}*(${HITS_EXPR}*${GOLDEN}-floor(${HITS_EXPR}*${GOLDEN})))`;
+const GLOW_HUE_EXPR = `mod(${GOLDEN_ANGLE}*${HITS_EXPR},360)`;
 
 /** The mark's own chain, from the raw PNG to a rotated RGBA frame.
  *
@@ -441,31 +502,29 @@ function bounceExpr(phase: number, range: number): string {
  *  filters against the asset: what goes wrong here only shows up an hour
  *  into a timeline, which is far past what a real 1920x1080 render can be
  *  asked to produce inside a test. */
-const BREATH_EXPR =
-  `${LOGO_SIZE}*(1-${(1 - BREATH_MIN).toFixed(4)}*(0.5-0.5*cos(2*PI*mod(t,${BREATH_SECONDS})/${BREATH_SECONDS})))`;
 const GLOW_EIGHTH = Math.floor(LOGO_BOX / 8);
 export const LOGO_FILTER =
   `format=rgba,` +
-  `scale=w='${BREATH_EXPR}':h='${BREATH_EXPR}':force_original_aspect_ratio=decrease:eval=frame,` +
-  `hue=h='${HUE_SWING}*sin(2*PI*mod(t,${HUE_SECONDS})/${HUE_SECONDS})',` +
+  `scale=w='${SCALE_EXPR}':h='${SCALE_EXPR}':force_original_aspect_ratio=decrease:eval=frame,` +
   `pad=${LOGO_BOX}:${LOGO_BOX}:(ow-iw)/2:(oh-ih)/2:color=0x00000000:eval=frame,` +
   `split[lmark][lglow];` +
   `[lglow]scale=${GLOW_EIGHTH}:${GLOW_EIGHTH},` +
   `geq=r=${GLOW_COLOUR.r}:g=${GLOW_COLOUR.g}:b=${GLOW_COLOUR.b}:a='alpha(X,Y)',` +
   `gblur=sigma=${GLOW_SIGMA}:planes=8,colorchannelmixer=aa=${GLOW_GAIN},` +
-  `hue=h='360*mod(t,${GLOW_SECONDS})/${GLOW_SECONDS}',` +
+  `hue=h='${GLOW_HUE_EXPR}',` +
   `scale=${LOGO_BOX}:${LOGO_BOX}:flags=bilinear[lhalo];` +
   `[lhalo][lmark]overlay=format=auto,` +
   `rotate=a='${SPIN_EXPR}':c=none`;
 
-/** Where the mark's padded box is at `t` seconds. Exported so the test can
+/** Where the mark's padded box is at `t` seconds — which may be partly off
+ *  the frame, by up to `OVERHANG`, at a wall. Exported so the test can
  *  follow it: with the mark moving there is no longer a fixed rect to crop,
  *  and a second copy of this arithmetic in the test file would drift the
  *  first time the speed is retuned. */
 export function logoAt(t: number): { x: number; y: number; side: number } {
   return {
-    x: bounce(BOUNCE_SPEED * t + PHASE_X, TRAVEL_X),
-    y: bounce(BOUNCE_SPEED * t + PHASE_Y, TRAVEL_Y),
+    x: bounce(BOUNCE_SPEED * t + PHASE_X, TRAVEL_X) - OVERHANG,
+    y: bounce(BOUNCE_SPEED * t + PHASE_Y, TRAVEL_Y) - OVERHANG,
     side: LOGO_BOX,
   };
 }

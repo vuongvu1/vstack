@@ -8,12 +8,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BUCKETS_PER_SEC } from "../src/lofi.ts";
 import { probeAudio, probeFile } from "./ffmpeg.ts";
 import {
-  BREATH_SECONDS,
   FADE,
-  GLOW_SECONDS,
+  hitsAt,
   LOGO_FILTER,
   LOGO_PATH,
+  LOGO_REACH,
   LOGO_RECT,
+  markScaleAt,
   SPIN_EXPR,
   logoAt,
   SPIN_SECONDS,
@@ -35,6 +36,9 @@ const run = promisify(execFile);
  *  from `WIDE` because this file already hardcodes 1920 in `pixelAt`. */
 const WIDE_W = 1920;
 const WIDE_H = 1080;
+/** The render's frame rate, which is the grid `overlay` evaluates the
+ *  bounce on. Written down rather than imported for the reason WIDE_W is. */
+const RENDER_FPS = 30;
 
 let dir = "";
 /** A flat teal background picture — the render's ONLY picture. */
@@ -955,33 +959,106 @@ describe("renderLofi", () => {
   // from the pixel test above for the reason the corner assertion is: a
   // test that crops wherever `logoAt` points cannot also be what proves
   // `logoAt` is right.
-  it("keeps the padded box inside the frame at every instant", () => {
-    for (let t = 0; t <= 120; t += 0.37) {
-      const { x, y, side } = logoAt(t);
-      expect(x).toBeGreaterThanOrEqual(0);
-      expect(y).toBeGreaterThanOrEqual(0);
-      expect(x + side).toBeLessThanOrEqual(WIDE_W);
-      expect(y + side).toBeLessThanOrEqual(WIDE_H);
-      // Even on both axes, for the reason every overlay offset here is.
-      expect(x % 2).toBe(0);
-      expect(y % 2).toBe(0);
+  it("is drawn exactly where logoAt says, to within a few pixels", async () => {
+    // The sharp version of the test above. That one proves the mark is IN
+    // the box `logoAt` names; it cannot tell a box that is right from one
+    // that is 48px off, because a shifted mark still overlaps the crop —
+    // measured: dropping the overhang from the ffmpeg expression alone, with
+    // `logoAt` left alone, passed every other test in this file. With the
+    // bounce now turning on the drawing's reach, being right to the pixel is
+    // what "touches the wall" means.
+    //
+    // So: every pixel well away from the flat teal, in a window round the
+    // box, and their centroid against the box's centre. The drawing is near
+    // enough symmetric that its own centroid sits within a pixel of centre.
+    // t=2, where the whole window is clear of the bars' band.
+    const t = 2;
+    const { x, y, side } = logoAt(t);
+    const pad = 60;
+    const wx = Math.max(0, x - pad);
+    const wy = Math.max(0, y - pad);
+    const ww = Math.min(WIDE_W, x + side + pad) - wx;
+    const wh = Math.min(WIDE_H - VIZ_RECT.h, y + side + pad) - wy;
+    const win = await regionAt(out, t, wx, wy, ww, wh);
+    let sx = 0;
+    let sy = 0;
+    let n = 0;
+    for (let p = 0; p < ww * wh; p++) {
+      const i = p * 3;
+      if (Math.hypot((win[i] ?? 0) - 0x10, (win[i + 1] ?? 0) - 0x80, (win[i + 2] ?? 0) - 0x80) < 60) continue;
+      sx += p % ww;
+      sy += Math.floor(p / ww);
+      n++;
     }
+    expect(n).toBeGreaterThan(10_000);
+    expect(Math.abs(wx + sx / n - (x + side / 2))).toBeLessThan(4);
+    expect(Math.abs(wy + sy / n - (y + side / 2))).toBeLessThan(4);
+  }, 120_000);
+
+  it("keeps the DRAWING inside the frame, and lets it reach every wall", () => {
+    // The bounce turns round on the drawing's own reach, not on its padded
+    // box: the box may hang up to its transparent margin past the frame, so
+    // the farthest opaque pixel — `LOGO_REACH` from the centre, at every
+    // angle — meets the wall at a hit instead of turning back ~100px short
+    // of it. Sampled on the render's own frame grid, which is where
+    // `overlay` evaluates the position.
+    const half = LOGO_RECT.side / 2;
+    const lo = { x: Infinity, y: Infinity };
+    const hi = { x: -Infinity, y: -Infinity };
+    let odd = 0;
+    for (let k = 0; k <= 600 * RENDER_FPS; k++) {
+      const { x, y } = logoAt(k / RENDER_FPS);
+      if (x % 2 !== 0 || y % 2 !== 0) odd++;
+      lo.x = Math.min(lo.x, x + half - LOGO_REACH);
+      lo.y = Math.min(lo.y, y + half - LOGO_REACH);
+      hi.x = Math.max(hi.x, x + half + LOGO_REACH);
+      hi.y = Math.max(hi.y, y + half + LOGO_REACH);
+    }
+    // Even on both axes, for the reason every overlay offset here is.
+    expect(odd).toBe(0);
+    // Never past a wall...
+    expect(lo.x).toBeGreaterThanOrEqual(0);
+    expect(lo.y).toBeGreaterThanOrEqual(0);
+    expect(hi.x).toBeLessThanOrEqual(WIDE_W);
+    expect(hi.y).toBeLessThanOrEqual(WIDE_H);
+    // ...and right up to every one of them. The slack is one frame's travel
+    // (2.5px at 75px/s) plus the even-floor, since the nearest frame to a
+    // wall is rarely the instant of contact.
+    expect(lo.x).toBeLessThan(5);
+    expect(lo.y).toBeLessThan(5);
+    expect(hi.x).toBeGreaterThan(WIDE_W - 5);
+    expect(hi.y).toBeGreaterThan(WIDE_H - 5);
   });
 
-  it("bounces rather than drifting off or standing still", () => {
-    // Moves at all — the assertion that fails if the expression is ever
-    // replaced by a constant offset again.
-    expect(logoAt(5)).not.toEqual(logoAt(0));
-    // And turns round: over a full horizontal period the mark must visit
-    // both ends of its travel rather than running out of the frame.
-    let min = Infinity;
-    let max = -Infinity;
-    for (let t = 0; t <= 45; t += 0.13) {
-      min = Math.min(min, logoAt(t).x);
-      max = Math.max(max, logoAt(t).x);
+  it("counts a hit at every wall touch, and nowhere else", () => {
+    // The size and the glow's colour step on a hit, so the hit count must
+    // move exactly when the mark turns round — on either axis — and at no
+    // other frame. Turning round is read straight off `logoAt` as a change of
+    // direction, independently of how `hitsAt` is computed.
+    const turns: number[] = [];
+    const steps: number[] = [];
+    let dir = { x: 0, y: 0 };
+    let prev = logoAt(0);
+    for (let k = 1; k <= 600 * RENDER_FPS; k++) {
+      const cur = logoAt(k / RENDER_FPS);
+      for (const axis of ["x", "y"] as const) {
+        const d = Math.sign(cur[axis] - prev[axis]);
+        if (d !== 0 && dir[axis] !== 0 && d !== dir[axis]) turns.push(k);
+        if (d !== 0) dir = { ...dir, [axis]: d };
+      }
+      // A CORNER is both walls on one frame: the count steps by two there,
+      // and both turns land on that frame. One such corner falls inside
+      // this ten-minute sweep, at frame 15,865 (8m49s) — the first version
+      // of this test counted steps rather than their size and was one short.
+      const jump = hitsAt(k / RENDER_FPS) - hitsAt((k - 1) / RENDER_FPS);
+      for (let j = 0; j < jump; j++) steps.push(k);
+      prev = cur;
     }
-    expect(min).toBeLessThan(20);
-    expect(max).toBeGreaterThan(WIDE_W - LOGO_RECT.side - 20);
+    expect(turns.length).toBeGreaterThan(50);
+    expect(steps.length).toBe(turns.length);
+    // Within a couple of frames of each other: a turn is only VISIBLE once
+    // the even-floored position has moved back the other way.
+    for (const [i, k] of steps.entries()) expect(Math.abs(k - turns[i]!)).toBeLessThanOrEqual(3);
   });
 
   it("keeps turning in the real render", async () => {
@@ -1034,42 +1111,75 @@ describe("renderLofi", () => {
     for (const i of times.keys()) expect(boxDiff(got[i]!, want[i]!)).toBeLessThan(1);
   }, 120_000);
 
-  it("breathes smaller and back, and stays centred while it does", async () => {
-    // Breathing only ever SHRINKS the mark from `LOGO_SIZE`: growing past it
-    // would push the mark's diagonal past `LOGO_BOX` and `rotate` would shear
-    // its corners, the defect the diagonal pad exists to rule out. So the
-    // opaque area at the smallest breath is about BREATH_MIN^2 of the
-    // largest — rotation preserves area, so the spin between the two
-    // samples does not disturb the ratio.
-    const [big, small] = await markFrames(LOGO_FILTER, [0, BREATH_SECONDS / 2], 20);
-    const ratio = opaqueArea(small!) / opaqueArea(big!);
-    expect(ratio).toBeLessThan(0.8);
-    expect(ratio).toBeGreaterThan(0.6);
+  it("measures LOGO_REACH off the asset itself", async () => {
+    // The bounce turns round on this number, so it has to be the drawing's
+    // real reach — the farthest opaque pixel from the centre, which rotation
+    // cannot change. Measured here rather than trusted, so replacing the logo
+    // with a bigger drawing fails loudly instead of clipping it at a wall.
+    const [still] = await markFrames(STILL_MARK, [0]);
+    const side = LOGO_RECT.side;
+    let reach = 0;
+    for (let p = 0; p < side * side; p++) {
+      if ((still![p * 4 + 3] ?? 0) <= 8) continue;
+      reach = Math.max(reach, Math.hypot((p % side) + 0.5 - side / 2, Math.floor(p / side) + 0.5 - side / 2));
+    }
+    expect(reach).toBeLessThanOrEqual(LOGO_REACH);
+    expect(reach).toBeGreaterThan(LOGO_REACH - 2);
+  }, 120_000);
 
-    // And CENTRED. `pad` places its input once from the size it was
-    // configured with, while `scale=eval=frame` changes that size under it
-    // every frame — a pad that did not follow would park the shrinking mark
-    // in a corner of its box, and the bounce would carry it around off-axis.
-    const c = centroid(small!);
+  it("changes size and glow colour on a hit, and holds both until the next", async () => {
+    // A hit with a long quiet stretch after it, picked off the same `hitsAt`
+    // the graph evaluates. Sampled half a second either side of it, and again
+    // two seconds later inside the same stretch — by which time the mark has
+    // spun a fifth of a turn, which is what makes "held" a real claim.
+    const fps = RENDER_FPS;
+    let hit = 0;
+    for (let k = 2 * fps; k < 120 * fps; k++) {
+      if (hitsAt(k / fps) === hitsAt((k - 1) / fps)) continue;
+      let next = k + 1;
+      while (hitsAt(next / fps) === hitsAt(k / fps)) next++;
+      if (next - k >= 3 * fps) { hit = k; break; }
+    }
+    expect(hit).toBeGreaterThan(0);
+    const [before, after, later] = await markFrames(
+      LOGO_FILTER,
+      [(hit - fps / 2) / fps, (hit + fps / 2) / fps, (hit + (5 * fps) / 2) / fps],
+      fps,
+    );
+    const sizeBefore = markScaleAt((hit - fps / 2) / fps);
+    const sizeAfter = markScaleAt((hit + fps / 2) / fps);
+    // The golden-ratio steps never land two neighbours close together.
+    expect(Math.abs(sizeAfter - sizeBefore)).toBeGreaterThan(0.05);
+    // Area goes as the square of the size; rotation does not change it.
+    const want = (sizeAfter / sizeBefore) ** 2;
+    expect(opaqueArea(after!) / opaqueArea(before!)).toBeCloseTo(want, 1);
+    expect(Math.abs(opaqueArea(later!) / opaqueArea(after!) - 1)).toBeLessThan(0.02);
+
+    // The glow jumps round the colour wheel on the hit and stays put after.
+    const colour = (f: Buffer) => halo(f).rgb;
+    const dist = (a: number[], b: number[]) =>
+      Math.hypot(a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!);
+    expect(halo(after!).count).toBeGreaterThan(halo((await markFrames(STILL_MARK, [0]))[0]!).count * 4);
+    expect(dist(colour(before!), colour(after!))).toBeGreaterThan(40);
+    expect(dist(colour(after!), colour(later!))).toBeLessThan(8);
+  }, 120_000);
+
+  it("keeps the mark centred in its box at every size", async () => {
+    // `pad` places its input once from the size it was configured with,
+    // while `scale=eval=frame` changes that size at every hit — without
+    // `pad`'s own `eval=frame` a resized mark sat 31px off-centre and the
+    // bounce carried it around off-axis. Sampled at the smallest size in the
+    // first two minutes.
+    let smallest = 0;
+    for (let k = 0; k < 120 * RENDER_FPS; k++) {
+      if (markScaleAt(k / RENDER_FPS) < markScaleAt(smallest / RENDER_FPS)) smallest = k;
+    }
+    expect(markScaleAt(smallest / RENDER_FPS)).toBeLessThan(0.92);
+    const [f] = await markFrames(LOGO_FILTER, [smallest / RENDER_FPS], RENDER_FPS);
+    const c = centroid(f!);
     const mid = LOGO_RECT.side / 2;
     expect(Math.abs(c.x - mid)).toBeLessThan(3);
     expect(Math.abs(c.y - mid)).toBeLessThan(3);
-  }, 120_000);
-
-  it("wears a soft coloured glow, and the glow's colour moves", async () => {
-    // A halo is SOFT alpha: partly transparent pixels around the vinyl. The
-    // bare mark has only a one-pixel antialiased edge of those; the glow is
-    // a whole band of them.
-    const [a, b] = await markFrames(LOGO_FILTER, [0, GLOW_SECONDS / 3], 20);
-    const bare = (await markFrames(STILL_MARK, [0]))[0]!;
-    expect(halo(a!).count).toBeGreaterThan(halo(bare).count * 4);
-
-    // A third of a cycle apart the glow is a third of the way round the
-    // colour wheel, so the halo's mean colour must have moved a long way.
-    const ca = halo(a!).rgb;
-    const cb = halo(b!).rgb;
-    const dist = Math.hypot(ca[0] - cb[0], ca[1] - cb[1], ca[2] - cb[2]);
-    expect(dist).toBeGreaterThan(60);
   }, 120_000);
 
   // Same split as the mark's, and for the same reason: the pixel tests crop
