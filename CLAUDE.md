@@ -1328,9 +1328,12 @@ because the full-frame format conversions around the stage and the encoder
 working on a more detailed picture both count. File size is the bigger
 surprise: a 60s render goes from 5.1 MB to 26.0 MB. The GRAIN is half of
 that on its own (12.7 MB without it) while costing no render time at all
-(38.1s with, 38.3s without) — it is the encoder spending bits on noise. A
-three-hour mix is therefore roughly 4.7 GB instead of 0.9. `CRT_GRAIN` is
-the knob if uploads grow too slow.
+(38.1s with, 38.3s without) — it is the encoder spending bits on noise.
+Those sizes are the flat teal FIXTURE, which compresses far better than a
+real picture: the 40s demo on the user's own background went from 9.8 MB to
+48.5 MB, so a three-hour mix is roughly 13 GB instead of 2.6. The ratio held
+at about 5x; the base did not. `CRT_GRAIN` is the knob if uploads grow too
+slow.
 
 The bulge moves every pixel inward except at the centre, the walls the mark
 bounces off included, so the mark still meets the (now curved) picture edge
