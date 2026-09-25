@@ -137,7 +137,7 @@ server/longform.ts WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK,
                    stackWide (the long journey's one ffmpeg pass)
 server/lofi.ts     WIDE, FADE, TRACK_FADE, CRACKLE_PATH, LOGO_PATH/LOGO_RECT/
                    SPIN_SECONDS, spinAt/SPIN_EXPR (the wobbling spin, one
-                   rule in two languages), LOGO_REACH, hitsAt/markScaleAt
+                   rule in two languages), VINYL_RIM, hitsAt/markScaleAt
                    (wall hits and the size each one picks), LOGO_FILTER
                    (the mark's whole chain), VIZ_RECT/VIZ_BAR,
                    checkLofi,
@@ -1111,26 +1111,32 @@ the wrong version degrades every time the mark is enlarged. Bounding the box
 makes the clearance angle-independent and costs only that the upright mark
 sits `(LOGO_BOX - LOGO_SIZE) / 2` further in than the number suggests.
 
-The mark BOUNCES now, and it turns round on the DRAWING'S REACH rather than
-on its padded box. `LOGO_REACH` (165) is the farthest opaque pixel from the
-box's centre — 164.4px, measured off the asset — and rotation cannot move
-it, so it is the drawing's reach at EVERY angle. The box may therefore hang
-past a wall by exactly its transparent margin beyond that (`OVERHANG`, 48px,
+The mark BOUNCES now, and it turns round on the RECORD'S RIM rather than on
+its padded box. `VINYL_RIM` (125) is the vinyl's radius from the box's
+centre — 124.5px, measured off the asset as the shortest reach over every
+angle, since a limb can only extend it — and a circle is the same at every
+angle, so the record meets the wall at every hit whatever the spin. The box
+hangs past the wall by everything outside the rim (`OVERHANG`, 88px,
 even-floored), and `TRAVEL_X`/`TRAVEL_Y` are the frame less the box PLUS an
-overhang at each end. The drawing then meets the wall at a hit, and nothing
-is clipped at 45 degrees or anywhere else, which is the point of this whole
-invariant.
+overhang at each end: 1670x830.
 
-It used to bounce the padded box itself, which kept the no-clipping promise
-but left the drawing turning back about 100px short of the wall — invisible
-while nothing happened at a hit, and glaring once the size and glow colour
-started changing there (below). The honest limit of the fix: contact is
-exact only when the farthest part of the drawing — feet or head — points at
-the wall. With the round vinyl facing it the mark stops about 40px short,
-and a smaller size adds up to ~23px more. Contact at every angle needs a
-travel that changes with the angle, which one triangle wave cannot express.
-`LOGO_REACH` is re-measured from the asset by a test, so a replacement logo
-that reaches further fails there rather than being clipped at a wall.
+What that costs is deliberate: the figure's limbs reach 164px, 39px past
+the rim, so whenever a foot, the head or a hand points at the wall it pokes
+past the frame edge for a moment and is cut off there. The alternative was
+built and shown first — bouncing on the limbs' reach, which clipped nothing
+— and it left a gap at each hit that ran from 0 to about 70px with the
+angle (measured 68px at one hit, upright, hands facing the wall), so the
+mark seemed to turn round in mid-air just as its size and colour changed.
+The user picked contact over that. At a smaller size the rim still stops
+short, by up to 19px (0.15 of 125): one travel serves every size, because a
+travel that changed at each hit would make the position a running sum
+rather than a triangle wave, which no per-frame expression can carry.
+
+Before either, it bounced the padded box itself — which kept the
+no-clipping promise this invariant began with, at a cost of the drawing
+turning back ~100px short of the wall. Invisible while nothing happened at a
+hit; glaring once something did. `VINYL_RIM` is re-measured from the asset
+by a test, so a replacement logo with a different record fails there.
 
 `bounce` and `bounceExpr` are ONE RULE IN TWO LANGUAGES — the same triangle
 wave `abs(mod(u, 2r) - r)` in TypeScript and in an ffmpeg expression — and
@@ -1141,11 +1147,12 @@ empty. Drift them and the crop follows the wrong spelling and finds
 background.
 
 That crop test is COARSE, and the edge-touching bounce is what exposed it:
-dropping the 48px overhang from the ffmpeg side alone, `logoAt` untouched,
-passed every test in the file, because a mark 48px off still overlaps the
-crop. A sharper one now takes the centroid of every pixel well away from the
+dropping the overhang from the ffmpeg side alone, `logoAt` untouched, passed
+every test in the file, because a mark that far off still overlaps the crop.
+A sharper one now takes the centroid of every pixel well away from the
 background in a window round `logoAt(2)` and requires it within 4px of the
-box's centre; the same mutation fails it at 45.35.
+box's centre; the same mutation fails it at 85.36 (45.35 when the overhang
+was 48px).
 
 Two smaller details of that overlay are load-bearing. `overlay`'s `eval`
 defaults to `frame` (verified on this build), which is what makes a
@@ -1205,11 +1212,11 @@ contract; both are keyed to the hit COUNT.
   within three frames of a frame where `logoAt` visibly turns round, and
   the render test below requires the GRAPH's size and colour to step at the
   hit `hitsAt` names. A CORNER is both walls on one frame and steps the
-  count by two — still one visible change. The first corner is at 8m49s,
-  and the path brings one round every lap (17m40s; the travel box is
-  1590x750, which reduces to a tidy 53/25). The first version of the
-  pure-TS test counted steps rather than their size and came up one short
-  on exactly that corner.
+  count by two — still one visible change. The first corner is at 30m46s
+  and the path repeats about hourly (periods 44.5s and 22.1s on the
+  1670x830 travel). The first version of the pure-TS test counted steps
+  rather than their size and came up one short on exactly a corner, so it
+  now sweeps forty minutes and requires at least one corner to occur.
 - **Size steps along a golden-ratio sequence**, `1 - 0.15 * frac(h * phi)`
   for hit `h`: full size on the opening frame, neighbouring hits always well
   apart, never a visible pattern. SHRINK ONLY, because a mark larger than
@@ -2279,11 +2286,11 @@ across time and asserts only that it keeps changing; the PERIOD and the
 dropped), and two pure-TS tests pin `spinAt` itself: bounded by one turn
 across four days of timeline, and a steady forward rate of one turn per
 `SPIN_SECONDS` — the test that keeps the removed wobble out. Position is
-pinned twice: pure arithmetic that the DRAWING (box centre ± `LOGO_REACH`)
+pinned twice: pure arithmetic that the VINYL (box centre ± `VINYL_RIM`)
 stays inside the frame and reaches within 5px of all four walls, and the
-centroid test within 4px of `logoAt`'s centre (45.35 with the overhang
-dropped from the ffmpeg side only). `LOGO_REACH` is re-measured off the
-asset. The hits: `hitsAt` steps within three frames of every turn `logoAt`
+centroid test within 4px of `logoAt`'s centre (85.36 with the overhang
+dropped from the ffmpeg side only). `VINYL_RIM` is re-measured off the
+asset as the shortest reach over 360 angles. The hits: `hitsAt` steps within three frames of every turn `logoAt`
 makes, a corner counting two; and on the shipped `LOGO_FILTER` across a real
 hit, the opaque area follows the size `markScaleAt` names (shifting the
 graph's hit count by 100px of travel fails it, 0.9998 against 0.823) and

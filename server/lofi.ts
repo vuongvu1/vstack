@@ -295,19 +295,29 @@ const even = (v: number) => Math.floor(v / 2) * 2;
 const LOGO_X = even(WIDE.w - LOGO_MARGIN - LOGO_BOX);
 const LOGO_Y = even(LOGO_MARGIN);
 
-/** How far the DRAWING reaches from the centre of its box: the farthest
- *  opaque pixel, which rotation cannot move, so it is the drawing's reach
- *  at every angle. Measured off the asset at `LOGO_SIZE` — 164.4px — and
- *  rounded up; `server/lofi.test.ts` measures it again from the file, so a
- *  new logo that reaches further fails there instead of being clipped at a
- *  wall. */
-export const LOGO_REACH = 165;
+/** The radius of the RECORD's rim from the centre of its box, at
+ *  `LOGO_SIZE` — what the bounce turns round on. A circle, so it is the same
+ *  at every angle. Measured off the asset: along every angle from the centre
+ *  the drawing ends at the rim or, where a limb sticks out, beyond it, so
+ *  the shortest of those reaches is the rim — 124.5px, against 164px for the
+ *  farthest limb. `server/lofi.test.ts` measures it again from the file, so
+ *  a new logo with a different record fails there. */
+export const VINYL_RIM = 125;
 
-/** How far the padded box may hang past a wall: exactly its transparent
- *  margin beyond `LOGO_REACH`, floored to even for the overlay-offset
- *  reason. This is what lets the drawing itself TOUCH the wall at a hit
- *  rather than turning round with the empty corner of its box. */
-const OVERHANG = even(LOGO_BOX / 2 - LOGO_REACH);
+/** How far the padded box may hang past a wall: everything outside the
+ *  rim, floored to even for the overlay-offset reason. This is what makes
+ *  the VINYL touch the wall at every hit rather than the box's empty corner
+ *  turning round ~100px short of it.
+ *
+ *  It means the figure's limbs — up to 164px out, 39px past the rim — poke
+ *  past the frame for a moment whenever they point at a wall, and are cut
+ *  off there. Chosen over the alternative: bouncing on the limbs' reach
+ *  clipped nothing, but left a gap at the hit that ran from 0 to about 70px
+ *  with the angle, which read as the mark turning round in mid-air. At a
+ *  smaller size the rim itself stops up to 19px short (0.15 of 125), since
+ *  one travel serves every size — a travel that changed at each hit would
+ *  make the position a running sum rather than a triangle wave. */
+const OVERHANG = even(LOGO_BOX / 2 - VINYL_RIM);
 
 /** The frequency bars along the bottom, drawn from the render's own finished
  *  mix — music, speech and crackle together, not the music alone.
@@ -350,14 +360,14 @@ const VIZ_FILL = 7;
  *  One speed rather than two, which is what the screensaver this imitates
  *  does: it travels at 45 degrees and the wander comes from the frame not
  *  being square, not from the axes disagreeing. Here the travel box is
- *  1590x750, so the two bounce periods are 42.4s and 20s and the PATH
- *  repeats every 17m40s — much sooner than the 72 minutes the smaller box
- *  gave before the bounce turned on the drawing's reach, because 1590/750
- *  is the tidy 53/25. What a viewer watches does not repeat with it: the
- *  size and glow colour step along golden-ratio sequences keyed to the hit
- *  COUNT, which only ever grows. The path does bring a true corner hit
- *  round every lap — the first at 8m49s — which is the screensaver's own
- *  party trick rather than a defect.
+ *  1670x830 — the frame less the box, plus the overhang at each end — so
+ *  the two bounce periods are 44.5s and 22.1s and the PATH repeats about
+ *  every hour. What a viewer watches does not repeat with it: the size and
+ *  glow colour step along golden-ratio sequences keyed to the hit COUNT,
+ *  which only ever grows. The first true corner hit — both walls on one
+ *  frame, the screensaver's own party trick — lands at 30m46s. (Retuning
+ *  the travel moves both numbers a lot: at 1590x750 the path repeated every
+ *  17m40s and cornered at 8m49s.)
  *
  *  75 px/s crosses the frame in about 20 seconds, roughly the pace of the
  *  original. A lofi mix is background, and a mark that hurries competes
@@ -367,19 +377,11 @@ const BOUNCE_SPEED = 75;
 /** How far the box travels on each axis before it turns round: the frame
  *  less the box, PLUS an `OVERHANG` at each end.
  *
- *  It turns round on the drawing's REACH, not on the padded box. The box is
- *  the diagonal of the square image, but the drawing inside it is a round
- *  vinyl and a figure, and bouncing the box left the drawing turning back
- *  roughly 100px short of the wall — invisible while nothing happened at a
- *  hit, glaring once the size and colour change there. `LOGO_REACH` is the
- *  drawing's reach at EVERY angle, so letting the box overhang by its
- *  transparent margin still clips nothing, at 45 degrees or anywhere else.
- *
- *  Exact contact happens only when the farthest part of the drawing — the
- *  feet or the head — points at the wall; with the round vinyl facing it,
- *  the mark stops about 40px short, and a smaller size adds up to another
- *  ~23px. Contact at every angle would need a travel that changes with the
- *  angle, which a per-frame triangle wave cannot express. */
+ *  It turns round on the record's RIM, not on the padded box: the box is
+ *  the diagonal of the square image, and bouncing it left the drawing
+ *  turning back roughly 100px short of the wall — invisible while nothing
+ *  happened at a hit, glaring once the size and colour change there. See
+ *  `OVERHANG` for what turning on the rim costs the limbs. */
 const TRAVEL_X = WIDE.w - LOGO_BOX + 2 * OVERHANG;
 const TRAVEL_Y = WIDE.h - LOGO_BOX + 2 * OVERHANG;
 

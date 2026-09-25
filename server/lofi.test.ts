@@ -12,9 +12,9 @@ import {
   hitsAt,
   LOGO_FILTER,
   LOGO_PATH,
-  LOGO_REACH,
   LOGO_RECT,
   markScaleAt,
+  VINYL_RIM,
   SPIN_EXPR,
   logoAt,
   SPIN_SECONDS,
@@ -962,11 +962,12 @@ describe("renderLofi", () => {
   it("is drawn exactly where logoAt says, to within a few pixels", async () => {
     // The sharp version of the test above. That one proves the mark is IN
     // the box `logoAt` names; it cannot tell a box that is right from one
-    // that is 48px off, because a shifted mark still overlaps the crop —
-    // measured: dropping the overhang from the ffmpeg expression alone, with
-    // `logoAt` left alone, passed every other test in this file. With the
-    // bounce now turning on the drawing's reach, being right to the pixel is
-    // what "touches the wall" means.
+    // that is off by the whole overhang, because a shifted mark still
+    // overlaps the crop — measured: dropping the overhang from the ffmpeg
+    // expression alone, with `logoAt` left alone, passed every other test in
+    // this file (at 48px, and again at 88px). With the bounce turning on the
+    // vinyl's rim, being right to the pixel is what "touches the wall"
+    // means; that mutation fails here at 85.36.
     //
     // So: every pixel well away from the flat teal, in a window round the
     // box, and their centroid against the box's centre. The drawing is near
@@ -995,13 +996,14 @@ describe("renderLofi", () => {
     expect(Math.abs(wy + sy / n - (y + side / 2))).toBeLessThan(4);
   }, 120_000);
 
-  it("keeps the DRAWING inside the frame, and lets it reach every wall", () => {
-    // The bounce turns round on the drawing's own reach, not on its padded
-    // box: the box may hang up to its transparent margin past the frame, so
-    // the farthest opaque pixel — `LOGO_REACH` from the centre, at every
-    // angle — meets the wall at a hit instead of turning back ~100px short
-    // of it. Sampled on the render's own frame grid, which is where
-    // `overlay` evaluates the position.
+  it("keeps the VINYL inside the frame, and lets it reach every wall", () => {
+    // The bounce turns round on the record's own rim, `VINYL_RIM` from the
+    // centre: the box may hang past the frame by everything outside that, so
+    // the vinyl meets the wall at every hit whatever the angle. The figure's
+    // limbs reach further (164px) and so poke past the frame for a moment
+    // when they point at the wall — chosen, over a gap that ran to ~70px
+    // when the bounce turned on the limbs instead. Sampled on the render's
+    // own frame grid, which is where `overlay` evaluates the position.
     const half = LOGO_RECT.side / 2;
     const lo = { x: Infinity, y: Infinity };
     const hi = { x: -Infinity, y: -Infinity };
@@ -1009,10 +1011,10 @@ describe("renderLofi", () => {
     for (let k = 0; k <= 600 * RENDER_FPS; k++) {
       const { x, y } = logoAt(k / RENDER_FPS);
       if (x % 2 !== 0 || y % 2 !== 0) odd++;
-      lo.x = Math.min(lo.x, x + half - LOGO_REACH);
-      lo.y = Math.min(lo.y, y + half - LOGO_REACH);
-      hi.x = Math.max(hi.x, x + half + LOGO_REACH);
-      hi.y = Math.max(hi.y, y + half + LOGO_REACH);
+      lo.x = Math.min(lo.x, x + half - VINYL_RIM);
+      lo.y = Math.min(lo.y, y + half - VINYL_RIM);
+      hi.x = Math.max(hi.x, x + half + VINYL_RIM);
+      hi.y = Math.max(hi.y, y + half + VINYL_RIM);
     }
     // Even on both axes, for the reason every overlay offset here is.
     expect(odd).toBe(0);
@@ -1039,7 +1041,9 @@ describe("renderLofi", () => {
     const steps: number[] = [];
     let dir = { x: 0, y: 0 };
     let prev = logoAt(0);
-    for (let k = 1; k <= 600 * RENDER_FPS; k++) {
+    // Forty minutes, so the sweep holds a CORNER (the first is at 30m46s).
+    let corners = 0;
+    for (let k = 1; k <= 40 * 60 * RENDER_FPS; k++) {
       const cur = logoAt(k / RENDER_FPS);
       for (const axis of ["x", "y"] as const) {
         const d = Math.sign(cur[axis] - prev[axis]);
@@ -1047,13 +1051,15 @@ describe("renderLofi", () => {
         if (d !== 0) dir = { ...dir, [axis]: d };
       }
       // A CORNER is both walls on one frame: the count steps by two there,
-      // and both turns land on that frame. One such corner falls inside
-      // this ten-minute sweep, at frame 15,865 (8m49s) — the first version
-      // of this test counted steps rather than their size and was one short.
+      // and both turns land on that frame. The first version of this test
+      // counted steps rather than their size and came up one short on
+      // exactly such a corner.
       const jump = hitsAt(k / RENDER_FPS) - hitsAt((k - 1) / RENDER_FPS);
+      if (jump === 2) corners++;
       for (let j = 0; j < jump; j++) steps.push(k);
       prev = cur;
     }
+    expect(corners).toBeGreaterThan(0);
     expect(turns.length).toBeGreaterThan(50);
     expect(steps.length).toBe(turns.length);
     // Within a couple of frames of each other: a turn is only VISIBLE once
@@ -1111,20 +1117,29 @@ describe("renderLofi", () => {
     for (const i of times.keys()) expect(boxDiff(got[i]!, want[i]!)).toBeLessThan(1);
   }, 120_000);
 
-  it("measures LOGO_REACH off the asset itself", async () => {
-    // The bounce turns round on this number, so it has to be the drawing's
-    // real reach — the farthest opaque pixel from the centre, which rotation
-    // cannot change. Measured here rather than trusted, so replacing the logo
-    // with a bigger drawing fails loudly instead of clipping it at a wall.
+  it("measures VINYL_RIM off the asset itself", async () => {
+    // The bounce turns round on this number, so it has to be the record's
+    // real rim. Along every angle from the centre the drawing ends at the
+    // rim or, where a limb sticks out, beyond it — so the SHORTEST of those
+    // reaches is the rim. Measured 124.5 here; the farthest limb is 164.
+    // Re-measured rather than trusted, so a replacement logo with a bigger
+    // or smaller record fails loudly instead of overshooting a wall or
+    // stopping short of it.
     const [still] = await markFrames(STILL_MARK, [0]);
     const side = LOGO_RECT.side;
-    let reach = 0;
-    for (let p = 0; p < side * side; p++) {
-      if ((still![p * 4 + 3] ?? 0) <= 8) continue;
-      reach = Math.max(reach, Math.hypot((p % side) + 0.5 - side / 2, Math.floor(p / side) + 0.5 - side / 2));
+    const c = side / 2;
+    let rim = Infinity;
+    for (let deg = 0; deg < 360; deg++) {
+      const a = (deg * Math.PI) / 180;
+      let last = 0;
+      for (let r = 0; r < c; r += 0.25) {
+        const x = Math.floor(c + r * Math.cos(a));
+        const y = Math.floor(c + r * Math.sin(a));
+        if ((still![(y * side + x) * 4 + 3] ?? 0) > 8) last = r;
+      }
+      rim = Math.min(rim, last);
     }
-    expect(reach).toBeLessThanOrEqual(LOGO_REACH);
-    expect(reach).toBeGreaterThan(LOGO_REACH - 2);
+    expect(Math.abs(rim - VINYL_RIM)).toBeLessThan(1.5);
   }, 120_000);
 
   it("changes size and glow colour on a hit, and holds both until the next", async () => {
