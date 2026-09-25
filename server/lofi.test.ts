@@ -409,35 +409,27 @@ describe("FADE", () => {
 
 describe("spinAt", () => {
   it("stays far inside rotate's 2048-radian ceiling, however long the render", () => {
-    // The wobble rides on the wrapped spin, so the angle rotate is handed is
-    // bounded by one turn plus the wobble's own amplitude — for a render of
-    // any length. Swept past four days of timeline.
+    // The spin is wrapped into one turn, so the angle rotate is handed stays
+    // bounded for a render of any length. Swept past four days of timeline.
     let worst = 0;
     for (let t = 0; t < 4e5; t += 0.37) worst = Math.max(worst, Math.abs(spinAt(t)));
-    expect(worst).toBeLessThan(2 * Math.PI + 1);
+    expect(worst).toBeLessThan(2 * Math.PI + 1e-9);
   });
 
-  it("runs backwards for a small slice of time, and forwards on average", () => {
-    // The whole point of the wobble: the spin swells, eases, and every so
-    // often briefly turns back, rather than ticking round like a metronome.
-    // "Every so often" is pinned as a band — a wobble too weak never reverses
-    // and one too strong spends a third of its life going the wrong way.
+  it("turns at one steady rate, always forwards", () => {
+    // A plain metronome spin, deliberately. A wobbling one — speed swelling,
+    // easing, and briefly turning back — shipped for one review and was
+    // taken out at the user's request, so this pins its absence: every step
+    // forward and the same size, one turn per SPIN_SECONDS.
     const dt = 0.01;
-    let back = 0;
-    let n = 0;
-    let sum = 0;
+    const rate = (2 * Math.PI) / SPIN_SECONDS;
+    let worst = 0;
     for (let t = 0; t < 1000; t += dt) {
       const d = spinAt(t + dt) - spinAt(t);
       if (Math.abs(d) > Math.PI) continue; // the wrap, not motion
-      n++;
-      sum += d;
-      if (d < 0) back++;
+      worst = Math.max(worst, Math.abs(d / dt - rate));
     }
-    expect(back / n).toBeGreaterThan(0.05);
-    expect(back / n).toBeLessThan(0.25);
-    // And on average one turn every SPIN_SECONDS, which is what the constant
-    // still means.
-    expect(sum / (n * dt)).toBeCloseTo((2 * Math.PI) / SPIN_SECONDS, 2);
+    expect(worst).toBeLessThan(1e-6);
   });
 });
 
@@ -996,7 +988,7 @@ describe("renderLofi", () => {
     // Follows the mark, because it no longer sits still.
     //
     // This used to pin the PERIOD too, with a full-turn sample that had to
-    // match t=0. It cannot any more: the mark wobbles, breathes, hue-swings
+    // match t=0. It cannot any more: the mark breathes, hue-swings
     // and glows on periods that deliberately never line up, so no instant
     // after t=0 shows the same picture again. The period is pinned where it
     // can be isolated — "spins at exactly the angle spinAt names", on the
@@ -1017,7 +1009,7 @@ describe("renderLofi", () => {
     // `bounce` and `bounceExpr` are, and this is what proves they agree: the
     // expression rendered by `rotate` over time against a CONSTANT angle
     // `spinAt` computed for the same instant. Any drift between the two —
-    // a period, the wobble, a sign — shows up as a picture that does not
+    // a period, a sign — shows up as a picture that does not
     // match.
     //
     // It also carries the old ceiling test's job. ffmpeg's `rotate` holds its

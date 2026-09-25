@@ -1149,8 +1149,9 @@ overlay: compositing alpha into an already-subsampled plane throws away the
 colour resolution the mark's edges need.
 
 The angle is an expression over the frame's own timestamp, not a frame
-counter, so one turn is ten real seconds ON AVERAGE and stays so if `FPS`
-ever changes. On average, because the spin WOBBLES now — see below.
+counter, so one turn is ten real seconds and stays ten if `FPS` ever
+changes. The rate is STEADY: a wobbling spin shipped for one review and was
+taken out at the user's request — see below.
 
 **That angle must be `mod`'d into one turn, because ffmpeg's `rotate`
 overflows past 2048 RADIANS and freezes.** The bare `a=2*PI*t/SPIN_SECONDS`
@@ -1171,33 +1172,36 @@ unchanged frame for frame. The value has to be QUOTED (`a='...'`) for the
 same reason `bounceExpr`'s does — the comma inside `mod(t,10)` would
 otherwise end the `rotate` mid-expression.
 
-**The mark carries four appearance effects on top of the bounce, and every
-one of them leaves the POSITION contract alone.** The bounce is exactly as
+**The mark carries three appearance effects on top of the spin and the
+bounce, and every one of them leaves the POSITION contract alone.** The bounce is exactly as
 it was — `bounce`/`bounceExpr`/`logoAt` are untouched — because a wandering
 path was offered and turned down in favour of the DVD wall-bounce. What
-moves is the picture inside the padded box: a wobbling spin, breathing, a
-gentle hue swing, and a cycling glow. Their periods (7.3, 5.7, 13 and 19s,
-against the spin's 10) are deliberately incommensurate, and that is where
-the randomness comes from: no per-frame `random()`, which is reproducible
-across runs (measured) but white noise frame to frame, so it strobes.
+moves is the picture inside the padded box: breathing, a gentle hue swing,
+and a cycling glow. Their periods (5.7, 13 and 19s, against the spin's 10)
+are deliberately incommensurate, and that is where the variety comes from:
+no per-frame `random()`, which is reproducible across runs (measured) but
+white noise frame to frame, so it strobes.
 
-- **The spin wobbles.** `spinAt(t)` is the wrapped spin plus `WOBBLE *
-  sin(...)`, each term `mod`'d into its own period so the angle handed to
-  `rotate` stays bounded by one turn plus the wobble for a render of any
-  length — the 2048-radian lesson above, kept. The wobble's size decides how
-  often the mark turns BACK; at these numbers about an eighth of the time,
-  and pure-TS tests in `server/lofi.test.ts` pin that fraction as a band
-  (and the mean rate as one turn per `SPIN_SECONDS`).
+- **No wobble on the spin, and that is a reversal worth knowing about.** A
+  wobbling spin — an extra `sin` on the angle, so the speed swelled, eased
+  and turned back about an eighth of the time — shipped for one review and
+  was removed at the user's request. A pure-TS test pins a constant forward
+  rate so it does not creep back in. If it is ever wanted again, the extra
+  term must be `mod`'d into its own period like the spin is, or the angle
+  stops being bounded.
 - **`spinAt` and `SPIN_EXPR` are ONE RULE IN TWO LANGUAGES**, the
-  `bounce`/`bounceExpr` pair's twin. What proves they agree is
-  `server/lofi.test.ts` rendering the expression over time and a CONSTANT
-  angle computed by `spinAt` for the same instant, on a still copy of the
-  mark, and requiring the pictures to match — measured 0.000 at all six
-  instants, including t=3300. That test replaced the old ceiling test and
-  inherits its job: a frozen `rotate` at t=3300 shows the angle from 3259,
-  and dropping the `mod` fails it at 16.07 against a bound of 1. It runs at
-  2 fps for the reason the ceiling test did — every effect here is a function
-  of the timestamp, not of how many frames it took to reach it.
+  `bounce`/`bounceExpr` pair's twin — kept as a pair even for a plain spin,
+  because the mark's picture now changes for three other reasons, so a test
+  that only checked the composed mark kept changing would pass with the spin
+  frozen solid. What proves they agree is `server/lofi.test.ts` rendering
+  the expression over time and a CONSTANT angle computed by `spinAt` for the
+  same instant, on a still copy of the mark, and requiring the pictures to
+  match — measured 0.000 at all six instants, including t=3300. That test
+  replaced the old ceiling test and inherits its job: a frozen `rotate` at
+  t=3300 shows the angle from 3259, and dropping the `mod` fails it at 14.23
+  against a bound of 1. It runs at 2 fps for the reason the ceiling test did
+  — every effect here is a function of the timestamp, not of how many frames
+  it took to reach it.
 - **Breathing SHRINKS only, and `pad` needs `eval=frame` to follow it.**
   Growing past `LOGO_SIZE` would put the mark's diagonal past `LOGO_BOX` and
   `rotate` would shear its corners. And `pad` computes its offset ONCE by
@@ -2236,12 +2240,12 @@ a first version that only checked pixels passed with the logo parked at the
 left edge. The pixel test then proves the mark is actually drawn in that
 rect (against a flat-colour reference) and that the mirrored rect on the
 left is untouched. The composed-render spin test compares a 256px crop
-across time and asserts only that it keeps changing; the PERIOD, the wobble
-and the 2048-radian ceiling are pinned by the agreement test between
-`SPIN_EXPR` and `spinAt` on a still mark (0.000 at six instants, 16.07 with
-the `mod` dropped), and two pure-TS tests pin `spinAt` itself: bounded
-across four days of timeline, and backwards for between 5% and 25% of the
-time with a mean rate of one turn per `SPIN_SECONDS`. Breathing is pinned
+across time and asserts only that it keeps changing; the PERIOD and the
+2048-radian ceiling are pinned by the agreement test between `SPIN_EXPR` and
+`spinAt` on a still mark (0.000 at six instants, 14.23 with the `mod`
+dropped), and two pure-TS tests pin `spinAt` itself: bounded by one turn
+across four days of timeline, and a steady forward rate of one turn per
+`SPIN_SECONDS` — the test that keeps the removed wobble out. Breathing is pinned
 on the shipped `LOGO_FILTER` by opaque area (0.723) and by centroid — the
 latter is what catches `pad` without `eval=frame` (31px off). The glow is
 pinned by its soft-alpha pixels (21,730 against the bare mark's 881) and by

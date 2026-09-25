@@ -192,23 +192,14 @@ export const LOGO_PATH = asset("lofi-video-logo.png");
 const LOGO_SIZE = 300;
 const LOGO_MARGIN = 40;
 
-/** One full turn, in seconds — ON AVERAGE, now that the spin wobbles.
- *  Exported so the tests read the number rather than a second copy of it. */
-export const SPIN_SECONDS = 10;
-
-/** The wobble riding on the spin: an extra angle of `WOBBLE` radians
- *  swinging on its own `WOBBLE_SECONDS` period, so the mark swells and eases
- *  instead of ticking round like a metronome.
+/** One full turn, in seconds, at a steady rate. Exported so the tests read
+ *  the number rather than a second copy of it.
  *
- *  Its size decides how often the mark turns BACK: the spin runs backwards
- *  while `WOBBLE * 2PI / WOBBLE_SECONDS * cos(...)` outweighs `2PI /
- *  SPIN_SECONDS`, which at these numbers is about an eighth of the time — a
- *  brief reversal every so often rather than a mark that cannot make up its
- *  mind. `server/lofi.test.ts` pins that fraction as a band. The period is
- *  deliberately incommensurate with the spin's, and with every other
- *  period below, so no two effects ever line up the same way twice. */
-const WOBBLE = 0.8;
-const WOBBLE_SECONDS = 7.3;
+ *  Steady on purpose: a wobbling spin — speed swelling and easing, briefly
+ *  turning back about an eighth of the time — shipped for one review and was
+ *  taken back out at the user's request. `server/lofi.test.ts` pins a
+ *  constant forward rate so it does not creep back in. */
+export const SPIN_SECONDS = 10;
 
 /** ffmpeg's `mod`, spelled in TypeScript: `a - b * floor(a / b)`, which is
  *  NOT `%` — `%` keeps the sign of `a`. */
@@ -220,22 +211,22 @@ const fmod = (a: number, b: number) => a - b * Math.floor(a / b);
  *  expression and a constant angle from this function for the same instant
  *  and requires the two pictures to agree.
  *
- *  Both terms are wrapped into their own period, and that is load-bearing:
- *  ffmpeg's `rotate` overflows past 2048 RADIANS and freezes for the rest of
- *  the render (see `LOGO_FILTER`), so the angle handed to it must stay
- *  bounded however long the track runs — here, by one turn plus `WOBBLE`. */
+ *  Kept as a pair even for a plain spin, because the mark's picture now
+ *  breathes, hue-swings and glows too — a test that merely checked the
+ *  composed mark kept changing would pass with the spin frozen solid. Only
+ *  comparing the ANGLE, in isolation, can tell.
+ *
+ *  Wrapped into one turn, and that is load-bearing: ffmpeg's `rotate`
+ *  overflows past 2048 RADIANS and freezes for the rest of the render (see
+ *  `LOGO_FILTER`), so the angle handed to it must stay bounded however long
+ *  the track runs. */
 export function spinAt(t: number): number {
-  return (
-    (2 * Math.PI * fmod(t, SPIN_SECONDS)) / SPIN_SECONDS +
-    WOBBLE * Math.sin((2 * Math.PI * fmod(t, WOBBLE_SECONDS)) / WOBBLE_SECONDS)
-  );
+  return (2 * Math.PI * fmod(t, SPIN_SECONDS)) / SPIN_SECONDS;
 }
 
 /** `spinAt`, as the ffmpeg expression `rotate` evaluates per frame. Passed
  *  QUOTED, for the comma reason `bounceExpr` records. */
-export const SPIN_EXPR =
-  `2*PI*mod(t,${SPIN_SECONDS})/${SPIN_SECONDS}+` +
-  `${WOBBLE}*sin(2*PI*mod(t,${WOBBLE_SECONDS})/${WOBBLE_SECONDS})`;
+export const SPIN_EXPR = `2*PI*mod(t,${SPIN_SECONDS})/${SPIN_SECONDS}`;
 
 /** Breathing: the mark shrinks to `BREATH_MIN` of `LOGO_SIZE` and back once
  *  every `BREATH_SECONDS`, starting full-size at t=0.
