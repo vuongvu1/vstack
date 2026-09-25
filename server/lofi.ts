@@ -192,11 +192,90 @@ export const LOGO_PATH = asset("lofi-video-logo.png");
 const LOGO_SIZE = 300;
 const LOGO_MARGIN = 40;
 
-/** One full turn, in seconds. Exported so `server/lofi.test.ts` samples the
- *  render at real multiples of it rather than at a second copy of the
- *  number — the test's whole job is proving the period, and a duplicated
- *  constant would move with it. */
+/** One full turn, in seconds — ON AVERAGE, now that the spin wobbles.
+ *  Exported so the tests read the number rather than a second copy of it. */
 export const SPIN_SECONDS = 10;
+
+/** The wobble riding on the spin: an extra angle of `WOBBLE` radians
+ *  swinging on its own `WOBBLE_SECONDS` period, so the mark swells and eases
+ *  instead of ticking round like a metronome.
+ *
+ *  Its size decides how often the mark turns BACK: the spin runs backwards
+ *  while `WOBBLE * 2PI / WOBBLE_SECONDS * cos(...)` outweighs `2PI /
+ *  SPIN_SECONDS`, which at these numbers is about an eighth of the time — a
+ *  brief reversal every so often rather than a mark that cannot make up its
+ *  mind. `server/lofi.test.ts` pins that fraction as a band. The period is
+ *  deliberately incommensurate with the spin's, and with every other
+ *  period below, so no two effects ever line up the same way twice. */
+const WOBBLE = 0.8;
+const WOBBLE_SECONDS = 7.3;
+
+/** ffmpeg's `mod`, spelled in TypeScript: `a - b * floor(a / b)`, which is
+ *  NOT `%` — `%` keeps the sign of `a`. */
+const fmod = (a: number, b: number) => a - b * Math.floor(a / b);
+
+/** The mark's angle at `t` seconds, in radians. The TypeScript spelling of
+ *  `SPIN_EXPR`, and the pair are ONE RULE IN TWO LANGUAGES exactly the way
+ *  `bounce` and `bounceExpr` are: `server/lofi.test.ts` renders the
+ *  expression and a constant angle from this function for the same instant
+ *  and requires the two pictures to agree.
+ *
+ *  Both terms are wrapped into their own period, and that is load-bearing:
+ *  ffmpeg's `rotate` overflows past 2048 RADIANS and freezes for the rest of
+ *  the render (see `LOGO_FILTER`), so the angle handed to it must stay
+ *  bounded however long the track runs — here, by one turn plus `WOBBLE`. */
+export function spinAt(t: number): number {
+  return (
+    (2 * Math.PI * fmod(t, SPIN_SECONDS)) / SPIN_SECONDS +
+    WOBBLE * Math.sin((2 * Math.PI * fmod(t, WOBBLE_SECONDS)) / WOBBLE_SECONDS)
+  );
+}
+
+/** `spinAt`, as the ffmpeg expression `rotate` evaluates per frame. Passed
+ *  QUOTED, for the comma reason `bounceExpr` records. */
+export const SPIN_EXPR =
+  `2*PI*mod(t,${SPIN_SECONDS})/${SPIN_SECONDS}+` +
+  `${WOBBLE}*sin(2*PI*mod(t,${WOBBLE_SECONDS})/${WOBBLE_SECONDS})`;
+
+/** Breathing: the mark shrinks to `BREATH_MIN` of `LOGO_SIZE` and back once
+ *  every `BREATH_SECONDS`, starting full-size at t=0.
+ *
+ *  SHRINK ONLY, and that is geometry rather than taste. `LOGO_BOX` is the
+ *  diagonal of `LOGO_SIZE`; a mark breathing larger than that would put its
+ *  corners past the box `rotate` renders into, and they would be sheared at
+ *  45 degrees — the very defect the diagonal pad exists to prevent. */
+const BREATH_MIN = 0.85;
+export const BREATH_SECONDS = 5.7;
+
+/** A gentle hue swing on the mark itself: at most `HUE_SWING` degrees either
+ *  way over `HUE_SECONDS`. Gentle on purpose — the mark is a character, and
+ *  a full hue rotation turns her skin green, blue and violet for most of
+ *  each cycle (rendered and looked at before this was written). Thirty
+ *  degrees moves her shirt from teal to blue and leaves her face alone. */
+const HUE_SWING = 30;
+const HUE_SECONDS = 13;
+
+/** The coloured halo behind the vinyl, cycling once round the colour wheel
+ *  every `GLOW_SECONDS`.
+ *
+ *  Built at an EIGHTH of the box's size and scaled back up, one flat colour
+ *  whose ALPHA alone is blurred, and cycled by a single `hue` rotation —
+ *  every one of those is a measured saving over the first version, which
+ *  worked at a quarter size, blurred all four planes, and walked the colour
+ *  with three per-pixel sines. Timed on 60s of the logo leg alone: 3.95s
+ *  that way, 2.88s this way, and the two halos are indistinguishable side
+ *  by side — it is blurred to nothing anyway, and a per-pixel expression
+ *  belongs at the smallest size that still produces the right picture, the
+ *  lesson the bars' gap mask already records. `GLOW_SIGMA` is in those
+ *  eighth-size pixels; `GLOW_GAIN` lifts the blurred alpha back up so the
+ *  halo reads near the edge rather than fading out the instant it leaves
+ *  the mark. */
+export const GLOW_SECONDS = 19;
+const GLOW_SIGMA = 1.75;
+const GLOW_GAIN = 1.6;
+/** The colour the halo starts from; `hue` walks it round the wheel. A
+ *  saturated magenta, so every hue it is rotated through stays vivid. */
+const GLOW_COLOUR = { r: 255, g: 40, b: 200 };
 
 /** The square the mark rotates INSIDE, and it must be at least the mark's
  *  own diagonal or the corners are sheared off at 45 degrees.
@@ -251,6 +330,11 @@ const VIZ_HI = 7040;
  *  too. Expressed as a count of columns rather than a fraction because it
  *  is spent as one, see `renderLofi`. */
 const VIZ_COLS = 10;
+
+/** How long the bars' rainbow takes to slide once across the band. Prime,
+ *  like the mark's own periods, so it never falls into step with any of
+ *  them. */
+const VIZ_DRIFT_SECONDS = 23;
 const VIZ_FILL = 7;
 
 /** How fast the mark drifts, in pixels a second, on BOTH axes.
@@ -366,11 +450,22 @@ function bounceExpr(phase: number, range: number): string {
  *  filters against the asset: what goes wrong here only shows up an hour
  *  into a timeline, which is far past what a real 1920x1080 render can be
  *  asked to produce inside a test. */
+const BREATH_EXPR =
+  `${LOGO_SIZE}*(1-${(1 - BREATH_MIN).toFixed(4)}*(0.5-0.5*cos(2*PI*mod(t,${BREATH_SECONDS})/${BREATH_SECONDS})))`;
+const GLOW_EIGHTH = Math.floor(LOGO_BOX / 8);
 export const LOGO_FILTER =
   `format=rgba,` +
-  `scale=${LOGO_SIZE}:${LOGO_SIZE}:force_original_aspect_ratio=decrease,` +
-  `pad=${LOGO_BOX}:${LOGO_BOX}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,` +
-  `rotate=a='2*PI*mod(t,${SPIN_SECONDS})/${SPIN_SECONDS}':c=none`;
+  `scale=w='${BREATH_EXPR}':h='${BREATH_EXPR}':force_original_aspect_ratio=decrease:eval=frame,` +
+  `hue=h='${HUE_SWING}*sin(2*PI*mod(t,${HUE_SECONDS})/${HUE_SECONDS})',` +
+  `pad=${LOGO_BOX}:${LOGO_BOX}:(ow-iw)/2:(oh-ih)/2:color=0x00000000:eval=frame,` +
+  `split[lmark][lglow];` +
+  `[lglow]scale=${GLOW_EIGHTH}:${GLOW_EIGHTH},` +
+  `geq=r=${GLOW_COLOUR.r}:g=${GLOW_COLOUR.g}:b=${GLOW_COLOUR.b}:a='alpha(X,Y)',` +
+  `gblur=sigma=${GLOW_SIGMA}:planes=8,colorchannelmixer=aa=${GLOW_GAIN},` +
+  `hue=h='360*mod(t,${GLOW_SECONDS})/${GLOW_SECONDS}',` +
+  `scale=${LOGO_BOX}:${LOGO_BOX}:flags=bilinear[lhalo];` +
+  `[lhalo][lmark]overlay=format=auto,` +
+  `rotate=a='${SPIN_EXPR}':c=none`;
 
 /** Where the mark's padded box is at `t` seconds. Exported so the test can
  *  follow it: with the mark moving there is no longer a fixed rect to crop,
@@ -919,19 +1014,45 @@ export async function renderLofi(opts: {
   //
   // The alpha is `max(r,g,b)` rather than `r`: `showcqt` tints its bars by
   // pitch class, so keying on the red channel alone would make a blue bar
-  // vanish. The colour is thrown away and replaced with white anyway — the
-  // tint is `gifsync`'s white-at-0.85, not `showcqt`'s rainbow.
+  // vanish. The colour is thrown away and replaced with a RAINBOW of this
+  // graph's own — one full turn of the colour wheel across the band, sliding
+  // sideways once every `VIZ_DRIFT_SECONDS` — rather than `showcqt`'s, which
+  // tints by pitch class and so holds each bar to one colour forever. Free:
+  // this `geq` already ran per pixel to cut the gaps, and it was already
+  // writing r, g and b; they are simply expressions of `X` and `T` now
+  // instead of 255.
+  // The rainbow is computed on a strip ONE PIXEL PER BAR and multiplied
+  // onto the white bars, rather than evaluated per pixel of the bar canvas.
+  // Its colour depends only on the column and the time, never the row, so
+  // spelling it in the gap mask's `geq` recomputed three sines for every one
+  // of 480x360 pixels a frame for no difference — measured, that took a
+  // 60s render from 19s to 35s on its own. Here it is 48 evaluations a
+  // frame, and a 60s render costs about what white bars did. The price is
+  // that each bar is ONE colour rather than a gradient across its own
+  // width, which is the cleaner look anyway.
+  const rainbow = (third: number) =>
+    `'127.5+127.5*sin(2*PI*(X/W+mod(T,${VIZ_DRIFT_SECONDS})/${VIZ_DRIFT_SECONDS})+` +
+    `${((2 * Math.PI * third) / 3).toFixed(4)})'`;
   const gap =
     `geq=r=255:g=255:b=255:` +
     `a='if(lt(mod(X\,${VIZ_COLS})\,${VIZ_FILL})\,` +
     `max(r(X\,Y)\,max(g(X\,Y)\,b(X\,Y)))\,0)'`;
   legs.push(
     `[aviz]showcqt=s=${VIZ_BARS}x${VIZ_HEIGHT}:sono_h=0:bar_g=${VIZ_GAMMA}:` +
-      `count=6:basefreq=${VIZ_LO}:endfreq=${VIZ_HI}:fps=${FPS}[vzraw]`,
+      `count=6:basefreq=${VIZ_LO}:endfreq=${VIZ_HI}:fps=${FPS},split[vzraw][vztime]`,
+  );
+  legs.push(
+    `[vztime]format=rgba,crop=${VIZ_BARS}:1:0:0,` +
+      `geq=r=${rainbow(0)}:g=${rainbow(1)}:b=${rainbow(2)}:a=255,` +
+      `scale=${VIZ_BARS * VIZ_COLS}:${VIZ_HEIGHT}:flags=neighbor[vzhue]`,
   );
   legs.push(
     `[vzraw]scale=${VIZ_BARS * VIZ_COLS}:${VIZ_HEIGHT}:flags=neighbor,format=rgba,` +
-      `${gap},scale=${WIDE.w}:${VIZ_HEIGHT}:flags=neighbor,` +
+      `${gap}[vzwhite]`,
+  );
+  legs.push(
+    `[vzwhite][vzhue]blend=all_mode=multiply,` +
+      `scale=${WIDE.w}:${VIZ_HEIGHT}:flags=neighbor,` +
       `colorchannelmixer=aa=${VIZ_ALPHA}[viz]`,
   );
 

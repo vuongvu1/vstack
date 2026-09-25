@@ -8,12 +8,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BUCKETS_PER_SEC } from "../src/lofi.ts";
 import { probeAudio, probeFile } from "./ffmpeg.ts";
 import {
+  BREATH_SECONDS,
   FADE,
+  GLOW_SECONDS,
   LOGO_FILTER,
   LOGO_PATH,
   LOGO_RECT,
+  SPIN_EXPR,
   logoAt,
   SPIN_SECONDS,
+  spinAt,
   VIZ_BAR,
   VIZ_RECT,
   concatMusic,
@@ -231,13 +235,20 @@ async function regionAt(
 const boxAt = (path: string, t: number, x: number, y: number, side: number) =>
   regionAt(path, t, x, y, side, side);
 
-/** Mean brightness over the columns of a region that satisfy `keep`.
+/** Mean distance from the flat teal background, over the columns of a
+ *  region that satisfy `keep`.
+ *
+ *  DISTANCE rather than brightness because the bars are coloured now. White
+ *  bars could only ever brighten the background, so brightness was a fair
+ *  proxy for "a bar is here"; a rainbow bar can be darker than the teal, or
+ *  the same brightness in a different hue, and brightness says nothing
+ *  about either. Distance sees any bar of any colour.
  *
  *  Column-wise rather than whole-region because that is the only way to see
  *  the GAPS: a band with no gaps and a band with them have similar overall
- *  means, and differ entirely in how that brightness is distributed across
- *  each bar's slot. */
-function columnMean(
+ *  means, and differ entirely in how the bars are distributed across each
+ *  slot. */
+function columnDist(
   buf: Buffer, w: number, h: number, keep: (x: number) => boolean,
 ): number {
   let sum = 0;
@@ -246,11 +257,34 @@ function columnMean(
     for (let x = 0; x < w; x++) {
       if (!keep(x)) continue;
       const i = (y * w + x) * 3;
-      sum += ((buf[i] ?? 0) + (buf[i + 1] ?? 0) + (buf[i + 2] ?? 0)) / 3;
+      sum += Math.hypot((buf[i] ?? 0) - 0x10, (buf[i + 1] ?? 0) - 0x80, (buf[i + 2] ?? 0) - 0x80);
       n++;
     }
   }
   return n === 0 ? 0 : sum / n;
+}
+
+/** Which way the covered pixels of a column range move AWAY from the teal,
+ *  as a unit vector — the colour of the bars, independent of how faint they
+ *  are. A pixel less than 20 from the teal is background and does not
+ *  vote. */
+function colourDirection(
+  buf: Buffer, w: number, h: number, lo: number, hi: number,
+): { n: number; dir: [number, number, number] } {
+  const sum = [0, 0, 0];
+  let n = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = lo; x < hi; x++) {
+      const i = (y * w + x) * 3;
+      const d = [(buf[i] ?? 0) - 0x10, (buf[i + 1] ?? 0) - 0x80, (buf[i + 2] ?? 0) - 0x80];
+      const m = Math.hypot(d[0]!, d[1]!, d[2]!);
+      if (m < 20) continue;
+      for (let c = 0; c < 3; c++) sum[c]! += d[c]! / m;
+      n++;
+    }
+  }
+  const m = Math.hypot(sum[0]!, sum[1]!, sum[2]!);
+  return { n, dir: [sum[0]! / m, sum[1]! / m, sum[2]! / m] };
 }
 
 /** Mean absolute per-channel difference between two equal-sized boxes.
@@ -259,6 +293,74 @@ function columnMean(
  *  the SAME orientation differ by 1.6 (libx264 being lossy, nothing more),
  *  and any two different orientations of this mark differ by 15 to 20. The
  *  thresholds below sit in that gap with room on both sides. */
+/** The mark alone, unanimated — the scale and pad `LOGO_FILTER` starts
+ *  from, without its breathing. What the spin test rotates, so the angle is
+ *  the only thing that moves. */
+const STILL_MARK =
+  `format=rgba,scale=300:300:force_original_aspect_ratio=decrease,` +
+  `pad=${LOGO_RECT.side}:${LOGO_RECT.side}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
+
+/** RGBA frames of `filter` run over the real mark asset, one per instant.
+ *
+ *  Driven at a LOW frame rate by default so `t` can be walked an hour out
+ *  in a few thousand small frames — legitimate for what these tests ask,
+ *  since every effect on the mark is a function of the timestamp and not
+ *  of how many frames it took to get there. `times` must be ascending and
+ *  land on the frame grid. */
+async function markFrames(filter: string, times: number[], fps = 2): Promise<Buffer[]> {
+  const sel = times.map((t) => `eq(n\\,${Math.round(t * fps)})`).join("+");
+  const { stdout } = await run(
+    "ffmpeg",
+    [
+      "-v", "error",
+      "-loop", "1", "-framerate", String(fps),
+      "-t", String(Math.max(...times) + 1), "-i", LOGO_PATH,
+      "-vf", `${filter},select='${sel}',format=rgba`,
+      "-fps_mode", "passthrough", "-f", "rawvideo", "-",
+    ],
+    { encoding: "buffer", maxBuffer: 1 << 29 },
+  );
+  const size = LOGO_RECT.side * LOGO_RECT.side * 4;
+  expect(stdout.length).toBe(size * times.length);
+  return times.map((_, i) => stdout.subarray(i * size, (i + 1) * size));
+}
+
+/** How many pixels of an RGBA frame are solidly opaque. */
+function opaqueArea(rgba: Buffer): number {
+  let n = 0;
+  for (let i = 3; i < rgba.length; i += 4) if ((rgba[i] ?? 0) > 200) n++;
+  return n;
+}
+
+/** Where an RGBA frame's opaque pixels are centred. */
+function centroid(rgba: Buffer): { x: number; y: number } {
+  const side = LOGO_RECT.side;
+  let sx = 0;
+  let sy = 0;
+  let n = 0;
+  for (let p = 0; p < side * side; p++) {
+    if ((rgba[p * 4 + 3] ?? 0) <= 200) continue;
+    sx += p % side;
+    sy += Math.floor(p / side);
+    n++;
+  }
+  return { x: sx / n, y: sy / n };
+}
+
+/** The soft-alpha pixels of an RGBA frame — a glow is made of these — and
+ *  their mean colour. */
+function halo(rgba: Buffer): { count: number; rgb: [number, number, number] } {
+  let n = 0;
+  const sum = [0, 0, 0];
+  for (let i = 0; i < rgba.length; i += 4) {
+    const a = rgba[i + 3] ?? 0;
+    if (a < 20 || a > 200) continue;
+    n++;
+    for (let c = 0; c < 3; c++) sum[c]! += rgba[i + c] ?? 0;
+  }
+  return { count: n, rgb: [sum[0]! / n, sum[1]! / n, sum[2]! / n] };
+}
+
 function boxDiff(a: Buffer, b: Buffer): number {
   let sum = 0;
   for (let i = 0; i < a.length; i++) sum += Math.abs((a[i] ?? 0) - (b[i] ?? 0));
@@ -302,6 +404,40 @@ describe("FADE", () => {
   // The crackle-boost window sampled below is placed from this value.
   it("is the 0.5s the crackle-boost samples assume", () => {
     expect(FADE).toBe(0.5);
+  });
+});
+
+describe("spinAt", () => {
+  it("stays far inside rotate's 2048-radian ceiling, however long the render", () => {
+    // The wobble rides on the wrapped spin, so the angle rotate is handed is
+    // bounded by one turn plus the wobble's own amplitude — for a render of
+    // any length. Swept past four days of timeline.
+    let worst = 0;
+    for (let t = 0; t < 4e5; t += 0.37) worst = Math.max(worst, Math.abs(spinAt(t)));
+    expect(worst).toBeLessThan(2 * Math.PI + 1);
+  });
+
+  it("runs backwards for a small slice of time, and forwards on average", () => {
+    // The whole point of the wobble: the spin swells, eases, and every so
+    // often briefly turns back, rather than ticking round like a metronome.
+    // "Every so often" is pinned as a band — a wobble too weak never reverses
+    // and one too strong spends a third of its life going the wrong way.
+    const dt = 0.01;
+    let back = 0;
+    let n = 0;
+    let sum = 0;
+    for (let t = 0; t < 1000; t += dt) {
+      const d = spinAt(t + dt) - spinAt(t);
+      if (Math.abs(d) > Math.PI) continue; // the wrap, not motion
+      n++;
+      sum += d;
+      if (d < 0) back++;
+    }
+    expect(back / n).toBeGreaterThan(0.05);
+    expect(back / n).toBeLessThan(0.25);
+    // And on average one turn every SPIN_SECONDS, which is what the constant
+    // still means.
+    expect(sum / (n * dt)).toBeCloseTo((2 * Math.PI) / SPIN_SECONDS, 2);
   });
 });
 
@@ -856,82 +992,92 @@ describe("renderLofi", () => {
     expect(max).toBeGreaterThan(WIDE_W - LOGO_RECT.side - 20);
   });
 
-  it(`turns once every ${SPIN_SECONDS}s`, async () => {
+  it("keeps turning in the real render", async () => {
     // Follows the mark, because it no longer sits still.
     //
-    // That the thresholds below survived the mark moving is fixture-luck
-    // worth writing down rather than a property of the graph. Following the
-    // mark means the crop's BACKGROUND changes too, and at t=10 the box sits
-    // at y=518..944 — well inside the bars' own band. It still measures 1.25
-    // against a full turn (the static mark gave 1.6) because this fixture's
-    // music is a 220 Hz SINE: `showcqt` puts essentially all of its energy
-    // in the leftmost bins, and the box is at x=704..1130 by then, over
-    // empty band. Measured at the other two samples: 19.92 and 20.42.
-    //
-    // Give this fixture broadband music and the crop would carry real bars
-    // that differ between two instants, and the full-turn bound is the one
-    // that would go first. The fix then is a crop that stays clear of the
-    // band, not a looser bound.
+    // This used to pin the PERIOD too, with a full-turn sample that had to
+    // match t=0. It cannot any more: the mark wobbles, breathes, hue-swings
+    // and glows on periods that deliberately never line up, so no instant
+    // after t=0 shows the same picture again. The period is pinned where it
+    // can be isolated — "spins at exactly the angle spinAt names", on the
+    // mark alone — and this test is left saying only that the composed
+    // render still moves. Measured at the two samples: 19.92 and 20.42 before
+    // the extra effects, and they only add difference.
     const at = (t: number) => {
       const { x, y, side } = logoAt(t);
       return boxAt(out, t, x, y, side);
     };
     const zero = await at(0);
-
-    // A quarter turn and a half turn must both look different. The HALF turn
-    // is the one that pins the period: at SPIN_SECONDS / 2 a mark spinning
-    // twice as fast would be back at its starting angle and match, so
-    // without this sample a 5s period passes every other assertion here.
     expect(boxDiff(zero, await at(SPIN_SECONDS / 4))).toBeGreaterThan(10);
     expect(boxDiff(zero, await at(SPIN_SECONDS / 2))).toBeGreaterThan(10);
-
-    // And a full turn brings it back. Measured at 1.6 on a real render —
-    // pure encoder noise — against 15-20 for any other angle, so this bound
-    // is nowhere near either side. A 20s period fails here.
-    expect(boxDiff(zero, await at(SPIN_SECONDS))).toBeLessThan(6);
   }, 120_000);
 
-  it("is still turning an hour in, past rotate's own angle ceiling", async () => {
-    // ffmpeg's `rotate` carries its angle in a fixed-point value that
-    // overflows past 2048 RADIANS, after which every frame comes back at one
-    // frozen angle for the rest of the render. At SPIN_SECONDS = 10 that is
-    // t = 2048 * SPIN_SECONDS / 2PI = 3259.49s — 54m19s in. Measured on this
-    // build: alive at t=3258, identical checksums from t=3260.48 onward, and
-    // reproduced in a real 2h44m render whose mark stopped dead at that mark.
+  it("spins at exactly the angle spinAt names, an hour in as much as at the start", async () => {
+    // `spinAt` and `SPIN_EXPR` are one rule in two languages, the way
+    // `bounce` and `bounceExpr` are, and this is what proves they agree: the
+    // expression rendered by `rotate` over time against a CONSTANT angle
+    // `spinAt` computed for the same instant. Any drift between the two —
+    // a period, the wobble, a sign — shows up as a picture that does not
+    // match.
     //
-    // Runs the shipped `LOGO_FILTER` against the real asset rather than the
-    // fixture render, because reaching t=3300 in a 1920x1080 render is an
-    // hour of encoding. The overflow is a function of the ANGLE, so the rate
-    // the timeline is driven at is not part of what this tests: 2 fps gets
-    // `t` an hour out in a few thousand 426x426 frames.
-    const fps = 2;
-    const late = 3300;
-    const picks = [late, late + SPIN_SECONDS / 4, late + SPIN_SECONDS];
-    const sel = picks.map((t) => `eq(n\\,${t * fps})`).join("+");
-    const { stdout } = await run(
-      "ffmpeg",
-      [
-        "-v", "error",
-        "-loop", "1", "-framerate", String(fps),
-        "-t", String(late + SPIN_SECONDS + 1), "-i", LOGO_PATH,
-        "-vf", `${LOGO_FILTER},select='${sel}',format=gray`,
-        "-fps_mode", "passthrough", "-f", "rawvideo", "-",
-      ],
-      { encoding: "buffer", maxBuffer: 1 << 28 },
-    );
-    const size = stdout.length / picks.length;
-    expect(size).toBe(LOGO_RECT.side * LOGO_RECT.side);
-    const [zero, quarter, full] = picks.map((_, i) =>
-      stdout.subarray(i * size, (i + 1) * size),
-    ) as [Buffer, Buffer, Buffer];
+    // It also carries the old ceiling test's job. ffmpeg's `rotate` holds its
+    // angle in a fixed-point value that overflows past 2048 RADIANS and then
+    // freezes for the rest of the render (t = 3259.49s at a bare 10s spin;
+    // measured alive at 3258 and byte-identical from 3260.48). At t=3300 a
+    // frozen rotate would still be showing the angle from 3259 while
+    // `spinAt(3300)` names another, so dropping the `mod` fails here.
+    //
+    // Isolated on a STILL mark — no breathing, no hue, no glow — because
+    // those are exactly what make the composed picture never repeat, and
+    // only the angle is under test.
+    const times = [0, 2.5, 5, 7.5, 3300, 3302.5];
+    const got = await markFrames(`${STILL_MARK},rotate=a='${SPIN_EXPR}':c=none`, times);
+    const want: Buffer[] = [];
+    for (const t of times) {
+      want.push(...(await markFrames(`${STILL_MARK},rotate=a=${spinAt(t)}:c=none`, [0])));
+    }
+    // The references must actually differ from one another, or a `rotate`
+    // that ignored its angle entirely would match every one of them.
+    expect(boxDiff(want[0]!, want[1]!)).toBeGreaterThan(10);
+    for (const i of times.keys()) expect(boxDiff(got[i]!, want[i]!)).toBeLessThan(1);
+  }, 120_000);
 
-    // Same shape as the spin test above: a quarter turn must differ and a
-    // full turn must come back. Bounds are wider apart here because this
-    // crop is the mark alone on transparency rather than over a fixture
-    // background — measured 39.6 for the quarter turn and 0 for the full
-    // one, the latter exactly zero since nothing re-encodes it.
-    expect(boxDiff(zero, quarter)).toBeGreaterThan(10);
-    expect(boxDiff(zero, full)).toBeLessThan(6);
+  it("breathes smaller and back, and stays centred while it does", async () => {
+    // Breathing only ever SHRINKS the mark from `LOGO_SIZE`: growing past it
+    // would push the mark's diagonal past `LOGO_BOX` and `rotate` would shear
+    // its corners, the defect the diagonal pad exists to rule out. So the
+    // opaque area at the smallest breath is about BREATH_MIN^2 of the
+    // largest — rotation preserves area, so the spin between the two
+    // samples does not disturb the ratio.
+    const [big, small] = await markFrames(LOGO_FILTER, [0, BREATH_SECONDS / 2], 20);
+    const ratio = opaqueArea(small!) / opaqueArea(big!);
+    expect(ratio).toBeLessThan(0.8);
+    expect(ratio).toBeGreaterThan(0.6);
+
+    // And CENTRED. `pad` places its input once from the size it was
+    // configured with, while `scale=eval=frame` changes that size under it
+    // every frame — a pad that did not follow would park the shrinking mark
+    // in a corner of its box, and the bounce would carry it around off-axis.
+    const c = centroid(small!);
+    const mid = LOGO_RECT.side / 2;
+    expect(Math.abs(c.x - mid)).toBeLessThan(3);
+    expect(Math.abs(c.y - mid)).toBeLessThan(3);
+  }, 120_000);
+
+  it("wears a soft coloured glow, and the glow's colour moves", async () => {
+    // A halo is SOFT alpha: partly transparent pixels around the vinyl. The
+    // bare mark has only a one-pixel antialiased edge of those; the glow is
+    // a whole band of them.
+    const [a, b] = await markFrames(LOGO_FILTER, [0, GLOW_SECONDS / 3], 20);
+    const bare = (await markFrames(STILL_MARK, [0]))[0]!;
+    expect(halo(a!).count).toBeGreaterThan(halo(bare).count * 4);
+
+    // A third of a cycle apart the glow is a third of the way round the
+    // colour wheel, so the halo's mean colour must have moved a long way.
+    const ca = halo(a!).rgb;
+    const cb = halo(b!).rgb;
+    const dist = Math.hypot(ca[0] - cb[0], ca[1] - cb[1], ca[2] - cb[2]);
+    expect(dist).toBeGreaterThan(60);
   }, 120_000);
 
   // Same split as the mark's, and for the same reason: the pixel tests crop
@@ -957,36 +1103,45 @@ describe("renderLofi", () => {
     expect(VIZ_BAR.fill).toBeLessThan(VIZ_BAR.slot * 0.9);
   });
 
-  // Sampled over the band's BOTTOM 120px rather than all 360 of it, and the
-  // thresholds are small on purpose. Bars are lit from the bottom and thin
-  // out upward, so averaged over the whole band their contribution is +0.9
-  // over the flat background — real, but too close to the noise to assert
-  // on. Over the bottom 120 it is +2.5, which is the same signal measured
-  // where it lives. Every number below was measured on this fixture.
+  // Sampled over the band's BOTTOM 120px rather than all 360 of it. Bars are
+  // lit from the bottom and thin out upward, so averaged over the whole band
+  // their contribution sinks into the noise; the bottom 120 is the same
+  // signal measured where it lives.
+  //
+  // Every number below was RE-MEASURED when the bars went from white to a
+  // rainbow, on distance from the teal rather than on brightness — see
+  // `columnDist`. Printed side by side on the same fixture, white against
+  // rainbow: band 6.85 / 5.58, lit columns 8.93 / 7.08, gaps 2.00 / 2.08,
+  // the right half quiet 2.59 / 2.39 and under the speech 43.05 / 33.97. The
+  // rainbow is a little fainter than white everywhere — a coloured bar
+  // moves the picture less than a white one — and every bound sits clear of
+  // it on both sides.
   const BAND_SAMPLE = 120;
-  const FLAT = (0x10 + 0x80 + 0x80) / 3;
 
   it("draws bars in the band and leaves the rest of the frame alone", async () => {
     const { x, y, w, h } = VIZ_RECT;
     const band = await regionAt(out, 4, x, y + h - BAND_SAMPLE, w, BAND_SAMPLE);
-    // +2.5 measured; the bound is well under it and well over the +0.0 a
-    // render with no visualiser gives.
-    expect(columnMean(band, w, BAND_SAMPLE, () => true)).toBeGreaterThan(FLAT + 1.5);
+    expect(columnDist(band, w, BAND_SAMPLE, () => true)).toBeGreaterThan(4);
 
     // The strip directly ABOVE the band carries no bars, which is what makes
-    // this "along the bottom" rather than "somewhere in the frame". Stated
-    // as "no brighter than the background" rather than "equal to it":
-    // libx264 decodes the flat teal about 0.7 under its source value, and
-    // that rounding is not what this test is about.
-    const above = await regionAt(out, 4, x, y - 200, w, 150);
-    expect(columnMean(above, w, 150, () => true)).toBeLessThan(FLAT + 0.5);
+    // this "along the bottom" rather than "somewhere in the frame" — sampled
+    // CLEAR OF THE MARK, which is the part worth knowing. At t=4 the
+    // bouncing mark sits across this very strip (logoAt(4) is x=1154,
+    // y=340..766), and measured over the full width the strip reads 18.9. The
+    // old brightness version of this test passed anyway, because a dark
+    // vinyl does not BRIGHTEN anything: it was blind to the mark being here
+    // at all. Clear of it the strip reads 2.24 — libx264's own noise on the
+    // flat teal.
+    const clear = logoAt(4).x - 40;
+    const above = await regionAt(out, 4, x, y - 200, clear, 150);
+    expect(columnDist(above, clear, 150, () => true)).toBeLessThan(3.5);
   }, 120_000);
 
   it("leaves a gap between neighbouring bars", async () => {
-    // `gifsync`'s bars fill 70% of their slot. Measured here: lit columns
-    // sit +3.8 over the background and gap columns -0.6, i.e. the gaps are
-    // background to within chroma-subsampling noise. Dropping the masking
-    // expression makes the two equal.
+    // `gifsync`'s bars fill 70% of their slot. Measured here: lit columns sit
+    // 7.08 from the teal and gap columns 2.08 — the gaps are background to
+    // within encoder noise. Dropping the masking expression makes the two
+    // equal.
     const { x, y, w, h } = VIZ_RECT;
     const band = await regionAt(out, 4, x, y + h - BAND_SAMPLE, w, BAND_SAMPLE);
     const isBar = (c: number) => c % VIZ_BAR.slot < VIZ_BAR.fill;
@@ -996,10 +1151,34 @@ describe("renderLofi", () => {
     expect(cols.filter(isBar).length).toBeGreaterThan(0);
     expect(cols.filter((c) => !isBar(c)).length).toBeGreaterThan(0);
 
-    const inBar = columnMean(band, w, BAND_SAMPLE, isBar);
-    const inGap = columnMean(band, w, BAND_SAMPLE, (c) => !isBar(c));
-    expect(inBar - FLAT).toBeGreaterThan(2);
-    expect(inGap - FLAT).toBeLessThan(1);
+    expect(columnDist(band, w, BAND_SAMPLE, isBar)).toBeGreaterThan(5);
+    expect(columnDist(band, w, BAND_SAMPLE, (c) => !isBar(c))).toBeLessThan(3);
+  }, 120_000);
+
+  it("colours the bars, and not all one colour", async () => {
+    // The rainbow runs ACROSS the band as well as drifting in time, so at one
+    // instant two stretches of it are two different colours. Compared on the
+    // DIRECTION each covered pixel moves away from the teal, not on its mean
+    // colour: this fixture's bars are faint, so a mean is swamped by the
+    // background (27.8 apart for white, only 56.6 for the rainbow), while a
+    // direction ignores how faint a bar is and reads only which way it
+    // pulls. White pulls every bar the same way — measured 0.4 degrees apart
+    // — and the rainbow 81.0.
+    //
+    // Two eighths of the RIGHT half, mid-speech, because the white-noise
+    // speech lights that whole half hard. Not the left quarter: this fixture's
+    // background is teal, and at t=13.5 the rainbow puts teal there — the bars
+    // vanish into it (609 covered pixels, against 20,000 on the right). That
+    // is a real property of coloured bars on a background of the same hue,
+    // not a render bug; it is just not what this test is about.
+    const { x, y, w, h } = VIZ_RECT;
+    const band = await regionAt(out, 13.5, x, y + h - BAND_SAMPLE, w, BAND_SAMPLE);
+    const a = colourDirection(band, w, BAND_SAMPLE, w / 2, (w * 5) / 8);
+    const b = colourDirection(band, w, BAND_SAMPLE, (w * 7) / 8, w);
+    expect(a.n).toBeGreaterThan(1000);
+    expect(b.n).toBeGreaterThan(1000);
+    const cos = a.dir[0] * b.dir[0] + a.dir[1] * b.dir[1] + a.dir[2] * b.dir[2];
+    expect((Math.acos(Math.min(1, cos)) * 180) / Math.PI).toBeGreaterThan(30);
   }, 120_000);
 
   it("follows the whole mix, not just the music", async () => {
@@ -1017,10 +1196,9 @@ describe("renderLofi", () => {
     const quiet = await band(5);
     // The speech runs [12, 15]; sampled in the middle of it.
     const loud = await band(13.5);
-    // Measured at +0.2 quiet against +18.6 under the speech, so the bound
-    // has an order of magnitude of room on both sides.
-    expect(columnMean(loud, half, BAND_SAMPLE, () => true)).toBeGreaterThan(
-      columnMean(quiet, half, BAND_SAMPLE, () => true) + 8,
+    // Measured 2.39 quiet against 33.97 under the speech.
+    expect(columnDist(loud, half, BAND_SAMPLE, () => true)).toBeGreaterThan(
+      columnDist(quiet, half, BAND_SAMPLE, () => true) + 15,
     );
   }, 120_000);
 

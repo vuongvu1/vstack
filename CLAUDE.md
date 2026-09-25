@@ -136,7 +136,10 @@ server/longform.ts WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK,
                    checkLongform, Trim/MIN_KEPT/detectTrim/keptRange,
                    stackWide (the long journey's one ffmpeg pass)
 server/lofi.ts     WIDE, FADE, TRACK_FADE, CRACKLE_PATH, LOGO_PATH/LOGO_RECT/
-                   SPIN_SECONDS, VIZ_RECT/VIZ_BAR, checkLofi,
+                   SPIN_SECONDS, spinAt/SPIN_EXPR (the wobbling spin, one
+                   rule in two languages), BREATH_SECONDS/GLOW_SECONDS,
+                   LOGO_FILTER (the mark's whole chain), VIZ_RECT/VIZ_BAR,
+                   checkLofi,
                    concatMusic (the music pre-pass — several tracks dipped
                    at each seam into one file, or one track untouched),
                    Cut/renderLofi (the
@@ -1146,11 +1149,8 @@ overlay: compositing alpha into an already-subsampled plane throws away the
 colour resolution the mark's edges need.
 
 The angle is an expression over the frame's own timestamp, not a frame
-counter, so one turn is ten real seconds and stays ten if `FPS` ever
-changes. `server/lofi.test.ts` samples a quarter turn, a HALF turn and a
-full turn: the half turn is the one that pins the period, because a mark
-spinning twice as fast is back at its starting angle there and passes every
-other assertion.
+counter, so one turn is ten real seconds ON AVERAGE and stays so if `FPS`
+ever changes. On average, because the spin WOBBLES now — see below.
 
 **That angle must be `mod`'d into one turn, because ffmpeg's `rotate`
 overflows past 2048 RADIANS and freezes.** The bare `a=2*PI*t/SPIN_SECONDS`
@@ -1171,25 +1171,66 @@ unchanged frame for frame. The value has to be QUOTED (`a='...'`) for the
 same reason `bounceExpr`'s does — the comma inside `mod(t,10)` would
 otherwise end the `rotate` mid-expression.
 
-The test for it cannot be a real render: reaching t=3300 at 1920x1080 costs
-the better part of an hour of encoding. So `LOGO_FILTER` is exported whole
-and the test drives THAT string through real ffmpeg against the real asset
-at 2 fps, which walks the timeline an hour out in a few thousand 426x426
-frames — legitimate because the overflow is a function of the ANGLE, and the
-rate the timeline is driven at is not part of what is being tested. It runs
-in about two seconds and fails at a quarter-turn difference of exactly 0
-with the `mod` removed.
+**The mark carries four appearance effects on top of the bounce, and every
+one of them leaves the POSITION contract alone.** The bounce is exactly as
+it was — `bounce`/`bounceExpr`/`logoAt` are untouched — because a wandering
+path was offered and turned down in favour of the DVD wall-bounce. What
+moves is the picture inside the padded box: a wobbling spin, breathing, a
+gentle hue swing, and a cycling glow. Their periods (7.3, 5.7, 13 and 19s,
+against the spin's 10) are deliberately incommensurate, and that is where
+the randomness comes from: no per-frame `random()`, which is reproducible
+across runs (measured) but white noise frame to frame, so it strobes.
 
-That spin test now FOLLOWS the mark, and its thresholds surviving the move
-is fixture-luck worth knowing about rather than a property of the graph.
-Following the mark means the crop's background moves too, and by the
-full-turn sample the box sits at y=518..944 — inside the bars' own band. It
-still measures 1.25 against a full turn (1.6 when the mark stood still)
-because the fixture's music is a 220 Hz SINE, so `showcqt` puts essentially
-all of its energy in the leftmost bins while the box is out at x=704 by
-then. The other two samples measure 19.92 and 20.42. Give that fixture
-broadband music and the full-turn bound is the first thing that breaks; the
-answer then is a crop that stays clear of the band, not a looser bound.
+- **The spin wobbles.** `spinAt(t)` is the wrapped spin plus `WOBBLE *
+  sin(...)`, each term `mod`'d into its own period so the angle handed to
+  `rotate` stays bounded by one turn plus the wobble for a render of any
+  length — the 2048-radian lesson above, kept. The wobble's size decides how
+  often the mark turns BACK; at these numbers about an eighth of the time,
+  and pure-TS tests in `server/lofi.test.ts` pin that fraction as a band
+  (and the mean rate as one turn per `SPIN_SECONDS`).
+- **`spinAt` and `SPIN_EXPR` are ONE RULE IN TWO LANGUAGES**, the
+  `bounce`/`bounceExpr` pair's twin. What proves they agree is
+  `server/lofi.test.ts` rendering the expression over time and a CONSTANT
+  angle computed by `spinAt` for the same instant, on a still copy of the
+  mark, and requiring the pictures to match — measured 0.000 at all six
+  instants, including t=3300. That test replaced the old ceiling test and
+  inherits its job: a frozen `rotate` at t=3300 shows the angle from 3259,
+  and dropping the `mod` fails it at 16.07 against a bound of 1. It runs at
+  2 fps for the reason the ceiling test did — every effect here is a function
+  of the timestamp, not of how many frames it took to reach it.
+- **Breathing SHRINKS only, and `pad` needs `eval=frame` to follow it.**
+  Growing past `LOGO_SIZE` would put the mark's diagonal past `LOGO_BOX` and
+  `rotate` would shear its corners. And `pad` computes its offset ONCE by
+  default, while `scale=eval=frame` changes the size under it every frame —
+  measured, the shrunk mark sat 31px off-centre in its box until `pad` was
+  told `eval=frame`, after which its centroid is at 213.0/212.2 in a
+  426 box. The test asserts the opaque-area ratio (0.723, i.e. 0.85²) AND
+  the centroid.
+- **The hue swing is capped at ±30 degrees because the mark is a
+  character.** A full hue rotation was rendered and looked at first: at
+  every angle but zero her skin goes green, blue or violet. Thirty degrees
+  moves the shirt teal-to-blue and leaves the face alone. It runs BEFORE
+  `pad`, on the ~300px mark rather than the mostly-transparent 426 box.
+- **The glow is built at an EIGHTH of the box, one flat colour whose ALPHA
+  alone is blurred, cycled by one `hue` rotation.** Each of those is a
+  measured saving over the first version (quarter size, all four planes
+  blurred, colour walked by three per-pixel sines): 3.95s against 2.88s per
+  60s of the logo leg alone, with the two halos indistinguishable side by
+  side. The vinyl is round, so the halo's spread stays inside the 426 box at
+  every angle — nothing is clipped as it turns.
+
+The full-render spin test no longer pins the period — it used to require a
+full turn to match t=0, and nothing matches t=0 any more once four effects
+on four unrelated periods are layered on the mark. It asserts only that the
+composed render keeps moving; the period lives in the agreement test above,
+where the angle can be isolated.
+
+**Those effects cost render time, and it was measured rather than
+guessed.** A 60s render went 14s → 19.5s with everything on, i.e. about
++40%, which takes a three-hour mix from roughly 42 minutes to 59. Per 60s
+of the logo leg in isolation (1.6s with the spin alone): the glow is the
+largest share, the hue swing next, breathing under a second. The first cut
+was +150% (35s), almost all of it the bars' rainbow — see the bars below.
 
 The mark is bundled and unconditional — there is no way to turn it off and
 no upload behind it, the same posture the crackle takes. Its input is
@@ -1229,8 +1270,28 @@ scales — any interpolating scaler turns the discrete bars into a smooth
 ridge, which is the thing `showcqt` at 48 columns exists to avoid. And the
 alpha is keyed on `max(r,g,b)`, not `r`: `showcqt` tints its bars by pitch
 class, so keying on red alone would make a blue bar vanish. The colour is
-replaced with white anyway — the look is `gifsync`'s white-at-0.85, not
-`showcqt`'s rainbow.
+then replaced — with a rainbow of this graph's own, not `showcqt`'s.
+
+**The bars' rainbow is computed on a strip ONE PIXEL PER BAR and multiplied
+onto white bars — never spelled in the gap mask's `geq`.** Its colour depends
+on the column and the time, never the row, so writing it into the per-pixel
+mask recomputed three sines for each of 480x360 pixels a frame for no
+difference. Measured, that alone took a 60s render from 19s to 35s. Split
+off `showcqt`, cropped to 48x1 (RGBA FIRST — a one-pixel-high crop of the
+YUV `showcqt` emits rounds its chroma height to 0 and the graph refuses to
+configure), coloured there, scaled up `neighbor`, and `blend`ed in
+`multiply` onto the white bars, it is 48 evaluations a frame and costs what
+white bars did. Each bar is therefore ONE colour rather than a gradient
+across its own width. The rainbow slides once across the band every
+`VIZ_DRIFT_SECONDS` (23, prime like the mark's periods).
+
+Coloured bars have a real cost white ones did not: a bar the same hue AND
+brightness as the background behind it disappears into it. On the test
+fixture's flat teal, at t=13.5, the rainbow puts teal across the left
+quarter and 609 covered pixels survive there against 20,000 on the right.
+Dark backgrounds — what this journey is normally given — hide it, because
+brightness still separates them; a mid-toned background of a single hue is
+where to look first if bars ever seem to vanish.
 
 **`troughs` places the LONGEST speech first, never in input order.** A long
 speech has strictly fewer legal windows than a short one. `src/lofi.test.ts`
@@ -2174,13 +2235,33 @@ crops AT `LOGO_RECT`, so moving the constant moves the test's own aim, and
 a first version that only checked pixels passed with the logo parked at the
 left edge. The pixel test then proves the mark is actually drawn in that
 rect (against a flat-colour reference) and that the mirrored rect on the
-left is untouched. The SPIN test compares a 256px crop across time, because
-one pixel cannot tell a rotation from noise: two samples of the same
-orientation differ by 1.6 (libx264 being lossy) against 15-20 for any two
-different angles, so the thresholds sit in a ten-fold gap. Five mutations
-are pinned — freezing the angle, halving the period, and moving the mark
-left, down or to the centre each fail exactly one of the two, and dropping
-the overlay fails the pixel one.
+left is untouched. The composed-render spin test compares a 256px crop
+across time and asserts only that it keeps changing; the PERIOD, the wobble
+and the 2048-radian ceiling are pinned by the agreement test between
+`SPIN_EXPR` and `spinAt` on a still mark (0.000 at six instants, 16.07 with
+the `mod` dropped), and two pure-TS tests pin `spinAt` itself: bounded
+across four days of timeline, and backwards for between 5% and 25% of the
+time with a mean rate of one turn per `SPIN_SECONDS`. Breathing is pinned
+on the shipped `LOGO_FILTER` by opaque area (0.723) and by centroid — the
+latter is what catches `pad` without `eval=frame` (31px off). The glow is
+pinned by its soft-alpha pixels (21,730 against the bare mark's 881) and by
+their mean colour moving 276 across a third of `GLOW_SECONDS`.
+
+The bar tests measure DISTANCE from the teal, not brightness, since the
+bars went coloured — a rainbow bar can be darker than the background, or
+the same brightness in another hue, and brightness sees neither. Re-measured
+white against rainbow on the same fixture: band 6.85 / 5.58, lit columns
+8.93 / 7.08, gaps 2.00 / 2.08, the right half quiet 2.59 / 2.39 and under
+the speech 43.05 / 33.97. The colour test compares the DIRECTION covered
+pixels move away from the teal in two eighths of the band — 0.4 degrees
+apart for white, 81.0 for the rainbow — because the fixture's bars are so
+faint that mean colour barely separates them (27.8 against 56.6). Reverting
+to white fails the colour test alone, and dropping the gap mask fails the
+gap test alone. The move also exposed a blind spot in the old "nothing
+above the band" check: at t=4 the bouncing mark sits across that strip
+(it reads 18.9 over the full width), and the brightness version passed
+because a dark vinyl brightens nothing. It samples clear of `logoAt(4)`
+now, where the strip reads 2.24.
 
 Two more cover the background's own fork. The GIF one samples the render at
 six instants and names the colour it expects at each, three of them PAST
