@@ -56,7 +56,8 @@ band-limited and ducking it. A speech is AUDIO ONLY — it may be uploaded
 as an audio file or a video one, and a video one's picture is discarded.
 The background may be a still OR an animated GIF, looped for as long as
 the track runs; a bundled mark spins in the top-right corner of every one
-of them, and a band of frequency bars runs along the bottom.
+of them, and a band of frequency bars runs along the bottom. The whole
+finished picture then goes through a CRT screen — always on.
 It shares `preview`, `/out/`, the publish panel and `media/uploads/` with
 the long journey and nothing else — the long journey's parts arrive on
 `/api/upload`, and the lofi journey's animated background on
@@ -139,7 +140,9 @@ server/lofi.ts     WIDE, FADE, TRACK_FADE, CRACKLE_PATH, LOGO_PATH/LOGO_RECT/
                    SPIN_SECONDS, spinAt/SPIN_EXPR (the wobbling spin, one
                    rule in two languages), VINYL_RIM, hitsAt/markScaleAt
                    (wall hits and the size each one picks), LOGO_FILTER
-                   (the mark's whole chain), VIZ_RECT/VIZ_BAR,
+                   (the mark's whole chain), crtLegs (the CRT screen over
+                   the whole picture, the graph's last video stage),
+                   VIZ_RECT/VIZ_BAR,
                    checkLofi,
                    concatMusic (the music pre-pass — several tracks dipped
                    at each seam into one file, or one track untouched),
@@ -1270,8 +1273,10 @@ full turn to match t=0, and the size and glow no longer promise that. It
 asserts only that the composed render keeps moving; the period lives in the
 agreement test above, where the angle can be isolated.
 
-**Render cost, measured.** A 60s render: 14s before any of this, 15.7s now
-— about +12%, most of it the glow. On the way it was +150% (the bars'
+**Render cost, measured.** A 60s render: 14s before any of this, 15.7s
+with the mark's effects — about +12%, most of it the glow — and ~36.6s once
+the CRT screen (below) is on, against 14.5s without it on the same machine
+at the same moment. On the way it was +150% (the bars'
 rainbow spelled per pixel, see below) and then +40% (the continuous
 breathing, hue swing and glow cycle, all per frame); the per-hit version is
 cheaper because nothing but the glow's recolour does work between hits.
@@ -1279,6 +1284,65 @@ cheaper because nothing but the glow's recolour does work between hits.
 The mark is bundled and unconditional — there is no way to turn it off and
 no upload behind it, the same posture the crackle takes. Its input is
 appended LAST, after the crackle, so no existing index shifts.
+
+**The whole picture goes through a CRT screen, ALWAYS, as the graph's last
+video stage — and every `blend` in it runs in PLANAR RGB.** `crtLegs` lays a
+soft bloom, red/blue colour fringing, the screen's bulge with black curved
+corners, moving grain, a faint flicker, and scanlines plus a vignette over
+background, bars and mark together. All seven were approved on a trial
+render first; there is deliberately no toggle, because the user asked for
+it always on.
+
+The planar-RGB rule is the one that bites silently. `blend` works in
+whatever pixel format it is handed, and on YUV its modes apply to the two
+colour planes as well as to brightness: `multiply` drags them toward zero,
+which is GREEN, and `screen` pushes them up, which is PURPLE. The trial did
+both — a whole render green, then mauve — with no error either time. A still
+PNG preview came out right because a PNG input happens to negotiate planar
+RGB, which is exactly why the bug hid in stills. So `format=gbrp` opens the
+stage, the mask is built in it, and `server/lofi.test.ts` renders a flat
+grey through the stage and requires its channels to stay equal: measured
+0.00 apart, and 26.3 with the stage's opening `format=gbrp` changed to YUV.
+
+Two cost decisions, measured on 20s of 1080p rather than assumed:
+
+- **Scanlines and vignette are ONE static mask**, computed once and
+  multiplied onto every frame. Scanlines computed per frame by a per-pixel
+  `geq` cost 9.75s per 20s on their own and the `vignette` filter 2.3s more;
+  the mask does both for 1.24s. It is converted to planar RGB BEFORE the
+  `loop`, so that conversion happens once, not per frame. And it is applied
+  LAST, after the bulge, so its lines are the output's own straight rows
+  (every third row at 0.645 of its neighbours, measured) rather than bent
+  with the picture — as on a real tube.
+- **The flicker runs after the final `format=yuv420p`.** `eq` is the one
+  filter here without planar-RGB support, so among the others it forced a
+  full-frame round trip through YUV and back on every frame; at the end the
+  frame is YUV for the encoder anyway. Every other filter takes `gbrp`
+  natively — established from the converters ffmpeg auto-inserts under
+  `-v verbose`, not from its help text, which on this build lists no pixel
+  formats at all.
+
+What it costs, and the estimate was LOW: filter-only timing predicted about
++13s per minute; the real render is 14.5s → 36.6s per minute, about 2.5x,
+because the full-frame format conversions around the stage and the encoder
+working on a more detailed picture both count. File size is the bigger
+surprise: a 60s render goes from 5.1 MB to 26.0 MB. The GRAIN is half of
+that on its own (12.7 MB without it) while costing no render time at all
+(38.1s with, 38.3s without) — it is the encoder spending bits on noise. A
+three-hour mix is therefore roughly 4.7 GB instead of 0.9. `CRT_GRAIN` is
+the knob if uploads grow too slow.
+
+The bulge moves every pixel inward except at the centre, the walls the mark
+bounces off included, so the mark still meets the (now curved) picture edge
+at a hit and the bars sit on the curved bottom edge.
+
+`renderLofi` takes a `crt` flag that defaults ON and that `/api/lofi` never
+passes. It exists for the tests alone: everything else in
+`server/lofi.test.ts` measures the COMPOSITION — the mark's position to the
+pixel, the bars' colours against the teal, the GIF's colours — and the
+screen bends, darkens, fringes and grains every pixel those tests sample.
+They all render with `crt: false`; one fixture renders with the screen on,
+over a flat grey with a white stripe near the centre.
 
 **The frequency bars read the FINISHED mix, and `showcqt` is not
 interchangeable with `showfreqs`.** The band along the bottom is fed by an
@@ -2383,6 +2447,15 @@ fields' persistence exclusion, mutation-tested the way the long-form
 fields' already is. The `/api/lofi` route, the panel, and the waveform's
 draggable markers have no tests, like the rest of the network and DOM
 surface.
+
+The CRT screen has five tests of its own, on the one fixture rendered with
+it on (flat mid-grey, a white stripe at x=900..1020, four seconds): the
+render is still exactly the music's length (the mask is a looped one-frame
+source); grey stays grey (0.00 channel gap; 26.3 with the stage in YUV);
+every third row is darker (0.645) and all four corners are black (0.0);
+the stripe's left edge fringes red and its right edge blue (70 and 92);
+and flat areas carry grain (spread 22.2 against a near-constant without
+it).
 
 `server/cut.test.ts` shells real ffmpeg against a synthetic fixture of three
 back-to-back tones — 440 Hz, 1760 Hz, 440 Hz, two seconds each — and its

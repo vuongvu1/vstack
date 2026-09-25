@@ -91,6 +91,12 @@ let tone440b = "";
  *  rather than on either failure mode is `server/longform.test.ts`'s own
  *  lesson for the identical clamp. */
 let toneShort = "";
+/** The CRT fixture: flat mid-grey — so any colour cast from the screen
+ *  stage reads as a number — with one white vertical stripe near the centre
+ *  to give the colour fringing a hard edge to pull apart. Rendered over four
+ *  seconds of tone with the screen ON, the one render in this file that is. */
+let crtBg = "";
+let crtOut = "";
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "vstack-lofi-"));
@@ -192,11 +198,25 @@ beforeAll(async () => {
     "-map", "[a]", "-c:a", "aac", loudThenQuiet,
   ]);
 
+  crtBg = join(dir, "crt-bg.png");
+  await run("ffmpeg", [
+    "-v", "error", "-f", "lavfi",
+    "-i", "color=c=0x808080:s=1920x1080,drawbox=x=900:y=0:w=120:h=1080:color=white:t=fill",
+    "-frames:v", "1", "-y", crtBg,
+  ]);
+  const crtMusic = join(dir, "crt-music.m4a");
+  await run("ffmpeg", [
+    "-v", "error", "-f", "lavfi", "-i", "sine=frequency=220:duration=4",
+    "-c:a", "aac", "-y", crtMusic,
+  ]);
+  crtOut = join(dir, "crt.mp4");
+  await renderLofi({ background: crtBg, music: crtMusic, cuts: [], out: crtOut });
+
   out = join(dir, "out.mp4");
   // One speech at t=12, well clear of both ends. Deliberately the VIDEO
   // fixture: the render this whole describe block measures is the one whose
   // speech has a picture to suppress.
-  await renderLofi({ background: bg, music, cuts: [{ path: speech, at: 12 }], out });
+  await renderLofi({ crt: false,  background: bg, music, cuts: [{ path: speech, at: 12 }], out });
   // Explicit, because several real encodes compete for CPU in the full
   // suite — `server/longform.test.ts`'s hook carries one for the same
   // reason.
@@ -576,7 +596,7 @@ describe("renderLofi", () => {
     // parses through a live run therefore needs a render still IN FLIGHT to
     // poll against, so this starts a second one rather than reusing `out`.
     const out2 = join(dir, "out2.mp4");
-    const pending = renderLofi({ background: bg, music, cuts: [], out: out2 });
+    const pending = renderLofi({ crt: false,  background: bg, music, cuts: [], out: out2 });
     let settled = false;
     pending.then(
       () => { settled = true; },
@@ -675,7 +695,7 @@ describe("renderLofi", () => {
     const joined = join(dir, "multi.flac");
     await concatMusic([tone440a, tone1760, tone440b], joined);
     const multi = join(dir, "multi.mp4");
-    await renderLofi({ background: bg, music: joined, cuts: [{ path: silent, at: 2 }], out: multi });
+    await renderLofi({ crt: false,  background: bg, music: joined, cuts: [{ path: silent, at: 2 }], out: multi });
 
     // The speech is the DIGITAL SILENCE fixture so nothing but the music and
     // the crackle is in the stream being measured.
@@ -746,7 +766,7 @@ describe("renderLofi", () => {
     // carry an `anullsrc` stand-in for exactly this input; it does not any
     // more.
     await expect(
-      renderLofi({
+      renderLofi({ crt: false, 
         background: bg,
         music,
         cuts: [{ path: noaudio, at: 12 }],
@@ -759,7 +779,7 @@ describe("renderLofi", () => {
     // Both are .m4a — no video stream anywhere in the graph but the
     // background picture. This is the audio-only upload path end to end.
     const two = join(dir, "two.mp4");
-    await renderLofi({
+    await renderLofi({ crt: false, 
       background: bg,
       music,
       cuts: [{ path: voice, at: 6 }, { path: voice, at: 20 }],
@@ -787,7 +807,7 @@ describe("renderLofi", () => {
     // `voice` is the existing 1200 Hz audio-only fixture, reused rather than
     // duplicated.
     const repeat = join(dir, "repeat.mp4");
-    await renderLofi({
+    await renderLofi({ crt: false, 
       background: bg,
       music,
       cuts: [
@@ -824,7 +844,7 @@ describe("renderLofi", () => {
     // is the one that dies, with `Error submitting audio frame to the
     // encoder: Invalid argument`.
     const quiet = join(dir, "quiet.mp4");
-    await renderLofi({ background: bg, music, cuts: [{ path: silent, at: 12 }], out: quiet });
+    await renderLofi({ crt: false,  background: bg, music, cuts: [{ path: silent, at: 12 }], out: quiet });
     const probed = await probeFile(quiet);
     expect(probed.hasAudio).toBe(true);
     expect(probed.seconds).toBeGreaterThan(29.5);
@@ -840,7 +860,7 @@ describe("renderLofi", () => {
     // background that merely "worked" would look like for the first 1.5s of
     // a three-minute render.
     const moving = join(dir, "moving.mp4");
-    await renderLofi({
+    await renderLofi({ crt: false, 
       background: gif,
       music,
       cuts: [{ path: voice, at: 12 }],
@@ -1331,7 +1351,7 @@ describe("renderLofi", () => {
   // under test.
   it("lays a crackle bed down and lifts it under a speech", async () => {
     const crackly = join(dir, "crackle.mp4");
-    await renderLofi({ background: bg, music, cuts: [{ path: silent, at: 12 }], out: crackly });
+    await renderLofi({ crt: false,  background: bg, music, cuts: [{ path: silent, at: 12 }], out: crackly });
 
     // Above 6 kHz nothing else in this render lives: the music is a 220 Hz
     // sine and the speech is digital silence, so the crackle — which plays
@@ -1384,6 +1404,92 @@ async function peakHzAt(path: string, at: number): Promise<number> {
   const steady = hits.length > 2 ? hits.slice(1, -1) : hits;
   return steady.reduce((a, b) => a + b, 0) / steady.length;
 }
+
+describe("the CRT screen", () => {
+  /** Mean r, g, b over a region of the CRT render. */
+  const meanRgb = async (t: number, x: number, y: number, w: number, h: number) => {
+    const buf = await regionAt(crtOut, t, x, y, w, h);
+    const sum = [0, 0, 0];
+    for (let i = 0; i < buf.length; i += 3) for (let c = 0; c < 3; c++) sum[c]! += buf[i + c] ?? 0;
+    const n = buf.length / 3;
+    return sum.map((v) => v / n) as [number, number, number];
+  };
+
+  it("is still exactly as long as the music", async () => {
+    // The screen's static mask is a one-frame source looped forever; the
+    // blend that applies it must end with the picture, not with the mask.
+    expect((await probeFile(crtOut)).seconds).toBeCloseTo(4, 1);
+  }, 120_000);
+
+  it("keeps grey grey — no colour cast from a blend in the wrong format", async () => {
+    // THE silent failure of this stage. `blend` works in whatever pixel
+    // format it is handed, and on YUV its modes apply to the two colour
+    // planes as well as brightness: `multiply` drags them toward zero, which
+    // is GREEN, and `screen` pushes them up, which is PURPLE. Both happened
+    // in the trial this was built from — a whole render turned green, then
+    // mauve — and neither raises an error. Every blend runs in planar RGB,
+    // and a flat grey that comes out with its three channels still equal is
+    // what proves it. Sampled clear of the mark and the bars.
+    for (const t of [1, 3]) {
+      const [r, g, b] = await meanRgb(t, 300, 440, 120, 80);
+      expect(Math.abs(r - g)).toBeLessThan(4);
+      expect(Math.abs(b - g)).toBeLessThan(4);
+    }
+  }, 120_000);
+
+  it("draws straight scanlines and bends the screen into black corners", async () => {
+    // The mask is applied LAST, after the curvature, so its lines are the
+    // output's own rows: every third row darker, exactly.
+    const w = 200;
+    const h = 90;
+    const buf = await regionAt(crtOut, 2, 500, 500, w, h);
+    const rows = [0, 0, 0];
+    const counts = [0, 0, 0];
+    for (let row = 0; row < h; row++) {
+      for (let col = 0; col < w; col++) {
+        const i = (row * w + col) * 3;
+        rows[(500 + row) % 3]! += ((buf[i] ?? 0) + (buf[i + 1] ?? 0) + (buf[i + 2] ?? 0)) / 3;
+        counts[(500 + row) % 3]!++;
+      }
+    }
+    const [dark, lit1, lit2] = rows.map((v, k) => v / counts[k]!) as [number, number, number];
+    expect(dark).toBeLessThan(0.8 * Math.min(lit1, lit2));
+
+    // The bulge pulls the picture in from every corner, leaving black.
+    for (const [x, y] of [[0, 0], [1912, 0], [0, 1072], [1912, 1072]] as const) {
+      const [r, g, b] = await meanRgb(2, x, y, 8, 8);
+      expect((r + g + b) / 3).toBeLessThan(16);
+    }
+  }, 120_000);
+
+  it("fringes a hard edge red on one side and blue on the other", async () => {
+    // The white stripe starts at x=900 and ends at x=1020. Red is pulled
+    // left and blue right, so just outside the left edge the red channel
+    // has already arrived while blue has not, and the right edge is the
+    // mirror. Near the centre, where the bulge moves an edge by under a
+    // pixel.
+    const [lr, , lb] = await meanRgb(2, 896, 480, 3, 120);
+    const [rr, , rb] = await meanRgb(2, 1021, 480, 3, 120);
+    expect(lr - lb).toBeGreaterThan(30);
+    expect(rb - rr).toBeGreaterThan(30);
+  }, 120_000);
+
+  it("lays moving grain over flat areas", async () => {
+    // One scanline class only (rows not darkened), so the lines themselves
+    // are not mistaken for noise. A flat grey without the grain decodes to
+    // a near-constant; with it, the pixels scatter.
+    const w = 120;
+    const buf = await regionAt(crtOut, 2, 300, 441, w, 60);
+    const vals: number[] = [];
+    for (let row = 0; row < 60; row++) {
+      if ((441 + row) % 3 === 0) continue;
+      for (let col = 0; col < w; col++) vals.push(buf[(row * w + col) * 3 + 1] ?? 0);
+    }
+    const mean = vals.reduce((a, v) => a + v, 0) / vals.length;
+    const sd = Math.sqrt(vals.reduce((a, v) => a + (v - mean) ** 2, 0) / vals.length);
+    expect(sd).toBeGreaterThan(3);
+  }, 120_000);
+});
 
 describe("concatMusic", () => {
   it("returns the single input untouched, writing nothing", async () => {

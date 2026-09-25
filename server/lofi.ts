@@ -537,6 +537,69 @@ export function logoAt(t: number): { x: number; y: number; side: number } {
  *  every later instant comes from `logoAt`. */
 export const LOGO_RECT = logoAt(0);
 
+/** The CRT screen, laid over the WHOLE finished picture — background, bars
+ *  and mark together — as the graph's last video stage.
+ *
+ *  Seven ingredients, all approved on a trial render before any of this was
+ *  written: a soft bloom, red/blue colour fringing, the screen's bulge with
+ *  black curved corners, moving grain, a faint flicker, and scanlines plus a
+ *  vignette.
+ *
+ *  THE rule of this stage: every `blend` runs in PLANAR RGB (`gbrp`). `blend`
+ *  works in whatever pixel format it is handed, and on YUV its modes apply to
+ *  the two colour planes as well as to brightness — `multiply` drags them
+ *  toward zero, which is green, and `screen` pushes them up, which is
+ *  purple. The trial did both, a whole render green and then mauve, with no
+ *  error either time. `server/lofi.test.ts` renders a flat grey through this
+ *  stage and requires its three channels to stay equal.
+ *
+ *  Two cost decisions, both measured on 20s of 1080p:
+ *
+ *  - SCANLINES AND VIGNETTE ARE ONE STATIC MASK, computed once and
+ *    multiplied onto every frame. Computing the scanlines per frame with a
+ *    per-pixel `geq` cost 9.75s per 20s on its own — more than doubling a
+ *    render — and the vignette filter another 2.3s; the mask does both for
+ *    1.24s. It is converted to planar RGB BEFORE the `loop`, so that happens
+ *    once rather than on every frame. Applied LAST, after the bulge, so its
+ *    lines are the output's own straight rows rather than bent with the
+ *    picture — a real tube's lines are straight too.
+ *  - THE FLICKER RUNS AFTER THE FINAL `format=yuv420p`. `eq` does not take
+ *    planar RGB, so placed among the others it forced a full-frame round trip
+ *    through YUV and back on every frame; at the end the frame is already
+ *    YUV for the encoder. Every other filter here takes `gbrp` natively
+ *    (checked by the converters ffmpeg auto-inserts, not assumed).
+ *
+ *  The bulge moves every pixel inward except at the centre, the walls the
+ *  mark bounces off included, so the mark still meets the (now curved) edge
+ *  at a hit. The bars sit on the curved bottom edge the same way. */
+const CRT_BLOOM = 0.2;
+const CRT_FRINGE = 3;
+const CRT_BULGE = { k1: 0.12, k2: 0.04 };
+const CRT_GRAIN = 12;
+const CRT_FLICKER = { depth: 0.02, hz: 7 };
+const CRT_SCANLINE = 0.35;
+const CRT_VIGNETTE = 0.55;
+
+function crtLegs(src: string, dst: string): string[] {
+  const { w, h } = WIDE;
+  const mask =
+    `color=c=white:s=${w}x${h}:d=1:r=${FPS},format=gray,` +
+    `geq=lum='255*(1-${CRT_SCANLINE}*eq(mod(Y,3),0))*` +
+    `(1-${CRT_VIGNETTE}*pow(hypot((X-${w / 2})/${w / 2},(Y-${h / 2})/${h / 2})/1.4142,2.2))',` +
+    `format=gbrp,trim=end_frame=1,loop=loop=-1:size=1[crtmask]`;
+  return [
+    `[${src}]format=gbrp,split[crta][crtb]`,
+    `[crtb]scale=${w / 4}:${h / 4},gblur=sigma=6,scale=${w}:${h}[crtbloom]`,
+    `[crta][crtbloom]blend=all_mode=screen:all_opacity=${CRT_BLOOM},` +
+      `rgbashift=rh=-${CRT_FRINGE}:bh=${CRT_FRINGE},` +
+      `lenscorrection=k1=${CRT_BULGE.k1}:k2=${CRT_BULGE.k2}:i=bilinear,` +
+      `noise=alls=${CRT_GRAIN}:allf=t[crtpic]`,
+    mask,
+    `[crtpic][crtmask]blend=all_mode=multiply:shortest=1,format=yuv420p,` +
+      `eq=brightness='${CRT_FLICKER.depth}*sin(2*PI*t*${CRT_FLICKER.hz})':eval=frame[${dst}]`,
+  ];
+}
+
 /** The band the bars occupy, and one bar's slot inside it — exported for
  *  the test to crop and to classify columns, same reason as `LOGO_RECT`.
  *  `fill` is the lit part of a slot; the rest is the gap. */
@@ -954,8 +1017,14 @@ export async function renderLofi(opts: {
   music: string;
   cuts: Cut[];
   out: string;
+  /** The CRT screen over the finished picture. ALWAYS on in the app —
+   *  `/api/lofi` never passes this — and it exists so the tests that measure
+   *  the composition itself (the mark's position, the bars' colour, the
+   *  background) can read it undistorted: the screen bends, darkens and
+   *  fringes every pixel they sample. The screen has tests of its own. */
+  crt?: boolean;
 }): Promise<string> {
-  const { background, music, cuts, out } = opts;
+  const { background, music, cuts, out, crt = true } = opts;
   // `probeAudio`, never `probeFile`: the track has no video stream, and
   // `probeFile` throws on exactly that. Task 2's prober, imported rather
   // than duplicated — `ffmpeg.ts` is the layer below this one, so there is
@@ -1119,8 +1188,10 @@ export async function renderLofi(opts: {
   legs.push(`[bgx][viz]overlay=0:${WIDE.h - VIZ_HEIGHT}:format=auto[vbars]`);
   legs.push(
     `[vbars][logo]overlay=x='${bounceExpr(PHASE_X, TRAVEL_X)}':` +
-      `y='${bounceExpr(PHASE_Y, TRAVEL_Y)}':format=auto,format=yuv420p[v]`,
+      `y='${bounceExpr(PHASE_Y, TRAVEL_Y)}':format=auto` +
+      (crt ? `[vscene]` : `,format=yuv420p[v]`),
   );
+  if (crt) legs.push(...crtLegs("vscene", "v"));
 
   const fmt = `aformat=sample_fmts=fltp:channel_layouts=stereo`;
   legs.push(`[1:a]aresample=${RATE},${fmt}[music]`);
