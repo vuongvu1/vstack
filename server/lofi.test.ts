@@ -9,6 +9,7 @@ import { BUCKETS_PER_SEC } from "../src/lofi.ts";
 import { probeAudio, probeFile } from "./ffmpeg.ts";
 import {
   FADE,
+  glitchAt,
   hitsAt,
   LOGO_FILTER,
   LOGO_PATH,
@@ -93,8 +94,10 @@ let tone440b = "";
 let toneShort = "";
 /** The CRT fixture: flat mid-grey — so any colour cast from the screen
  *  stage reads as a number — with one white vertical stripe near the centre
- *  to give the colour fringing a hard edge to pull apart. Rendered over four
- *  seconds of tone with the screen ON, the one render in this file that is. */
+ *  to give the colour fringing a hard edge to pull apart — and for the glitch
+ *  to tear sideways. Rendered over EIGHT seconds of tone with the screen ON,
+ *  the one render in this file that is: eight because no glitch may fall in
+ *  the first six seconds, so a shorter fixture would hold none. */
 let crtBg = "";
 let crtOut = "";
 
@@ -206,7 +209,7 @@ beforeAll(async () => {
   ]);
   const crtMusic = join(dir, "crt-music.m4a");
   await run("ffmpeg", [
-    "-v", "error", "-f", "lavfi", "-i", "sine=frequency=220:duration=4",
+    "-v", "error", "-f", "lavfi", "-i", "sine=frequency=220:duration=8",
     "-c:a", "aac", "-y", crtMusic,
   ]);
   crtOut = join(dir, "crt.mp4");
@@ -454,6 +457,43 @@ describe("spinAt", () => {
       worst = Math.max(worst, Math.abs(d / dt - rate));
     }
     expect(worst).toBeLessThan(1e-6);
+  });
+});
+
+describe("glitchAt", () => {
+  it("never glitches in the opening seconds, and then every 5-7s", () => {
+    // One burst per six-second window, placed within the window's first
+    // second — so consecutive bursts are 5 to 7 seconds apart — and the first
+    // window has none, so no render opens on a glitch. Swept over three
+    // hours of timeline on the render's own frame grid.
+    const starts: number[] = [];
+    let was = false;
+    for (let k = 0; k < 3 * 3600 * 30; k++) {
+      const now = glitchAt(k / 30) !== null;
+      if (now && !was) starts.push(k / 30);
+      was = now;
+    }
+    expect(starts[0]).toBeGreaterThanOrEqual(6);
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 1; i < starts.length; i++) {
+      lo = Math.min(lo, starts[i]! - starts[i - 1]!);
+      hi = Math.max(hi, starts[i]! - starts[i - 1]!);
+    }
+    expect(lo).toBeGreaterThanOrEqual(5 - 0.05);
+    expect(hi).toBeLessThanOrEqual(7 + 0.05);
+    // Roughly one every six seconds for the whole three hours.
+    expect(starts.length).toBeGreaterThan(1750);
+  });
+
+  it("tears a band that stays on the picture, by up to 80px either way", () => {
+    for (let k = 0; k < 600 * 30; k++) {
+      const g = glitchAt(k / 30);
+      if (!g) continue;
+      expect(g.top).toBeGreaterThanOrEqual(0);
+      expect(g.top + g.height).toBeLessThanOrEqual(1080);
+      expect(Math.abs(g.shift)).toBeLessThanOrEqual(80);
+    }
   });
 });
 
@@ -1418,7 +1458,7 @@ describe("the CRT screen", () => {
   it("is still exactly as long as the music", async () => {
     // The screen's static mask is a one-frame source looped forever; the
     // blend that applies it must end with the picture, not with the mask.
-    expect((await probeFile(crtOut)).seconds).toBeCloseTo(4, 1);
+    expect((await probeFile(crtOut)).seconds).toBeCloseTo(8, 1);
   }, 120_000);
 
   it("keeps grey grey — no colour cast from a blend in the wrong format", async () => {
@@ -1472,6 +1512,81 @@ describe("the CRT screen", () => {
     const [rr, , rb] = await meanRgb(2, 1021, 480, 3, 120);
     expect(lr - lb).toBeGreaterThan(30);
     expect(rb - rr).toBeGreaterThan(30);
+  }, 120_000);
+
+  it("does not flicker — the picture's overall brightness holds still", async () => {
+    // A 7 Hz brightness pulse shipped with the first version of this screen
+    // and was taken out because it tired the user's eyes. This pins its
+    // absence. The rolling lines and bands that stayed are SPATIAL — at any
+    // instant they darken some rows and not others — so over a patch many
+    // rows tall their average holds; a flicker moves the whole patch at once.
+    const means: number[] = [];
+    for (let k = 0; k <= 12; k++) {
+      const [r, g, b] = await meanRgb(1 + k / 30, 300, 150, 300, 300);
+      means.push((r + g + b) / 3);
+    }
+    expect(Math.max(...means) - Math.min(...means)).toBeLessThan(1.5);
+  }, 120_000);
+
+  it("rolls lines and bands down the picture", async () => {
+    // The two effects taken from CRTFilter: fine retrace lines crawling down
+    // and faint signal-loss bands rolling down, both brightness patterns that
+    // depend on the row and the time only. So one row of a flat grey changes
+    // brightness from one instant to the next, where the static scanlines
+    // alone would hold it still. Sampled 0.3s apart — about half a retrace
+    // cycle — over two rows, because a one-row crop cannot be taken from
+    // 4:2:0 video, whose colour is stored per PAIR of rows.
+    const row = async (t: number) => {
+      const [r, g, b] = await meanRgb(t, 300, 452, 120, 2);
+      return (r + g + b) / 3;
+    };
+    // Measured 8.42 here, and exactly 0 with both depths set to 0. The first
+    // bound was a guess of 8 — a hair under the measurement — and sits at 4
+    // now, clear of both.
+    expect(Math.abs((await row(1)) - (await row(1.3)))).toBeGreaterThan(4);
+  }, 120_000);
+
+  it("tears a band sideways during a glitch, and nowhere else", async () => {
+    // The first glitch, picked off the same `glitchAt` the graph evaluates,
+    // at an instant where its tear is wide. Inside the band the white stripe
+    // has moved sideways by about the tear; in the rows just outside it, it
+    // has not. Rows either side of the band, rather than one far away, so the
+    // bulge moves both by the same amount.
+    let t = 0;
+    let g: NonNullable<ReturnType<typeof glitchAt>> | null = null;
+    for (let k = 0; k < 8 * 30; k++) {
+      const cand = glitchAt(k / 30);
+      if (cand && Math.abs(cand.shift) > 30 && cand.top > 40 && cand.top + cand.height < 1000) {
+        t = k / 30;
+        g = cand;
+        break;
+      }
+    }
+    expect(g).not.toBeNull();
+    // An even row (4:2:0 crops snap to even) that the scanlines leave lit.
+    // Rounded FIRST: the band's top is a fraction (a hash times 880), and
+    // a fraction is never even, so the first version of this loop spun
+    // forever — a hung test run at full CPU with no ffmpeg in sight.
+    const lit = (y: number) => {
+      let r = Math.round(y);
+      while (r % 2 !== 0 || r % 3 === 0) r++;
+      return r;
+    };
+    const edge = async (y: number) => {
+      const buf = await regionAt(crtOut, t, 0, lit(y), WIDE_W, 2);
+      // The stripe's left edge: the first column, scanning from the left
+      // third, that is much brighter than the grey around it.
+      for (let x = 640; x < 1280; x++) {
+        if (((buf[x * 3] ?? 0) + (buf[x * 3 + 1] ?? 0) + (buf[x * 3 + 2] ?? 0)) / 3 > 170) return x;
+      }
+      return -1;
+    };
+    const mid = Math.round(g!.top + g!.height / 2);
+    const inside = await edge(mid);
+    const above = await edge(g!.top - 20);
+    expect(Math.abs(inside - above - g!.shift)).toBeLessThan(15);
+    // And outside every glitch the same two rows agree.
+    expect(glitchAt(3)).toBeNull();
   }, 120_000);
 
   it("lays moving grain over flat areas", async () => {

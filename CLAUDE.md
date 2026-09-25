@@ -137,11 +137,12 @@ server/longform.ts WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK,
                    checkLongform, Trim/MIN_KEPT/detectTrim/keptRange,
                    stackWide (the long journey's one ffmpeg pass)
 server/lofi.ts     WIDE, FADE, TRACK_FADE, CRACKLE_PATH, LOGO_PATH/LOGO_RECT/
-                   SPIN_SECONDS, spinAt/SPIN_EXPR (the wobbling spin, one
+                   SPIN_SECONDS, spinAt/SPIN_EXPR (the steady spin, one
                    rule in two languages), VINYL_RIM, hitsAt/markScaleAt
                    (wall hits and the size each one picks), LOGO_FILTER
                    (the mark's whole chain), crtLegs (the CRT screen over
                    the whole picture, the graph's last video stage),
+                   glitchAt (its 5-7s glitch schedule, mirrored),
                    VIZ_RECT/VIZ_BAR,
                    checkLofi,
                    concatMusic (the music pre-pass — several tracks dipped
@@ -1287,11 +1288,64 @@ appended LAST, after the crackle, so no existing index shifts.
 
 **The whole picture goes through a CRT screen, ALWAYS, as the graph's last
 video stage — and every `blend` in it runs in PLANAR RGB.** `crtLegs` lays a
-soft bloom, red/blue colour fringing, the screen's bulge with black curved
-corners, moving grain, a faint flicker, and scanlines plus a vignette over
-background, bars and mark together. All seven were approved on a trial
-render first; there is deliberately no toggle, because the user asked for
-it always on.
+soft bloom, red/blue colour fringing, a glitch, the screen's bulge with
+black curved corners, moving grain, scanlines plus a vignette, and rolling
+retrace lines and signal-loss bands over background, bars and mark together.
+Every ingredient was approved on a trial render first; there is deliberately
+no toggle, because the user asked for it always on.
+
+**There is NO flicker, and nothing in this stage may change the picture's
+overall brightness over time.** A 7 Hz brightness pulse shipped with the
+first version and was removed because it tired the user's eyes. A test pins
+its absence: a flat patch 300 rows tall must hold its mean within 1.5 levels
+across 0.4s (measured 0.67; the flicker swung it 9.15). The rolling lines
+and bands that stayed pass that test by construction, because they are
+SPATIAL — at any instant they darken some rows and not others.
+
+**The glitch replaced the flicker, and it moves pixels SIDEWAYS only.** One
+burst per six-second window, placed in the window's first second — so
+bursts land 5 to 7 seconds apart, the spacing asked for — for 0.3s: a band
+60-200px tall tears up to 80px either way, re-rolling twenty times a
+second, with red and blue split 8px apart. The first window has NONE: a
+first draft hashed window 0 to 0 and would have opened every render on a
+glitch at t=0. Band, height and tear come from an integer hash of the
+window, exact in both languages to about fifteen hours of render, so a
+re-render is identical and `glitchAt` mirrors the schedule — one rule in two
+languages, proven by finding the tear in a real render: the fixture's white
+stripe moves -71px inside the band against a scheduled -67.5, and does not
+move in the rows just outside it (66.5 off with the glitch removed).
+
+**The glitch is a DISPLACEMENT MAP, never a full-frame `geq`.** The first
+version tore with `geq` reading `r(mod(X - shift, W), Y)`, and although it
+only ran during bursts (5% of the time) it cost ~46s per minute of video on
+its own — measured: the expression engine re-derives every hash for all two
+million pixels and three planes, about half a second a glitch frame. The
+tear depends on the row and the time only, so it is computed on a
+ONE-PIXEL-WIDE column per frame, stretched across, and spent by `displace`,
+which just moves pixels: ~7s per minute, with measurements identical to the
+`geq` version. `displace`'s semantics were MEASURED, since its help text
+states neither: an output pixel is read from `x + (map - 128)` — a value
+below 128 moves the picture RIGHT — and each plane reads its own plane of the
+map, which is what lets the colour split ride the same filter. `edge=wrap` is
+the old `mod(…, W)`. Both maps are bounded at the render's length because
+`displace` has no `shortest`. Looping a static y-map instead of generating it
+per frame was tried and measured no faster, so the simpler form stayed.
+
+**The rolling retrace lines and signal-loss bands come from CRTFilter**
+(github.com/Ichiaka/CRTFilter), a WebGL shader the user pointed at — rebuilt
+in ffmpeg, since a browser shader cannot run in this render, and spelled
+from its source: bands `1 - 0.05 * |sin(y * 50 + t * 10)|`, lines from
+`sin(y * 800 + t * 10)` with y the row as a fraction of the height. Its own
+line depth swings a pixel about ±32% and compensates with an overall ×1.9
+lift; this takes 0.2 of the swing and only darkens. Like the glitch they
+depend on the row and time only, so they too are one column per frame,
+multiplied onto the static mask — measured free within noise. The rest of
+that shader was deliberately left out: its curvature, fringing, noise, bloom
+and tearing are sub-pixel at its defaults and weaker than this screen's; its
+"vertical jitter" moves only its own line patterns, not the picture; its
+flicker is what was removed here; and its dot mask (off by default there)
+and 20% desaturation were tried on a trial render and turned down — the mask
+read as vertical stripes across the picture.
 
 The planar-RGB rule is the one that bites silently. `blend` works in
 whatever pixel format it is handed, and on YUV its modes apply to the two
@@ -1314,16 +1368,17 @@ Two cost decisions, measured on 20s of 1080p rather than assumed:
   LAST, after the bulge, so its lines are the output's own straight rows
   (every third row at 0.645 of its neighbours, measured) rather than bent
   with the picture — as on a real tube.
-- **The flicker runs after the final `format=yuv420p`.** `eq` is the one
-  filter here without planar-RGB support, so among the others it forced a
-  full-frame round trip through YUV and back on every frame; at the end the
-  frame is YUV for the encoder anyway. Every other filter takes `gbrp`
-  natively — established from the converters ffmpeg auto-inserts under
-  `-v verbose`, not from its help text, which on this build lists no pixel
-  formats at all.
+- **No `eq` anywhere in this stage.** It is the one filter here without
+  planar-RGB support — among the others it forces a full-frame round trip
+  through YUV and back on every frame — and it was only ever the flicker,
+  which is gone. Every filter left takes `gbrp` natively, established from
+  the converters ffmpeg auto-inserts under `-v verbose` rather than from its
+  help text, which on this build lists no pixel formats at all.
 
 What it costs, and the estimate was LOW: filter-only timing predicted about
-+13s per minute; the real render is 14.5s → 36.6s per minute, about 2.5x,
++13s per minute; the real render was 14.5s → 36.6s per minute, about 2.5x
+(and is ~3.1x with the glitch and rolling lines added — 66s against 21s on a
+slower afternoon; the ratio is what to compare),
 because the full-frame format conversions around the stage and the encoder
 working on a more detailed picture both count. File size is the bigger
 surprise: a 60s render goes from 5.1 MB to 26.0 MB. The GRAIN is half of
@@ -2451,14 +2506,26 @@ fields' already is. The `/api/lofi` route, the panel, and the waveform's
 draggable markers have no tests, like the rest of the network and DOM
 surface.
 
-The CRT screen has five tests of its own, on the one fixture rendered with
-it on (flat mid-grey, a white stripe at x=900..1020, four seconds): the
+The CRT screen has eight tests of its own, on the one fixture rendered with
+it on (flat mid-grey, a white stripe at x=900..1020, EIGHT seconds — no
+glitch may fall in the first six, so a shorter fixture holds none): the
 render is still exactly the music's length (the mask is a looped one-frame
 source); grey stays grey (0.00 channel gap; 26.3 with the stage in YUV);
 every third row is darker (0.645) and all four corners are black (0.0);
 the stripe's left edge fringes red and its right edge blue (70 and 92);
-and flat areas carry grain (spread 22.2 against a near-constant without
-it).
+flat areas carry grain (spread 22.2 against a near-constant without it);
+the overall brightness does not flicker (0.67 swing; 9.15 with the old
+flicker); a lit row changes brightness over 0.3s as the lines roll (8.42;
+exactly 0 with both depths zeroed — the first bound was a guess of 8, a hair
+under the measurement, and sits at 4 now); and the glitch tears its band by
+the scheduled amount and nothing else (see above). Two pure-TS tests pin
+`glitchAt`: nothing in the first six seconds, bursts 5-7s apart across
+three hours (1,799 of them, computed in 12ms), and every band on the
+picture with a tear within ±80px. Crops in these tests are two rows tall,
+never one: a one-row crop cannot be taken from 4:2:0 video, whose colour is
+stored per PAIR of rows. And the glitch test's row helper rounds before it
+looks for an even row — its first version was handed the band's fractional
+top, never found an even one, and hung the whole test run at full CPU.
 
 `server/cut.test.ts` shells real ffmpeg against a synthetic fixture of three
 back-to-back tones — 440 Hz, 1760 Hz, 440 Hz, two seconds each — and its

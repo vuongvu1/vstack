@@ -576,12 +576,133 @@ const CRT_BLOOM = 0.2;
 const CRT_FRINGE = 3;
 const CRT_BULGE = { k1: 0.12, k2: 0.04 };
 const CRT_GRAIN = 12;
-const CRT_FLICKER = { depth: 0.02, hz: 7 };
 const CRT_SCANLINE = 0.35;
 const CRT_VIGNETTE = 0.55;
 
-function crtLegs(src: string, dst: string): string[] {
+/** The two effects taken from CRTFilter (github.com/Ichiaka/CRTFilter), a
+ *  WebGL shader the user pointed at — rebuilt here as ffmpeg, since a browser
+ *  shader cannot run in this render. Both are brightness patterns over the
+ *  ROW and the TIME only, spelled exactly as that shader spells them:
+ *
+ *  - SIGNAL-LOSS BANDS, `1 - depth * |sin(y * 50 + t * 10)|` with y the row
+ *    as a fraction of the height: about sixteen faint dark bands rolling
+ *    down at a fifth of the screen a second. The shader's own 0.05 depth.
+ *  - RETRACE LINES, fine lines about 8.5px apart crawling down, from the
+ *    shader's `sin(y * 800 + t * 10)`. Its own depth swings a pixel by about
+ *    ±32%, and it compensates with an overall ×1.9 lift this graph does not
+ *    want; this takes 0.2 of the swing and only ever darkens.
+ *
+ *  Of the rest of that shader: its curvature, colour split, noise, bloom
+ *  and tearing are all sub-pixel at its defaults and this screen already has
+ *  stronger versions; its "vertical jitter" moves only its own line
+ *  patterns, not the picture; its flicker is exactly what was removed here;
+ *  and its dot mask (off there by default) and 20% desaturation were tried
+ *  on a trial render and turned down — the mask read as vertical stripes
+ *  across the picture.
+ *
+ *  Because they depend on the row and the time alone, they are computed on
+ *  a ONE-PIXEL-WIDE column per frame and stretched across, the trick the
+ *  bars' rainbow uses: 1080 expression evaluations a frame, not two million. */
+const CRT_BANDS = 0.05;
+const CRT_RETRACE = 0.2;
+
+/** The glitch that replaced the flicker: now and then a horizontal band of
+ *  the picture tears sideways, jittering with its red and blue split apart,
+ *  and snaps back. It moves pixels SIDEWAYS only — never their brightness,
+ *  which is what the flicker did and why it went.
+ *
+ *  One burst per `GLITCH_WINDOW`-second window, placed somewhere in the
+ *  window's first second, so consecutive bursts are 5 to 7 seconds apart —
+ *  the spacing asked for. The FIRST window has none: an early version
+ *  hashed window 0 to 0 and so opened every render on a glitch at t=0.
+ *  Where the band sits, how tall it is and which way it tears come from an
+ *  integer hash of the window index, and the tear itself re-rolls twenty
+ *  times a second; all of it is a pure function of the timestamp, so a
+ *  re-render is identical and `glitchAt` can mirror it. The hash is exact
+ *  integer arithmetic in both languages up to about fifteen hours of render,
+ *  past which `j * j * a` leaves the range a double counts exactly.
+ *
+ *  The tear is a per-pixel `geq`, which at full frame is the most expensive
+ *  thing a frame can do — so it carries `enable=`, and runs only during a
+ *  burst, 5% of the time. */
+const GLITCH_WINDOW = 6;
+const GLITCH_SECONDS = 0.3;
+const GLITCH_SHIFT = 80;
+const GLITCH_SPLIT = 8;
+const GLITCH_JITTER_HZ = 20;
+
+/** A deterministic hash of a non-negative integer to [0, 1). Exact in both
+ *  languages for the reason given at `GLITCH_WINDOW`. */
+const hash = (j: number, a: number, b: number) => ((j * j * a + j * b) % 1009) / 1009;
+const hashExpr = (j: string, a: number, b: number) =>
+  `(mod((${j})*(${j})*${a}+(${j})*${b},1009)/1009)`;
+
+/** The glitch in progress at `t`, or null. The TypeScript spelling of the
+ *  schedule `crtLegs` builds, from the same constants — one rule in two
+ *  languages, like `bounce` and `bounceExpr`, and `server/lofi.test.ts`
+ *  finds the tear in a real render where this says it is. */
+export function glitchAt(t: number): { top: number; height: number; shift: number } | null {
+  const w = Math.floor(t / GLITCH_WINDOW);
+  if (w < 1) return null;
+  const start = w * GLITCH_WINDOW + hash(w, 7919, 104729);
+  if (t < start || t > start + GLITCH_SECONDS) return null;
+  const j = Math.floor(t * GLITCH_JITTER_HZ);
+  return {
+    top: hash(w, 2711, 911) * 880,
+    height: 60 + hash(w, 1291, 4373) * 140,
+    shift: (hash(j, 3301, 7727) - 0.5) * 2 * GLITCH_SHIFT,
+  };
+}
+
+/** The glitch as graph legs: two displacement maps and the `displace` that
+ *  spends them, from `[src]` to `[dst]`.
+ *
+ *  The tear depends on the ROW and the TIME only, so it is computed on a
+ *  ONE-PIXEL-WIDE column per frame and stretched across — the rolling
+ *  lines' trick. The first version spelled it as a full-frame `geq` reading
+ *  `r(mod(X - shift, W), Y)`, and although it only ran during bursts (5% of
+ *  the time) it cost about 46s per minute of video on its own, measured: the
+ *  expression engine re-derives every hash for every one of two million
+ *  pixels and three planes, about half a second a glitch frame. `displace`
+ *  just moves pixels.
+ *
+ *  Its semantics were MEASURED rather than taken from its help text, which
+ *  says neither: an output pixel is read from `x + (map - 128)`, so a value
+ *  below 128 moves the picture RIGHT, and each plane reads its own plane of
+ *  the map — which is what lets the red and blue split ride the same filter.
+ *  So the x-map is `128 - (shift + split)` for red, `128 - shift` for green
+ *  and `128 - (shift - split)` for blue inside the band, and 128 (no move)
+ *  everywhere else; `edge=wrap` is the old `mod(..., W)`. The y-map is a
+ *  flat 128. Both maps are bounded at the render's own length, because
+ *  `displace` has no `shortest` and an endless map would keep it waiting. */
+function glitchLegs(src: string, dst: string, seconds: number): string[] {
   const { w, h } = WIDE;
+  const win = `floor(T/${GLITCH_WINDOW})`;
+  const wt = `floor(t/${GLITCH_WINDOW})`;
+  const start = `(${wt}*${GLITCH_WINDOW}+${hashExpr(wt, 7919, 104729)})`;
+  const enable = `gte(${wt},1)*between(t,${start},${start}+${GLITCH_SECONDS})`;
+  const top = `(${hashExpr(win, 2711, 911)}*880)`;
+  const height = `(60+${hashExpr(win, 1291, 4373)}*140)`;
+  const inBand = `between(Y,${top},${top}+${height})`;
+  const shift = `((${hashExpr(`floor(T*${GLITCH_JITTER_HZ})`, 3301, 7727)}-0.5)*${2 * GLITCH_SHIFT})`;
+  return [
+    `color=c=black:s=1x${h}:r=${FPS}:d=${seconds},format=gbrp,` +
+      `geq=r='128-(${shift}+${GLITCH_SPLIT})*${inBand}':` +
+      `g='128-${shift}*${inBand}':` +
+      `b='128-(${shift}-${GLITCH_SPLIT})*${inBand}',` +
+      `scale=${w}:${h}:flags=neighbor[glx]`,
+    `color=c=0x808080:s=${w}x${h}:r=${FPS}:d=${seconds},format=gbrp[gly]`,
+    `[${src}][glx][gly]displace=edge=wrap:enable='${enable}'[${dst}]`,
+  ];
+}
+
+function crtLegs(src: string, dst: string, seconds: number): string[] {
+  const { w, h } = WIDE;
+  const rolling =
+    `color=c=white:s=1x${h}:r=${FPS},format=gray,` +
+    `geq=lum='255*(1-${CRT_BANDS}*abs(sin(Y/${h}*50+T*10)))*` +
+    `(1-${CRT_RETRACE}*(0.5-0.5*sin(Y/${h}*800+T*10)))',` +
+    `scale=${w}:${h}:flags=neighbor,format=gbrp[crtroll]`;
   const mask =
     `color=c=white:s=${w}x${h}:d=1:r=${FPS},format=gray,` +
     `geq=lum='255*(1-${CRT_SCANLINE}*eq(mod(Y,3),0))*` +
@@ -591,12 +712,14 @@ function crtLegs(src: string, dst: string): string[] {
     `[${src}]format=gbrp,split[crta][crtb]`,
     `[crtb]scale=${w / 4}:${h / 4},gblur=sigma=6,scale=${w}:${h}[crtbloom]`,
     `[crta][crtbloom]blend=all_mode=screen:all_opacity=${CRT_BLOOM},` +
-      `rgbashift=rh=-${CRT_FRINGE}:bh=${CRT_FRINGE},` +
-      `lenscorrection=k1=${CRT_BULGE.k1}:k2=${CRT_BULGE.k2}:i=bilinear,` +
+      `rgbashift=rh=-${CRT_FRINGE}:bh=${CRT_FRINGE}[crtfringe]`,
+    ...glitchLegs("crtfringe", "crtglitch", seconds),
+    `[crtglitch]lenscorrection=k1=${CRT_BULGE.k1}:k2=${CRT_BULGE.k2}:i=bilinear,` +
       `noise=alls=${CRT_GRAIN}:allf=t[crtpic]`,
     mask,
-    `[crtpic][crtmask]blend=all_mode=multiply:shortest=1,format=yuv420p,` +
-      `eq=brightness='${CRT_FLICKER.depth}*sin(2*PI*t*${CRT_FLICKER.hz})':eval=frame[${dst}]`,
+    rolling,
+    `[crtmask][crtroll]blend=all_mode=multiply:shortest=1[crtlight]`,
+    `[crtpic][crtlight]blend=all_mode=multiply:shortest=1,format=yuv420p[${dst}]`,
   ];
 }
 
@@ -1191,7 +1314,7 @@ export async function renderLofi(opts: {
       `y='${bounceExpr(PHASE_Y, TRAVEL_Y)}':format=auto` +
       (crt ? `[vscene]` : `,format=yuv420p[v]`),
   );
-  if (crt) legs.push(...crtLegs("vscene", "v"));
+  if (crt) legs.push(...crtLegs("vscene", "v", seconds));
 
   const fmt = `aformat=sample_fmts=fltp:channel_layouts=stereo`;
   legs.push(`[1:a]aresample=${RATE},${fmt}[music]`);
