@@ -329,6 +329,49 @@ function bounceExpr(phase: number, range: number): string {
   return `2*floor(abs(mod(${BOUNCE_SPEED}*t+${phase},${2 * range})-${range})/2)`;
 }
 
+/** The mark's own chain, from the raw PNG to a rotated RGBA frame.
+ *
+ *  Four filters, and the ORDER of the middle two is load-bearing.
+ *  `format=rgba` first, because `rotate`'s `c=none` fills the corners it
+ *  sweeps with TRANSPARENCY and there is nowhere to put that without an
+ *  alpha channel — on an opaque input the same filter fills with black and
+ *  the mark arrives inside a hard square. `pad` BEFORE `rotate`, because
+ *  `rotate` renders into a box the size of its input and anything past the
+ *  inscribed circle is sheared off; padding to the diagonal first is what
+ *  gives every angle room. The pad colour is `0x00000000` — transparent
+ *  black, not black — for the same reason the format comes first.
+ *
+ *  The angle is an expression over the frame's own TIMESTAMP rather than a
+ *  frame counter, so one turn is real seconds and stays so if `FPS` ever
+ *  changes.
+ *
+ *  The angle is `mod`'d into ONE TURN and that is a bug fix, not tidiness.
+ *  ffmpeg's `rotate` carries its angle in a fixed-point value that overflows
+ *  past 2048 RADIANS, and every frame after that comes back at one frozen
+ *  angle for the rest of the render. At `SPIN_SECONDS` = 10 the bare
+ *  `2*PI*t/10` crosses it at t = 2048 * 10 / 2PI = 3259.49s — 54m19s in.
+ *  Measured on this build: alive at t=3258, byte-identical from t=3260.48
+ *  onward, and found in a real 2h44m render whose mark stopped dead there
+ *  while it went on bouncing (the position expressions are `overlay`'s and
+ *  were never affected). `mod` is exact rather than approximate here because
+ *  `SPIN_SECONDS` IS one turn, so the wrapped angle names the same
+ *  orientation the unwrapped one did, and a render shorter than 54 minutes
+ *  is unchanged frame for frame.
+ *
+ *  The value must be QUOTED for the reason `bounceExpr` records: a
+ *  filtergraph reads `,` as the separator between two filters, so the comma
+ *  inside `mod(t,10)` would end the `rotate` mid-expression.
+ *
+ *  Exported whole rather than assembled inline so a test can run the SHIPPED
+ *  filters against the asset: what goes wrong here only shows up an hour
+ *  into a timeline, which is far past what a real 1920x1080 render can be
+ *  asked to produce inside a test. */
+export const LOGO_FILTER =
+  `format=rgba,` +
+  `scale=${LOGO_SIZE}:${LOGO_SIZE}:force_original_aspect_ratio=decrease,` +
+  `pad=${LOGO_BOX}:${LOGO_BOX}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,` +
+  `rotate=a='2*PI*mod(t,${SPIN_SECONDS})/${SPIN_SECONDS}':c=none`;
+
 /** Where the mark's padded box is at `t` seconds. Exported so the test can
  *  follow it: with the mark moving there is no longer a fixed rect to crop,
  *  and a second copy of this arithmetic in the test file would drift the
@@ -853,27 +896,9 @@ export async function renderLofi(opts: {
       `crop=${WIDE.w}:${WIDE.h},fps=${FPS},setsar=1[bgx]`,
   );
 
-  // The mark, spinning once every `SPIN_SECONDS` in the top-right corner.
-  //
-  // Four filters and the ORDER of the middle two is the load-bearing part.
-  // `format=rgba` first, because `rotate`'s `c=none` fills the corners it
-  // sweeps with TRANSPARENCY and there is nowhere to put that without an
-  // alpha channel — on an opaque input the same filter fills with black and
-  // the mark arrives inside a hard square. `pad` BEFORE `rotate`, because
-  // `rotate` renders into a box the size of its input and anything past the
-  // inscribed circle is sheared off; padding to the diagonal first is what
-  // gives every angle room. The pad colour is `0x00000000` — transparent
-  // black, not black — for the same reason the format comes first.
-  //
-  // `a=2*PI*t/SPIN` is an expression over the frame's own timestamp rather
-  // than a frame counter, so the spin is real seconds and does not change if
-  // `FPS` ever does.
-  legs.push(
-    `[${logoIndex}:v]format=rgba,` +
-      `scale=${LOGO_SIZE}:${LOGO_SIZE}:force_original_aspect_ratio=decrease,` +
-      `pad=${LOGO_BOX}:${LOGO_BOX}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,` +
-      `rotate=a=2*PI*t/${SPIN_SECONDS}:c=none[logo]`,
-  );
+  // The mark, spinning once every `SPIN_SECONDS`. Every decision in the
+  // chain itself is documented at `LOGO_FILTER`.
+  legs.push(`[${logoIndex}:v]${LOGO_FILTER}[logo]`);
   // The frequency bars, full width along the bottom, drawn from the mix the
   // viewer actually hears (`[aviz]`, split off the finished audio below).
   //

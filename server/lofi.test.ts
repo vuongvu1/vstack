@@ -9,6 +9,8 @@ import { BUCKETS_PER_SEC } from "../src/lofi.ts";
 import { probeAudio, probeFile } from "./ffmpeg.ts";
 import {
   FADE,
+  LOGO_FILTER,
+  LOGO_PATH,
   LOGO_RECT,
   logoAt,
   SPIN_SECONDS,
@@ -887,6 +889,49 @@ describe("renderLofi", () => {
     // pure encoder noise — against 15-20 for any other angle, so this bound
     // is nowhere near either side. A 20s period fails here.
     expect(boxDiff(zero, await at(SPIN_SECONDS))).toBeLessThan(6);
+  }, 120_000);
+
+  it("is still turning an hour in, past rotate's own angle ceiling", async () => {
+    // ffmpeg's `rotate` carries its angle in a fixed-point value that
+    // overflows past 2048 RADIANS, after which every frame comes back at one
+    // frozen angle for the rest of the render. At SPIN_SECONDS = 10 that is
+    // t = 2048 * SPIN_SECONDS / 2PI = 3259.49s — 54m19s in. Measured on this
+    // build: alive at t=3258, identical checksums from t=3260.48 onward, and
+    // reproduced in a real 2h44m render whose mark stopped dead at that mark.
+    //
+    // Runs the shipped `LOGO_FILTER` against the real asset rather than the
+    // fixture render, because reaching t=3300 in a 1920x1080 render is an
+    // hour of encoding. The overflow is a function of the ANGLE, so the rate
+    // the timeline is driven at is not part of what this tests: 2 fps gets
+    // `t` an hour out in a few thousand 426x426 frames.
+    const fps = 2;
+    const late = 3300;
+    const picks = [late, late + SPIN_SECONDS / 4, late + SPIN_SECONDS];
+    const sel = picks.map((t) => `eq(n\\,${t * fps})`).join("+");
+    const { stdout } = await run(
+      "ffmpeg",
+      [
+        "-v", "error",
+        "-loop", "1", "-framerate", String(fps),
+        "-t", String(late + SPIN_SECONDS + 1), "-i", LOGO_PATH,
+        "-vf", `${LOGO_FILTER},select='${sel}',format=gray`,
+        "-fps_mode", "passthrough", "-f", "rawvideo", "-",
+      ],
+      { encoding: "buffer", maxBuffer: 1 << 28 },
+    );
+    const size = stdout.length / picks.length;
+    expect(size).toBe(LOGO_RECT.side * LOGO_RECT.side);
+    const [zero, quarter, full] = picks.map((_, i) =>
+      stdout.subarray(i * size, (i + 1) * size),
+    ) as [Buffer, Buffer, Buffer];
+
+    // Same shape as the spin test above: a quarter turn must differ and a
+    // full turn must come back. Bounds are wider apart here because this
+    // crop is the mark alone on transparency rather than over a fixture
+    // background — measured 39.6 for the quarter turn and 0 for the full
+    // one, the latter exactly zero since nothing re-encodes it.
+    expect(boxDiff(zero, quarter)).toBeGreaterThan(10);
+    expect(boxDiff(zero, full)).toBeLessThan(6);
   }, 120_000);
 
   // Same split as the mark's, and for the same reason: the pixel tests crop

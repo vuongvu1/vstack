@@ -1145,12 +1145,40 @@ black, for the same reason. And `format=yuv420p` moves to AFTER the
 overlay: compositing alpha into an already-subsampled plane throws away the
 colour resolution the mark's edges need.
 
-The angle is `a=2*PI*t/SPIN_SECONDS` — an expression over the frame's own
-timestamp, not a frame counter — so one turn is ten real seconds and stays
-ten if `FPS` ever changes. `server/lofi.test.ts` samples a quarter turn, a
-HALF turn and a full turn: the half turn is the one that pins the period,
-because a mark spinning twice as fast is back at its starting angle there
-and passes every other assertion.
+The angle is an expression over the frame's own timestamp, not a frame
+counter, so one turn is ten real seconds and stays ten if `FPS` ever
+changes. `server/lofi.test.ts` samples a quarter turn, a HALF turn and a
+full turn: the half turn is the one that pins the period, because a mark
+spinning twice as fast is back at its starting angle there and passes every
+other assertion.
+
+**That angle must be `mod`'d into one turn, because ffmpeg's `rotate`
+overflows past 2048 RADIANS and freezes.** The bare `a=2*PI*t/SPIN_SECONDS`
+grows without bound, and once it crosses 2048 every later frame comes back
+at ONE angle for the rest of the render — the mark goes on bouncing, since
+the position expressions are `overlay`'s and never see this, so what a
+viewer sees is a mark sliding around the frame without turning. At
+`SPIN_SECONDS` = 10 the crossing is t = 2048 * 10 / 2PI = **3259.49s, 54m19s
+in**, which is why every fixture render and every short mix looked perfect:
+nothing in the suite had ever run an hour. Found in a real 2h44m render,
+then reproduced in isolation — alive at t=3258, byte-identical checksums
+from t=3260.48 onward.
+
+`mod(t, SPIN_SECONDS)` is EXACT rather than an approximation, because
+`SPIN_SECONDS` is one whole turn: the wrapped angle names the same
+orientation the unwrapped one did, so a render shorter than 54 minutes is
+unchanged frame for frame. The value has to be QUOTED (`a='...'`) for the
+same reason `bounceExpr`'s does — the comma inside `mod(t,10)` would
+otherwise end the `rotate` mid-expression.
+
+The test for it cannot be a real render: reaching t=3300 at 1920x1080 costs
+the better part of an hour of encoding. So `LOGO_FILTER` is exported whole
+and the test drives THAT string through real ffmpeg against the real asset
+at 2 fps, which walks the timeline an hour out in a few thousand 426x426
+frames — legitimate because the overflow is a function of the ANGLE, and the
+rate the timeline is driven at is not part of what is being tested. It runs
+in about two seconds and fails at a quarter-turn difference of exactly 0
+with the `mod` removed.
 
 That spin test now FOLLOWS the mark, and its thresholds surviving the move
 is fixture-luck worth knowing about rather than a property of the graph.
