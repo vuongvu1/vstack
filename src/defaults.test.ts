@@ -36,12 +36,11 @@ describe("defaultTitle", () => {
 });
 
 describe("DESCRIPTION_TEMPLATE", () => {
-  // buildSnippet appends #Shorts only when absent, case-insensitively. The
-  // template already carries `#shorts`, so that append must stay a no-op —
-  // this is the assertion that fails if the template is ever edited in a way
-  // that drops the tag and silently gets a second one bolted on.
-  it("already carries the shorts tag, so buildSnippet will not add another", () => {
-    expect(/#shorts\b/i.test(DESCRIPTION_TEMPLATE)).toBe(true);
+  // buildSnippet appends #Shorts only when absent. The template no longer
+  // carries it, so every short gets the tag bolted on at the bottom — pinned
+  // so re-adding it here (and silencing that append) is a deliberate edit.
+  it("leaves the shorts tag to buildSnippet", () => {
+    expect(/#shorts\b/i.test(DESCRIPTION_TEMPLATE)).toBe(false);
   });
 
   // The three channel hashtags live in the description only — the title
@@ -111,10 +110,10 @@ describe("the long-form defaults", () => {
 });
 
 describe("defaultDescription", () => {
-  it("credits the source video above the template", () => {
-    const d = defaultDescription("dQw4w9WgXcQ");
-    expect(d.startsWith("Nguồn: https://youtu.be/dQw4w9WgXcQ")).toBe(true);
-    expect(d).toContain(DESCRIPTION_TEMPLATE);
+  it("credits the source video between the tags and the channel links", () => {
+    expect(defaultDescription("dQw4w9WgXcQ")).toBe(
+      DESCRIPTION_TEMPLATE.replace("\n\nHabi", "\n\nNguồn: https://youtu.be/dQw4w9WgXcQ\n\nHabi"),
+    );
   });
 
   // The cached-clip path and every record written before this existed must

@@ -2268,8 +2268,8 @@ at the canvas, not a property of the video — and its title image is a decoded
 PNG that could not be stored anyway), and the `{start, end}` → `segments` migration: a stored old-shape record restores as one segment (tested on `!== undefined`, not truthiness, so a mark stored as `0` still migrates), and a stored `segments` array survives a round trip untouched. `ytdlp.test.ts` covers `videoIdFrom`, the trust boundary that decides whether a subprocess spawns, and the widened `CLIP_RE`: the digest form parses, a `.part.mp4` still does not, and a digest of the wrong length or alphabet (including uppercase) does not either.
 `src/defaults.test.ts` covers `defaultTitle` — that the tags survive a
 200-character starter title, that no input can exceed 100, and that the
-description template still carries a shorts tag so `buildSnippet`'s append
-stays a no-op against it. `server/youtube.test.ts` feeds `TAGS_DEFAULT`
+description template carries NO shorts tag, so `buildSnippet`'s append
+puts `#Shorts` at the bottom of every short. `server/youtube.test.ts` feeds `TAGS_DEFAULT`
 through `buildSnippet`, which is what fails if the constant is ever edited
 into a space-separated or hashtagged list — the two live on opposite sides
 of the client/server line and nothing else makes them agree. `server/youtube.test.ts` covers `buildSnippet` and nothing else — it is where

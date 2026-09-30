@@ -15,17 +15,18 @@
  *  this is reachable from the UI, not theoretical. */
 export const YT_TITLE_MAX = 100;
 
-/** Pre-fills the description field. Already carries a shorts tag, which is
- *  why `buildSnippet`'s append is a no-op against it — see the test. */
-export const DESCRIPTION_TEMPLATE = `#vtuber #vtubervn #vtubervietnam #viral #shorts #habine #siini #sim
-
-------
-
-Habi nè: https://www.youtube.com/@habine03
+/** Pre-fills the description field when there is no source to credit.
+ *  Carries no shorts tag of its own, so `buildSnippet` appends `#Shorts`
+ *  at the bottom of every short — see the test. */
+const DESCRIPTION_TAGS = "#vtuber #vtubervn #vtubervietnam #habine #siini #sim";
+const DESCRIPTION_BODY = `Habi nè: https://www.youtube.com/@habine03
 Siini: https://www.youtube.com/@SiiniYT
 Sim: https://www.youtube.com/@simchan_hojo
 
+------
+
 Buy me a coffee ☕ https://ko-fi.com/tentenvtubervn`;
+export const DESCRIPTION_TEMPLATE = `${DESCRIPTION_TAGS}\n\n${DESCRIPTION_BODY}`;
 
 /** Pre-fills the tags field, which is comma-separated rather than
  *  hashtagged — `buildSnippet` splits on commas and trims, so a `#` here
@@ -148,7 +149,7 @@ export const MAX_TRACKS = 70;
  *  the timestamp the day someone wants the exact moment. */
 export function defaultDescription(videoId: string): string {
   if (videoId.trim() === "") return DESCRIPTION_TEMPLATE;
-  return `Nguồn: https://youtu.be/${videoId}\n\n${DESCRIPTION_TEMPLATE}`;
+  return `${DESCRIPTION_TAGS}\n\nNguồn: https://youtu.be/${videoId}\n\n${DESCRIPTION_BODY}`;
 }
 
 /** How long the bundled `end_video.mp4` outro runs, in seconds.
