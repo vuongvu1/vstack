@@ -23,7 +23,9 @@ export const DESCRIPTION_TEMPLATE = `#vtuber #vtubervn #vtubervietnam #viral #sh
 
 Habi nè: https://www.youtube.com/@habine03
 Siini: https://www.youtube.com/@SiiniYT
-Sim: https://www.youtube.com/@simchan_hojo`;
+Sim: https://www.youtube.com/@simchan_hojo
+
+Buy me a coffee ☕ https://ko-fi.com/tentenvtubervn`;
 
 /** Pre-fills the tags field, which is comma-separated rather than
  *  hashtagged — `buildSnippet` splits on commas and trims, so a `#` here
