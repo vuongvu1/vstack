@@ -22,12 +22,14 @@ import {
   MAX_SPEECHES,
   MAX_TRACKS,
   OUTRO_SECONDS,
+  SCRIPT_MAX,
+  TITLE_MAX,
   TAGS_DEFAULT,
   UPLOAD_MAX_BYTES,
   YT_TITLE_MAX,
   defaultTitle,
 } from "./defaults.ts";
-import { clock, parseTimestamp } from "./format.ts";
+import { clock, parseTimestamp, sampleOf } from "./format.ts";
 import {
   DEFAULT_LAYOUT_ID,
   LAYOUTS,
@@ -50,7 +52,9 @@ import {
   keptLength,
   restore,
   save,
+  saveScript,
   saveVoice,
+  savedScript,
   savedTitle,
   savedVoice,
   setQuiet,
@@ -143,6 +147,9 @@ const lofiPanel = el("div", { className: "lofi-panel", hidden: true });
 // ever hidden, like every other child of sourceSlot — see the module-level
 // comment on the persistent shell.
 const cutVideo = el("video", { controls: true, preload: "auto", hidden: true });
+// The script reader's panel. Persistent and only ever hidden, like every
+// other child of sourceSlot — see the module-level comment on the shell.
+const readPanel = el("div", { className: "read-panel", hidden: true });
 const sourceSlot = el(
   "div",
   { className: "source" },
@@ -152,6 +159,7 @@ const sourceSlot = el(
   lofiPanel,
   momentsPanel,
   cutVideo,
+  readPanel,
 );
 const outSlot = el("div", { className: "out" }, outPlaceholder);
 const barSlot = el("div", { className: "bar" });
@@ -2269,7 +2277,16 @@ function renderFraming(): Node[] {
   // render — so the button is flipped in place here. Without that it would
   // stay disabled until some unrelated setState happened along, which reads
   // as "Export is broken" rather than "type a title first".
-  const tryVoice = renderTryVoice(s, title, voiceTitle);
+  const tryVoice = renderTryVoice(
+    s,
+    () => title.value.trim(),
+    // Read off the live field rather than state for the same reason the
+    // title is: both are written with setQuiet, so `s` is stale by a
+    // keystroke. The server applies the same blank-means-the-title fallback
+    // the export does, so Try hears exactly what an export says.
+    () => voiceTitle.value.trim(),
+    "Hear the title in this voice",
+  );
 
   // The export's own first frame, without paying for an export: the starter
   // screen over the in-point, with the 16:9 rectangle `thumbnails.set` takes
@@ -2453,7 +2470,8 @@ function renderVoicePicker(s: AppState): HTMLSelectElement {
  *  previous sample is still playing has to be able to reach it. */
 let sampleUrl = "";
 
-/** Plays the real title in the selected voice, without an export.
+/** Plays `text()` in the selected voice, without an export — the real title
+ *  in the framing bar, the script's opening in the reader.
  *
  *  Its own in-place busy state rather than `guard`'s: a global `busy` would
  *  re-render the bar — rebuilding the very input the user is iterating on —
@@ -2464,30 +2482,27 @@ let sampleUrl = "";
  *  the ~4.6s again. Add one keyed on `title + voice` the day that grates. */
 function renderTryVoice(
   s: AppState,
-  titleField: HTMLInputElement,
-  voiceField: HTMLInputElement,
+  text: () => string,
+  voiceText: () => string,
+  hint: string,
 ): HTMLButtonElement {
   const button = el("button", {
     textContent: "▶ Try",
-    title: "Hear the title in this voice",
-    // Same gate as Export, minus the marks: with no title there is nothing to
-    // read aloud. Flipped in place by the title field's own handler, because
-    // a quiet keystroke reaches no render.
-    disabled: titleField.value.trim() === "" || Boolean(s.busy),
+    title: hint,
+    // With nothing to read aloud there is nothing to try. Flipped in place by
+    // the caller's own input handler, because a quiet keystroke reaches no
+    // render.
+    disabled: text() === "" || Boolean(s.busy),
   });
   button.onclick = () => {
-    const title = titleField.value.trim();
+    const title = text();
     if (title === "") return;
     button.disabled = true;
     button.textContent = "…";
     void api
       .say({
         starterTitle: title,
-        // Read off the live field rather than state for the same reason the
-        // title is: both are written with setQuiet, so `s` is stale by a
-        // keystroke. The server applies the same blank-means-the-title
-        // fallback the export does, so Try hears exactly what an export says.
-        voiceTitle: voiceField.value.trim(),
+        voiceTitle: voiceText(),
         voice: currentVoice(getState()),
       })
       .then((wav) => {
@@ -2499,7 +2514,7 @@ function renderTryVoice(
       })
       .catch((err: unknown) => setState({ error: String(err) }))
       .finally(() => {
-        button.disabled = titleField.value.trim() === "";
+        button.disabled = text() === "";
         button.textContent = "▶ Try";
       });
   };
@@ -4185,6 +4200,153 @@ function renderCutting(): Node[] {
   return rows;
 }
 
+// The script reader. Text and name are module-scoped rather than AppState:
+// every keystroke would otherwise be a setQuiet with nothing to re-render,
+// and they persist through their own keys (saveScript) instead of save().
+const storedScript = savedScript();
+let scriptText = storedScript.text;
+let scriptBase = storedScript.name;
+/** The last name this session rendered, for Show in Finder. Never sent as a
+ *  `prev`: see `/api/read` for why this journey sweeps nothing. */
+let readOut = "";
+/** The blob URL behind readAudio. Released by render() on every render
+ *  outside `reading` — the cutter's releaseCutUrl rule. */
+let readUrl = "";
+/** Assigned by the bar, flipped in place by the panel's inputs — the
+ *  publishBtn pattern, since typing reaches no render. */
+let readBtn: HTMLButtonElement | null = null;
+/** The voice row's Try button, flipped in place the same way. */
+let readTryBtn: HTMLButtonElement | null = null;
+/** What Try reads: the opening paragraph, cut to fit `/api/say`. */
+const readSample = (): string => sampleOf(scriptText, TITLE_MAX);
+// Persistent, so a render mid-typing (the voice list landing, say) cannot
+// drop the caret or restart playback.
+const readText = el("textarea", {
+  className: "read-script",
+  placeholder: "Dán kịch bản vào đây…",
+  ariaLabel: "Script",
+  value: scriptText,
+});
+const readCount = el("span", { className: "field-count" });
+const readAudio = el("audio", { controls: true, preload: "auto", hidden: true });
+
+const scriptReady = (): boolean => {
+  const n = scriptText.trim().length;
+  return n > 0 && n <= SCRIPT_MAX && scriptBase.trim() !== "";
+};
+
+/** Counter and Render button, in place. Counts the TRIMMED length, the same
+ *  number `/api/read` checks. */
+function syncRead(): void {
+  const n = scriptText.trim().length;
+  readCount.textContent = `${n}/${SCRIPT_MAX}`;
+  readCount.classList.toggle("field-count-over", n > SCRIPT_MAX);
+  if (readBtn) readBtn.disabled = getState().busy !== "" || !scriptReady();
+  if (readTryBtn) readTryBtn.disabled = getState().busy !== "" || readSample() === "";
+}
+
+readText.oninput = () => {
+  scriptText = readText.value;
+  saveScript(scriptBase, scriptText);
+  syncRead();
+};
+
+/** Idempotent, which is what makes calling it on every other phase's render
+ *  free. */
+function releaseReadUrl(): void {
+  if (readUrl === "") return;
+  URL.revokeObjectURL(readUrl);
+  readUrl = "";
+  readAudio.removeAttribute("src");
+  readAudio.load();
+}
+
+function renderReadBar(s: AppState): Node[] {
+  const busy = s.busy !== "";
+  const back = el("button", { className: "btn-gray", textContent: "← Back", disabled: busy });
+  back.onclick = () => setState({ phase: "idle", error: "" });
+
+  const go = el("button", {
+    className: "btn-solid",
+    textContent: "Render mp3",
+    disabled: busy || !scriptReady(),
+  });
+  readBtn = go;
+  go.onclick = () =>
+    void guard("reading…", async () => {
+      if (!scriptReady()) return;
+      const { blob, name } = await api.read({
+        script: scriptText,
+        voice: currentVoice(getState()),
+        name: scriptBase,
+      });
+      releaseReadUrl();
+      readUrl = URL.createObjectURL(blob);
+      readAudio.src = readUrl;
+      readOut = name;
+    });
+
+  const end: Node[] = [];
+  if (readOut !== "") {
+    const show = el("button", { className: "btn-gray", textContent: "Show in Finder", disabled: busy });
+    // Not guard()ed, the cutter's and preview bar's reason: revealing blocks
+    // nothing, so success clears `error` itself and failure (the file
+    // deleted from the Desktop since) reaches a callout.
+    show.onclick = () => {
+      void api
+        .reveal(readOut)
+        .then(() => setState({ error: "" }))
+        .catch((err: unknown) => {
+          setState({ error: err instanceof Error ? err.message : String(err) });
+        });
+    };
+    end.push(show);
+  }
+  end.push(go);
+  return [el("div", { className: "bar-row" }, back, el("div", { className: "bar-end" }, ...end))];
+}
+
+function renderReadPanel(s: AppState): Node[] {
+  const busy = s.busy !== "";
+  readText.disabled = busy;
+  readAudio.hidden = readUrl === "";
+  const name = el("input", {
+    type: "text",
+    // Not `.field-grow`: that claims a bar row's free WIDTH, and inside this
+    // panel's column `.field` the free axis is height.
+    placeholder: "Tên file",
+    ariaLabel: "File name",
+    value: scriptBase,
+    disabled: busy,
+  });
+  name.oninput = () => {
+    scriptBase = name.value;
+    saveScript(scriptBase, scriptText);
+    syncRead();
+  };
+  readTryBtn = renderTryVoice(
+    s,
+    readSample,
+    // Blank, so the server reads `starterTitle` — the sample itself.
+    () => "",
+    "Hear the script's first paragraph in this voice",
+  );
+  syncRead();
+  const field = (label: string, control: Node, extra?: Node) =>
+    el(
+      "label",
+      { className: "field" },
+      el("span", { className: "field-label" }, label, extra ?? el("span")),
+      control,
+    );
+  return [
+    field("Name", name),
+    field("Voice", el("div", { className: "read-voice" }, renderVoicePicker(s), readTryBtn)),
+    field("Script", readText, readCount),
+    readAudio,
+  ];
+}
+
 function renderIdle(s: AppState): Node[] {
   const busy = s.busy !== "";
   const input = el("input", {
@@ -4248,11 +4410,21 @@ function renderIdle(s: AppState): Node[] {
   // there is nothing downstream that could read a stale value.
   cutter.onclick = () => setState({ phase: "cutting", error: "" });
 
+  const reader = el("button", {
+    className: "btn-gray",
+    textContent: "Script reader →",
+    title: "Read a script aloud into an mp3",
+    disabled: busy,
+  });
+  // No `mode` here, for the chat button's reason: this journey reaches
+  // neither `preview` nor `/api/publish`.
+  reader.onclick = () => setState({ phase: "reading", error: "" });
+
   const rows: Node[] = [el("div", { className: "bar-row" }, input, go)];
   if (clipList.length > 0) {
     rows.push(el("div", { className: "bar-row" }, renderClipPicker(s)));
   }
-  rows.push(el("div", { className: "bar-row" }, long, lofi, chat, cutter));
+  rows.push(el("div", { className: "bar-row" }, long, lofi, chat, cutter, reader));
   return rows;
 }
 
@@ -4267,7 +4439,8 @@ function render(): void {
   // placeholder stays rather than leaving an empty card. `cutting` is the
   // same case: its output is a set of files on the Desktop, not something
   // this app plays back.
-  outPlaceholder.hidden = s.phase !== "idle" && s.phase !== "moments" && s.phase !== "cutting";
+  outPlaceholder.hidden =
+    s.phase !== "idle" && s.phase !== "moments" && s.phase !== "cutting" && s.phase !== "reading";
   // The iframe is hidden, never removed, once framing owns the stage —
   // removing it (or any ancestor) is what discards its nested browsing
   // context and reloads the video (see ensureSourcePlayer above). Neither
@@ -4301,6 +4474,13 @@ function render(): void {
   if (s.phase !== "cutting") {
     stopCutStrip();
     releaseCutUrl();
+  }
+  // The reader's departure case, the cutter's rule: driven by the phase,
+  // not by ← Back, so a later route out cannot leak the blob or leave the
+  // voiceover playing under the next phase (display:none pauses nothing).
+  if (s.phase !== "reading") {
+    readAudio.pause();
+    releaseReadUrl();
   }
   // Same reasoning as sourceIframe above, but a <video> tolerates
   // detach/reattach fine — it just has no reason to move once it lives in
@@ -4344,6 +4524,7 @@ function render(): void {
   stackPanel.hidden = s.phase !== "stacking";
   lofiPanel.hidden = s.phase !== "lofi";
   momentsPanel.hidden = s.phase !== "moments";
+  readPanel.hidden = s.phase !== "reading";
   // Same rule every other long-lived media node in this slot follows:
   // hidden, never removed, and paused by hand on the way out — `display:
   // none` suspends nothing, so a 40-minute recording left rolling here
@@ -4364,6 +4545,10 @@ function render(): void {
     stackPanel.replaceChildren(...renderStackPanel());
   } else if (s.phase === "cutting") {
     barSlot.replaceChildren(...renderCutting());
+  } else if (s.phase === "reading") {
+    // Bar first: it assigns readBtn, which the panel's syncRead flips.
+    barSlot.replaceChildren(...renderReadBar(s));
+    readPanel.replaceChildren(...renderReadPanel(s));
   } else if (s.phase === "lofi") {
     barSlot.replaceChildren(...renderLofiBar());
     lofiPanel.replaceChildren(...renderLofiPanel());
@@ -4401,11 +4586,12 @@ function render(): void {
   // for a reason that has nothing to do with this phase. `cutting` is
   // excluded for exactly that reason too: it claims no `mode`, so on a
   // fresh session `mode` is still "short" and these three would describe
-  // some other video entirely.
+  // some other video entirely. `reading` is excluded for the same reason.
   if (
     s.phase !== "idle" &&
     s.phase !== "moments" &&
     s.phase !== "cutting" &&
+    s.phase !== "reading" &&
     s.mode === "short"
   ) {
     meta.push(el("span", { className: "badge badge-title", textContent: s.title }));
@@ -4552,6 +4738,11 @@ window.addEventListener("keydown", (e) => {
     if (cutUrl === "") return;
     if (cutVideo.paused) void cutVideo.play();
     else cutVideo.pause();
+  } else if (phase === "reading") {
+    // Nothing to play until a render lands; play() on an empty element rejects.
+    if (readUrl === "") return;
+    if (readAudio.paused) void readAudio.play();
+    else readAudio.pause();
   } else {
     return; // idle, stacking, lofi and moments own no medium — leave the page's own scroll alone
   }

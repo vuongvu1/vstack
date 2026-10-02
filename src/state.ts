@@ -16,6 +16,7 @@ export type Phase =
   | "lofi"
   | "moments"
   | "cutting"
+  | "reading"
   | "preview";
 
 /** One uploaded long-form part.
@@ -376,6 +377,26 @@ export function savedVoice(): string {
 
 export function saveVoice(name: string): void {
   localStorage.setItem(VOICE_KEY, name);
+}
+
+/** The script reader's text and file name. Global keys of their own, the
+ *  `vstack:voice` shape: a script is not a property of any video, and a
+ *  ten-minute script lost to a reload is real data loss — which is why this
+ *  phase persists where the cutter does not. A function, not a value folded
+ *  into `initial`, for `savedVoice`'s reason. */
+const SCRIPT_KEY = "vstack:script";
+const SCRIPT_NAME_KEY = "vstack:script-name";
+
+export function savedScript(): { name: string; text: string } {
+  return {
+    name: localStorage.getItem(SCRIPT_NAME_KEY) ?? "",
+    text: localStorage.getItem(SCRIPT_KEY) ?? "",
+  };
+}
+
+export function saveScript(name: string, text: string): void {
+  localStorage.setItem(SCRIPT_NAME_KEY, name);
+  localStorage.setItem(SCRIPT_KEY, text);
 }
 
 /** Parses and normalizes whatever is stored under a video's key, or `null`

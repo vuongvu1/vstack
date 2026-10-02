@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clock, mmss, parseTimestamp, slugify } from "./format.ts";
+import { clock, mmss, parseTimestamp, sampleOf, slugify } from "./format.ts";
 
 describe("slugify", () => {
   it("converts a long title to a slug with no trailing dash", () => {
@@ -138,5 +138,40 @@ describe("parseTimestamp", () => {
     expect(parseTimestamp("-5")).toBeNull();
     expect(parseTimestamp("1.5")).toBeNull();
     expect(parseTimestamp("s")).toBeNull();
+  });
+});
+
+describe("sampleOf", () => {
+  it("takes the first paragraph, trimmed", () => {
+    expect(sampleOf("  Xin chào.\nDòng hai.\n\nĐoạn hai.", 200)).toBe("Xin chào.\nDòng hai.");
+  });
+
+  it("skips leading blank lines and splits on whitespace-only lines", () => {
+    expect(sampleOf("\n \n Một. \n  \t\nHai.", 200)).toBe("Một.");
+  });
+
+  it("is the whole script when there is one paragraph", () => {
+    expect(sampleOf("Chỉ một đoạn.", 200)).toBe("Chỉ một đoạn.");
+  });
+
+  it("cuts a long paragraph at the last sentence end that fits", () => {
+    expect(sampleOf("Câu một. Câu hai dài hơn nhiều.", 20)).toBe("Câu một.");
+    expect(sampleOf("Một! Hai? Ba ba ba ba ba", 12)).toBe("Một! Hai?");
+  });
+
+  it("falls back to the last word boundary, then a hard cut", () => {
+    expect(sampleOf("không có dấu câu nào cả", 12)).toBe("không có dấu");
+    expect(sampleOf("không có dấu câu nào cả", 11)).toBe("không có");
+    expect(sampleOf("aaaaaaaaaaaaaaaa", 5)).toBe("aaaaa");
+  });
+
+  it("never exceeds the cap", () => {
+    for (const text of ["a. ".repeat(200), "word ".repeat(200), "x".repeat(500)]) {
+      expect(sampleOf(text, 200).length).toBeLessThanOrEqual(200);
+    }
+  });
+
+  it("is empty for a blank script", () => {
+    expect(sampleOf("  \n\n  ", 200)).toBe("");
   });
 });

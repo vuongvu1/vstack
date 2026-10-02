@@ -171,3 +171,19 @@ export function defaultDescription(videoId: string): string {
  *  the right direction for the server and is why the two do not share it.
  *  Re-measure if the asset is ever replaced. */
 export const OUTRO_SECONDS = 5.04;
+
+/** The script reader's cap, in characters after trimming. Shared so the
+ *  panel's counter and `/api/read`'s check cannot disagree.
+ *
+ *  Measured at the cap on VieNeu v3 Turbo here: 14,833 chars → 744.9s
+ *  (12m25s) of audio in 110.5s wall, 1.78 GB peak RSS, a 71.5 MB WAV.
+ *  Nothing on the server times this out — Node's `requestTimeout` only
+ *  bounds RECEIVING the request — so what a higher cap costs is the wait
+ *  with no progress on screen and the engine's memory, which grows with
+ *  the script because `infer` joins every chunk in RAM. */
+export const SCRIPT_MAX = 15_000;
+
+/** `starterTitle`/`voiceTitle`'s cap, checked by `readTitle` on the server.
+ *  Shared because the script reader's Try button sends its sample through
+ *  `/api/say` as a title and has to cut it to fit before it goes. */
+export const TITLE_MAX = 200;

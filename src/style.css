@@ -406,6 +406,26 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   text-align: left;
 }
 
+/* Mirrors .lofi-panel, for its reason: `.source` clips rather than scrolls,
+   and `height: 100%` is what gives the panel a box to fill. The script
+   textarea takes the leftover height through the existing
+   `.field:has(textarea)` rule. */
+.read-panel {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  overflow-y: auto;
+  text-align: left;
+}
+.read-panel audio { width: 100%; }
+.read-voice { display: flex; gap: var(--space-2); }
+.read-voice select { flex: 1; min-width: 0; }
+.field-count-over { color: var(--red-11); }
+
 .moment-row {
   display: flex;
   align-items: baseline;

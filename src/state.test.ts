@@ -2,7 +2,18 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { MAX_CUSTOM, isValidCustom } from "./custom.ts";
 import { DEFAULT_LAYOUT_ID } from "./layout.ts";
 import { MAX_SEGMENTS } from "./segments.ts";
-import { getState, keptLength, restore, save, saveVoice, savedTitle, savedVoice, setState } from "./state.ts";
+import {
+  getState,
+  keptLength,
+  restore,
+  save,
+  saveScript,
+  saveVoice,
+  savedScript,
+  savedTitle,
+  savedVoice,
+  setState,
+} from "./state.ts";
 
 /** vitest's config runs this file under Node, which has no `localStorage`
  *  global. `state.ts` is pure logic over whatever object sits at
@@ -860,5 +871,23 @@ describe("the cutter's state", () => {
     expect(stored).not.toHaveProperty("cutSeconds");
     expect(stored).not.toHaveProperty("cutUploadId");
     expect(stored).not.toHaveProperty("cutNames");
+  });
+});
+
+describe("savedScript / saveScript", () => {
+  it("is empty before anything was saved", () => {
+    expect(savedScript()).toEqual({ name: "", text: "" });
+  });
+
+  it("round-trips the script and its name, newlines and diacritics intact", () => {
+    const text = "Đoạn một.\n\nĐoạn hai — có dấu.";
+    saveScript("Tập 1", text);
+    expect(savedScript()).toEqual({ name: "Tập 1", text });
+  });
+
+  it("lives under its own keys, never in a per-video record", () => {
+    saveScript("a", "b");
+    const keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i));
+    expect(keys.sort()).toEqual(["vstack:script", "vstack:script-name"]);
   });
 });

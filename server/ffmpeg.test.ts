@@ -27,6 +27,8 @@ import {
   probeAudio,
   probeFile,
   removeExport,
+  scriptName,
+  isScriptName,
   segmentDigest,
   stillPath,
   thumbPath,
@@ -235,6 +237,61 @@ describe("cutName — the traversal guard", () => {
   it("does not overlap isOutName in either direction", () => {
     expect(isCutName("an-com-0130-0205.mp4")).toBe(false);
     expect(isOutName("an-com-chua-1.mp3")).toBe(false);
+  });
+});
+
+describe("scriptName", () => {
+  it("slugifies the base and marks it as a voice file", () => {
+    expect(scriptName("Hôm nay trời đẹp quá")).toBe("hom-nay-troi-dep-qua-voice.mp3");
+    expect(scriptName("Tập 3")).toBe("tap-3-voice.mp3");
+  });
+
+  it("always produces a name isScriptName accepts", () => {
+    for (const base of ["Hôm nay", "2024", "!!!", "  a  b  ", "Đà Nẵng"]) {
+      expect(isScriptName(scriptName(base))).toBe(true);
+    }
+  });
+});
+
+describe("scriptName — the traversal guard", () => {
+  it("accepts what scriptName emits", () => {
+    expect(isScriptName("an-com-chua-voice.mp3")).toBe(true);
+    expect(isScriptName("a-voice.mp3")).toBe(true);
+    expect(isScriptName("tap-3-voice.mp3")).toBe(true);
+  });
+
+  it("rejects traversal", () => {
+    expect(isScriptName("../secret-voice.mp3")).toBe(false);
+    expect(isScriptName("a/b-voice.mp3")).toBe(false);
+    expect(isScriptName("a\\b-voice.mp3")).toBe(false);
+    expect(isScriptName("/etc/passwd")).toBe(false);
+    expect(isScriptName("..")).toBe(false);
+  });
+
+  it("rejects everything slugify could not have produced", () => {
+    expect(isScriptName("An-Com-voice.mp3")).toBe(false); // uppercase
+    expect(isScriptName("ăn-cơm-voice.mp3")).toBe(false); // diacritics
+    expect(isScriptName("-a-voice.mp3")).toBe(false); // leading dash
+    expect(isScriptName("a--b-voice.mp3")).toBe(false); // doubled dash
+    expect(isScriptName("a b-voice.mp3")).toBe(false); // space
+    expect(isScriptName("-voice.mp3")).toBe(false); // empty slug
+    expect(isScriptName("a-voice.mp3.part")).toBe(false);
+    expect(isScriptName("a-voice.mp4")).toBe(false);
+  });
+
+  it("rejects non-strings", () => {
+    expect(isScriptName(undefined)).toBe(false);
+    expect(isScriptName(null)).toBe(false);
+    expect(isScriptName(42)).toBe(false);
+    expect(isScriptName(["a-voice.mp3"])).toBe(false);
+  });
+
+  it("is disjoint from the other two producers", () => {
+    expect(isCutName(scriptName("ads"))).toBe(false);
+    expect(isOutName(scriptName("ads"))).toBe(false);
+    expect(isScriptName(cutName("ads", 1))).toBe(false);
+    expect(isScriptName(cutName("ads voice", 2))).toBe(false);
+    expect(isScriptName(outName("ads", 0, 60))).toBe(false);
   });
 });
 

@@ -18,7 +18,15 @@ import { promisify } from "node:util";
 import type { Rect } from "../src/geometry.ts";
 import { layoutById } from "../src/layout.ts";
 import type { CustomBox } from "../src/custom.ts";
-import { MAX_DROPS, MAX_PARTS, MAX_SPEECHES, MAX_TRACKS, UPLOAD_MAX_BYTES } from "../src/defaults.ts";
+import {
+  MAX_DROPS,
+  MAX_PARTS,
+  MAX_SPEECHES,
+  MAX_TRACKS,
+  SCRIPT_MAX,
+  TITLE_MAX,
+  UPLOAD_MAX_BYTES,
+} from "../src/defaults.ts";
 import { MAX_SEGMENTS, isValidSegments, keepRanges, totalDuration } from "../src/segments.ts";
 import type { Segment } from "../src/segments.ts";
 import { HttpError } from "./errors.ts";
@@ -35,6 +43,7 @@ import {
   firstFrame,
   isCutName,
   isOutName,
+  isScriptName,
   isUploadId,
   outName,
   outPath,
@@ -42,11 +51,13 @@ import {
   probeFile,
   removeExport,
   reportCache,
+  scriptName,
   stillPath,
   thumbPath,
   uploadPath,
 } from "./ffmpeg.ts";
 import { cutMp3 } from "./cut.ts";
+import { scriptMp3 } from "./script.ts";
 import { fetchChat, parseChat, peaks } from "./chat.ts";
 import { ensureMask } from "./mask.ts";
 import type { Trim } from "./longform.ts";
@@ -138,10 +149,10 @@ export function num(v: unknown, name: string): number {
   return v;
 }
 
-/** The starter screen's title. Trimmed here so the same string is what gets
- *  spoken, and length-capped because it is handed to a speech engine that
- *  will cheerfully read a novel. */
-const TITLE_MAX = 200;
+// The starter screen's title. Trimmed in readTitle so the same string is
+// what gets spoken, and length-capped (TITLE_MAX, shared with the client so
+// the reader's Try sample is cut to fit) because it is handed to a speech
+// engine that will cheerfully read a novel.
 
 export function readTitle(v: unknown, name = "starterTitle"): string {
   const text = str(v, name).trim();
@@ -1329,8 +1340,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // OUT_NAME to cover both would loosen the guard on a path that reaches
     // `open -R` under $HOME. /api/publish and /out/ are deliberately NOT
     // taught about .mp3: nothing in the cutter produces something to publish
-    // or to stream back.
-    if (!isOutName(body.name) && !isCutName(body.name)) {
+    // or to stream back. The script reader is a third producer with a third
+    // anchored pattern — see isScriptName — for the same reason.
+    if (!isOutName(body.name) && !isCutName(body.name) && !isScriptName(body.name)) {
       return send(res, 400, { error: "Bad output name." });
     }
     const path = outPath(body.name);
@@ -1383,6 +1395,59 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // The framing bar's voice dropdown. Served from the boot cache, so it costs
   // nothing and cannot disagree with what /api/export will accept.
   if (req.url === "/api/voices") return send(res, 200, { voices: knownVoices(), default: VOICE });
+
+  // The script reader. Bytes back rather than JSON, the /api/say posture,
+  // which is what keeps /out/ untaught about .mp3 — the player plays a blob.
+  // Unlike /api/say the file is ALSO kept: it is an artifact the user meant
+  // to make, so it lands in OUT_DIR beside the cutter's mp3s.
+  if (req.url === "/api/read") {
+    const raw = await json<Record<string, unknown>>(req);
+    // Trimmed before measuring, the same count the panel shows.
+    const script = str(raw.script, "script").trim();
+    if (script === "") return send(res, 400, { error: "script must not be blank." });
+    if (script.length > SCRIPT_MAX) {
+      return send(res, 400, { error: `script must be at most ${SCRIPT_MAX} characters.` });
+    }
+    // argv of tts.py — a table lookup, as /api/export and /api/say do.
+    const voiceName = str(raw.voice, "voice");
+    if (!knownVoices().some((v) => v.name === voiceName)) {
+      return send(res, 400, { error: `Unknown voice ${voiceName}.` });
+    }
+    // No `prev` sweep, unlike /api/export, /api/lofi and /api/cut, and that
+    // is deliberate. Their names are DERIVED (title + marks, or a reused
+    // index), so a new name means a superseded render of the same thing.
+    // Here the name is the user's own handle for a separate voiceover:
+    // render "Tập 1", rename to "Tập 2", paste the next script — sweeping
+    // would delete episode 1, whose text the single stored script has
+    // already been overwritten by. A file stranded under a name the user
+    // chose is never mistaken for a current one, so nothing forces a sweep.
+    const name = scriptName(readTitle(raw.name, "name"));
+
+    await mkdir(OUT_DIR, { recursive: true });
+    const dir = await mkdtemp(join(tmpdir(), "vstack-read-"));
+    // A partial in OUT_DIR (same volume, so the rename cannot EXDEV), with a
+    // UUID so two concurrent renders under one name cannot share an fd, and
+    // tracked so a `node --watch` SIGTERM unlinks it.
+    const partial = outPath(name).replace(/\.mp3$/, `.${randomUUID()}.part.mp3`);
+    inFlight.add(partial);
+    try {
+      await scriptMp3(script, voiceName, dir, partial);
+      await rename(partial, outPath(name));
+      const mp3 = await readFile(outPath(name));
+      res.writeHead(200, {
+        "content-type": "audio/mpeg",
+        "content-length": mp3.length,
+        "x-vstack-name": name,
+      });
+      return void res.end(mp3);
+    } finally {
+      inFlight.delete(partial);
+      await rm(partial, { force: true }).catch((err: unknown) => {
+        console.error("vstack: read partial cleanup failed:", err);
+      });
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
 
   // The Try button beside that dropdown: the real title in the real voice,
   // without paying for an export. Answers the WAV itself rather than writing

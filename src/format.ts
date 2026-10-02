@@ -63,3 +63,21 @@ export function parseTimestamp(text: string): number | null {
   const [, h, m, s] = parts;
   return 3600 * Number(h ?? 0) + 60 * Number(m ?? 0) + Number(s ?? 0);
 }
+
+/** What the script reader's Try button reads: the first paragraph (lines up
+ *  to the first blank one), cut to `max` so it fits `/api/say`'s title cap.
+ *
+ *  The cut prefers the last sentence end that fits, then the last word
+ *  boundary, and only then a hard cut, so an audition never stops mid-word
+ *  when it can help it. */
+export function sampleOf(script: string, max: number): string {
+  const para = script.trim().split(/\n\s*\n/)[0]?.trim() ?? "";
+  if (para.length <= max) return para;
+  const head = para.slice(0, max);
+  const sentence = Math.max(...[".", "!", "?", "…"].map((c) => head.lastIndexOf(c)));
+  if (sentence > 0) return head.slice(0, sentence + 1);
+  // `max + 1` so a word that ends exactly at the cap is kept whole.
+  const space = para.slice(0, max + 1).search(/\s\S*$/);
+  if (space > 0) return para.slice(0, space).trimEnd();
+  return head;
+}

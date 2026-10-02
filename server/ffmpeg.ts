@@ -127,6 +127,15 @@ export function cutName(base: string, n: number): string {
   return `${cutStem(base)}${n}.mp3`;
 }
 
+/** The script reader's one mp3 — the name the user typed, slugified, plus a
+ *  fixed `-voice` marker.
+ *
+ *  Deterministic in the name alone, so re-rendering after a script edit
+ *  overwrites itself. A new name is a new voiceover and is left alone. */
+export function scriptName(base: string): string {
+  return `${slugify(base)}-voice.mp3`;
+}
+
 /** The prefix every one of a base's `cutName`s shares.
  *
  *  Exported so `/api/cut`'s sweep can ask "does this stale name belong to
@@ -219,6 +228,19 @@ const CUT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*-\d+\.mp3$/;
 
 export function isCutName(name: unknown): name is string {
   return typeof name === "string" && CUT_NAME.test(name);
+}
+
+/** Anchored to exactly what `scriptName` emits — a third producer, a third
+ *  pattern, rather than a widened `OUT_NAME` or `CUT_NAME`. Disjoint from
+ *  `CUT_NAME` by construction: one ends `-voice.mp3`, the other
+ *  `-<digits>.mp3`.
+ *
+ *  It gates `/api/reveal`, which spawns `open -R` under $HOME. There is no
+ *  `prev` behind it: the script reader sweeps nothing (see `/api/read`). */
+const SCRIPT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*-voice\.mp3$/;
+
+export function isScriptName(name: unknown): name is string {
+  return typeof name === "string" && SCRIPT_NAME.test(name);
 }
 
 function cacheSize(dir: string): number {

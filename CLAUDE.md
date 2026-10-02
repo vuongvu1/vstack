@@ -83,7 +83,14 @@ claims no `mode`, and never touches `framing`, `preview`, `/api/export`,
 accident, and it is what keeps every invariant the other four journeys rest
 on out of scope there. It borrows `media/uploads/` and `/api/upload-audio`
 from the lofi journey and `src/segments.ts` from the trimming phase, and
-that is the whole of what it shares. No
+that is the whole of what it shares, plus
+`docs/specs/2026-10-02-vstack-script-reader-design.md`, which supersedes
+nothing and adds a SIXTH journey and third dead end: `idle` → `reading` →
+`idle`, where a pasted voiceover script (up to `SCRIPT_MAX`, 15,000
+characters, ~12 minutes) is read aloud by the same VieNeu engine and comes
+back as one `<slug>-voice.mp3` in `OUT_DIR`, played in the panel from a blob
+and revealed in Finder. It claims no `mode` and borrows only `speak`, the
+`vstack:voice` key and the cutter's `MP3_QUALITY`. No
 spec covers the speech engine: every one of them
 describes macOS `say` and its `Linh` voice, which this codebase no longer
 uses at all (see "the voice" below).
@@ -97,7 +104,7 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 448 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 523 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -125,6 +132,7 @@ and the only remaining macOS dependency is `afplay` in `pnpm voices` and
 server/errors.ts   HttpError (status + message), toolError (stderr tail)
 server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
                    outName/outPath, isOutName, cutName/isCutName,
+                   scriptName/isScriptName,
                    stillPath/thumbPath/
                    removeExport,
                    UPLOADS_DIR/uploadPath, isUploadId,
@@ -157,6 +165,8 @@ server/lofi.ts     WIDE, FADE, TRACK_FADE, CRACKLE_PATH, LOGO_PATH/LOGO_RECT/
                    scanFolder/trackEnvelope (a named folder's usable media
                    and the loudness envelope, built here rather than in the
                    browser now that the bytes never reach it)
+server/script.ts   scriptMp3 (the script reader's one pass — `speak` over the
+                   whole script, then one mp3 encode)
 server/cut.ts      MP3_QUALITY, cutMp3 (the cutter's one ffmpeg pass, run
                    once per range)
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
@@ -187,7 +197,7 @@ server/ytdlp.ts    videoIdFrom, probe, fetchWindow, parseClipName, listClips
 server/chat.ts     ChatMsg/Moment, BIN/WIN/LAG/TOP/MIN_GAP/SKIP_HEAD,
                    fetchChat (chat replay -> media/<id>/chat.json),
                    parseChat, peaks (the scorer)
-server/index.ts    18 routes (17 POST + GET /out/<name>), serveOut range
+server/index.ts    19 routes (18 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core
 src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
@@ -207,13 +217,14 @@ src/thumb.ts       THUMB, renderThumb (any picture → 1280x720 JPEG, stretched)
                    WIDE_IMAGE, renderWide (any picture → 1920x1080 JPEG,
                    cover-cropped — the lofi journey's background)
 src/state.ts       AppState, setState/setQuiet, save/restore
-src/api.ts         16 fetch wrappers
-src/format.ts      mmss / clock / slugify (shared client + server)
+src/api.ts         17 fetch wrappers
+src/format.ts      mmss / clock / slugify (shared client + server), sampleOf
+                   (the reader's Try sample: first paragraph, cut to fit)
 src/player.ts      YT IFrame API wrapper + trim strip
 src/editor.ts      box drag/resize overlay (crops over the <video>, pieces'
                    `out` rects over the <canvas>); returns { place, stop }
 src/preview.ts     canvas composite rAF loop, plus the thumbnail overpaint
-src/main.ts        persistent shell, phase machine, all seven phases
+src/main.ts        persistent shell, phase machine, all nine phases
 media/             clip cache (gitignored)
 media/uploads/     long-form parts, one <uuid>.mp4 per upload (gitignored)
 ~/Desktop/vstack/  finished shorts, plus a vertical .jpg still beside each
@@ -266,6 +277,10 @@ module does not, and that direction is the one to keep. Its only imports are
 same reach across the client/server line `ytdlp.ts` already makes for
 `geometry.ts`'s `PAD` — which is also what makes the cutter's ranges the
 trimming phase's ranges by construction rather than by resemblance.
+`script.ts` sits beside `cut.ts` and reaches into two siblings on purpose:
+`speak` from `starter.ts`, so `starter.ts` stays the only thing that ever
+spawns `tts.py`, and `MP3_QUALITY` from `cut.ts`, so the app's two mp3
+producers cannot drift to two qualities.
 `src/lofi.ts` sits at the very bottom beside
 `geometry.ts` and `segments.ts` and imports only `defaults.ts`, itself a
 leaf — `MAX_DROPS` bounds `fill`'s own slot loop, so the cap that has to
@@ -278,8 +293,8 @@ its cache and imports nothing else, deliberately not `ytdlp.ts`, so
 `videoIdFrom` stays the one trust boundary that decides whether a subprocess
 spawns.
 
-Eight phases: six of them across three journeys that share the last one, plus
-two dead ends: `idle` (URL) →
+Nine phases: six of them across three journeys that share the last one, plus
+three dead ends: `idle` (URL) →
 `trimming` (YouTube iframe, mark start/end, no download) → `framing` (real
 `<video>` of the fetched window, crop boxes, canvas composite, export) →
 `preview` (the finished file played back on the right, with the upload's
@@ -348,6 +363,25 @@ where `phase !== "cutting"` rather than leaving it to the `← Back` button,
 so a route out of this phase added later cannot leak the blob for the life
 of the tab. It is idempotent, which is what makes running it on every
 render of every other phase free.
+
+`idle` → `reading` → `idle` is the sixth way out and the third dead end,
+under the cutter's rules wholesale: no `mode` claimed, the status row's
+probed badges excluded explicitly, a persistent `readPanel` in
+`sourceSlot`, and the blob URL behind its `<audio>` released by `render()`
+on every render where `phase !== "reading"`. Unlike the cutter it
+PERSISTS its input — the script and its name under `vstack:script` and
+`vstack:script-name`, the `vstack:voice` shape — because a ten-minute
+script lost to a reload is data loss. The textarea and the `<audio>` are
+persistent nodes rather than rebuilt per render, so a render mid-typing
+(the voice list landing) keeps the caret and the playback.
+
+The voice row's `▶ Try` is the framing bar's own `renderTryVoice`, which
+takes text getters rather than input elements so both callers share it.
+It sends `sampleOf(script, TITLE_MAX)` — the first paragraph, cut at the
+last sentence end, then word boundary, that fits — through `/api/say` as a
+title. `TITLE_MAX` moved to `src/defaults.ts` for exactly this: the client
+has to cut to the cap `readTitle` enforces, and two copies of 200 is how
+an audition starts answering 400.
 
 ## Invariants — breaking these is silent, not loud
 
@@ -1978,6 +2012,31 @@ every marking button re-renders the bar, detaching the focused node. They
 are not built while `busy`, matching `Remove`.
 Verified in a real browser (shrink, merge-on-overlap, delete, playhead
 untouched); DOM, so untested.
+
+**`/api/read` answers the mp3 BYTES, and `/out/` stays untaught about
+`.mp3`.** The `/api/say` posture, except the file is also kept in
+`OUT_DIR`. `isScriptName` is a third anchored pattern beside `OUT_NAME` and
+`CUT_NAME`, disjoint from `CUT_NAME` by construction (`-voice.mp3` against
+`-<digits>.mp3`), and it gates `/api/reveal`.
+
+**`/api/read` has NO `prev` sweep, unlike every other producer here — and
+adding one deletes the user's work.** `/api/export` and `/api/lofi` derive
+their names from the content and `/api/cut` reuses an index, so a new name
+there means a superseded render of the same thing. Here the name is the
+user's own handle for a SEPARATE voiceover: render "Tập 1", rename to "Tập
+2", paste the next script, and a sweep would delete episode 1 — whose text
+the single stored script has already lost. The plan shipped with the
+sweep; review caught it and a curl reproduction confirmed it. A file
+stranded under a name the user chose is never mistaken for a current one,
+which is the only thing that forces the cutter's sweep.
+
+**The whole script goes to VieNeu in ONE call, and no server timeout bounds
+it.** The engine chunks at 256 chars itself; chunking here too would double
+the pauses. Node's `requestTimeout` bounds only RECEIVING a request (the
+`/api/lofi` route already answers after multi-hour renders), so the cap's
+real costs are the wait and the memory — measured at `SCRIPT_MAX`: 14,833
+chars → 12m25s of audio in 110s wall, 1.78 GB peak RSS, since `infer`
+joins every chunk in RAM.
 
 **A kept range is `.wave-keep` (grass), never the framing strip's
 `.wave-cut`.** The two strips mean opposite things by a shaded band: on the

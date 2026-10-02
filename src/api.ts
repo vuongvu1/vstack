@@ -326,6 +326,18 @@ export async function say(body: {
   return (await post("/api/say", body)).blob();
 }
 
+/** The script read aloud, as mp3 bytes, plus the name the server filed it
+ *  under in OUT_DIR. Bytes rather than a URL because `/out/` streams only
+ *  `.mp4`; the panel plays a blob. No `prev`: see the route. */
+export async function read(body: {
+  script: string;
+  voice: string;
+  name: string;
+}): Promise<{ blob: Blob; name: string }> {
+  const res = await post("/api/read", body);
+  return { blob: await res.blob(), name: res.headers.get("x-vstack-name") ?? "" };
+}
+
 export async function reveal(name: string): Promise<void> {
   await post("/api/reveal", { name });
 }
