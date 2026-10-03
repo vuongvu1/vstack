@@ -96,7 +96,12 @@ nothing and adds a second OUTPUT SHAPE to the short journey: a layout now
 carries its `frame` (`TALL` 1080x1920 or `WIDE` 1920x1080), and a wide export
 skips the starter screen and the voice, keeps the outro (letterboxed by
 `appendOutro`), and writes a title-card `.thumb.jpg` (`titleCard`). No new
-`mode`, no new phase, no new request field.
+`mode`, no new phase, no new request field, plus
+`docs/specs/2026-10-03-vstack-facebook-reels-design.md`, which supersedes
+nothing and adds a second publish target beside YouTube: a tall short goes
+to a Facebook PAGE as a Reel DRAFT (`/api/publish-reel`), captioned with the
+YouTube title + description minus `#Shorts`, refused over 90s before any
+byte is sent.
 
 No spec covers the speech engine: every one of them
 describes macOS `say` and its `Linh` voice, which this codebase no longer
@@ -111,11 +116,12 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 559 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 568 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
 pnpm youtube-auth  # one-off OAuth setup for publishing (see server/youtube.ts)
+pnpm facebook-auth <token>  # one-off Page token for Reels (see scripts/facebook-auth.ts)
 ```
 
 Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH, the speech venv from
@@ -203,11 +209,16 @@ server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
                    buildSnippet, accessToken, uploadVideo, publishProgress,
                    setThumbnail
 scripts/youtube-auth.ts  `pnpm youtube-auth` — the one-off OAuth dance
+server/facebook.ts buildCaption, reelLengthError, readPageToken,
+                   checkFacebook, uploadReel (start → rupload → finish as
+                   DRAFT), reelProgress — imports nothing from youtube.ts
+scripts/facebook-auth.ts  `pnpm facebook-auth` — short token → long-lived →
+                   never-expiring Page token in ~/.vstack/facebook-token.json
 server/ytdlp.ts    videoIdFrom, probe, fetchWindow, parseClipName, listClips
 server/chat.ts     ChatMsg/Moment, BIN/WIN/LAG/TOP/MIN_GAP/SKIP_HEAD,
                    fetchChat (chat replay -> media/<id>/chat.json),
                    parseChat, peaks (the scorer)
-server/index.ts    19 routes (18 POST + GET /out/<name>), serveOut range
+server/index.ts    21 routes (20 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core; TALL/WIDE
 src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
@@ -229,7 +240,7 @@ src/thumb.ts       THUMB, renderThumb (any picture → 1280x720 JPEG, stretched)
                    WIDE_IMAGE, renderWide (any picture → 1920x1080 JPEG,
                    cover-cropped — the lofi journey's background)
 src/state.ts       AppState, setState/setQuiet, save/restore
-src/api.ts         17 fetch wrappers
+src/api.ts         19 fetch wrappers
 src/format.ts      mmss / clock / slugify (shared client + server), sampleOf
                    (the reader's Try sample: first paragraph, cut to fit)
 src/player.ts      YT IFrame API wrapper + trim strip
@@ -546,6 +557,15 @@ at 17/35/53/70/88% on a four-minute fixture), while the music pre-pass joins
 sixty minutes of audio in 5.5s — audio-only, no video encode — so it usually
 finishes inside one tick and prints nothing at all. That is the pre-pass being
 fast rather than the ticker being broken.
+
+**A Reel lands as a DRAFT and there is no option.** Facebook has no
+forced-private mode, so `video_state=DRAFT` is the only thing between the
+Reel button and every follower; the user schedules it in Business Suite.
+The button is built only for `mode === "short"` on a TALL layout — Reels
+must be 9:16 — and `/api/publish-reel` probes the file and answers 400
+outside 3–90s BEFORE `start`, since Meta takes the whole upload and only
+refuses at `finish`. The Page token travels in the body or an
+`Authorization: OAuth` header, never a URL query.
 
 **Uploads are private and there is no option.** An unaudited YouTube Data API
 project has every `videos.insert` locked to private viewing. `buildSnippet`

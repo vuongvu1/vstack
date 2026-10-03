@@ -900,6 +900,18 @@ describe("the cutter's state", () => {
   });
 });
 
+describe("the Reel draft's state", () => {
+  // A draft id describes one upload of one file; restored onto a later
+  // session it would hide the Reel button for a file never sent.
+  it("does not persist fbVideoId or fbUrl", () => {
+    setState({ videoId: "abc12345678", phase: "preview", fbVideoId: "123", fbUrl: "https://x" });
+    save();
+    const stored = readRaw("abc12345678") as Record<string, unknown>;
+    expect(stored).not.toHaveProperty("fbVideoId");
+    expect(stored).not.toHaveProperty("fbUrl");
+  });
+});
+
 describe("savedScript / saveScript", () => {
   it("is empty before anything was saved", () => {
     expect(savedScript()).toEqual({ name: "", text: "" });

@@ -10,6 +10,7 @@
     "voices": "node scripts/audition.ts",
     "tts-setup": "node scripts/tts-setup.ts",
     "youtube-auth": "node scripts/youtube-auth.ts",
+    "facebook-auth": "node scripts/facebook-auth.ts",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",

@@ -88,6 +88,7 @@ import {
   setThumbnail,
   uploadVideo,
 } from "./youtube.ts";
+import { buildCaption, checkFacebook, reelLengthError, reelProgress, uploadReel } from "./facebook.ts";
 import { fetchWindow, listClips, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
@@ -1436,6 +1437,26 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // equality above means this never shadows /api/publish and vice versa.
   if (req.url === "/api/publish/progress") return send(res, 200, publishProgress());
 
+  // The Facebook sibling of /api/publish: same isOutName + existsSync gate,
+  // since this too names a file to upload. Lands as a Page Reel DRAFT.
+  if (req.url === "/api/publish-reel") {
+    const body = await json<Record<string, unknown>>(req);
+    if (!isOutName(body.name)) return send(res, 400, { error: "Bad output name." });
+    const path = outPath(body.name);
+    if (!existsSync(path)) return send(res, 404, { error: `${body.name} is not in out/.` });
+    // Before a byte is sent: Meta takes the whole upload and only refuses an
+    // out-of-range Reel at the finish call.
+    const tooLong = reelLengthError((await probeFile(path)).seconds);
+    if (tooLong !== null) return send(res, 400, { error: tooLong });
+    const caption = buildCaption(str(body.title, "title"), str(body.description, "description"));
+    if (caption === "") return send(res, 400, { error: "caption must not be blank." });
+    const reel = await uploadReel({ path, size: statSync(path).size, caption });
+    console.warn(`vstack: uploaded ${body.name} as Reel draft ${reel.videoId}`);
+    return send(res, 200, reel);
+  }
+
+  if (req.url === "/api/publish-reel/progress") return send(res, 200, reelProgress());
+
   // A distinct URL rather than a flag: `server/index.ts` routes on exact
   // `req.url` equality, so `/api/lofi?progress=1` would miss the `/api/lofi`
   // branch entirely rather than reaching a flag inside it.
@@ -1542,6 +1563,7 @@ await checkLofi();
 // Soft, unlike the four above: no Google credentials means Publish does not
 // work, not that vstack refuses to boot.
 checkYouTube();
+checkFacebook();
 // SIGTERMs whatever vstack server already holds PORT, and reports whether it
 // found one. Node has no way to ask who owns a port, hence lsof — the same
 // command the old error message told the user to run by hand. The `ps` check

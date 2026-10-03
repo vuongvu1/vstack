@@ -1476,6 +1476,8 @@ async function doExport(): Promise<void> {
       // its thumbnail state belongs to that upload rather than this file.
       ytVideoId: "",
       ytThumbnail: false,
+      fbVideoId: "",
+      fbUrl: "",
     });
   });
 }
@@ -1558,6 +1560,8 @@ async function doStack(): Promise<void> {
       ytTags: getState().ytTags || LONG_TAGS_DEFAULT,
       ytVideoId: "",
       ytThumbnail: false,
+      fbVideoId: "",
+      fbUrl: "",
     });
     bell();
   });
@@ -1791,6 +1795,8 @@ async function doLofi(): Promise<void> {
         ytTags: getState().ytTags || LONG_TAGS_DEFAULT,
         ytVideoId: "",
         ytThumbnail: false,
+        fbVideoId: "",
+        fbUrl: "",
       });
       bell();
     } finally {
@@ -1842,6 +1848,37 @@ async function doPublish(): Promise<void> {
     } finally {
       // Must run before guard's own finally clears `busy`, or the next tick
       // would set it straight back and strand the bar as busy forever.
+      clearInterval(poll);
+    }
+  });
+}
+
+/** The Facebook sibling of `doPublish`: same title gate, same poll shape,
+ *  its own progress route. Independent of YouTube — either, both, any order. */
+async function doPublishReel(): Promise<void> {
+  const s = getState();
+  const title = s.ytTitle.trim();
+  if (title === "" || s.outName === "") return;
+  await guard("Reel… 0%", async () => {
+    const poll = window.setInterval(() => {
+      void api
+        .reelProgress()
+        .then(({ sent, total }) => {
+          if (total > 0 && getState().busy !== "") {
+            setState({ busy: `Reel… ${Math.round((sent / total) * 100)}%` });
+          }
+        })
+        .catch(() => undefined);
+    }, 500);
+    try {
+      const { videoId, url } = await api.publishReel({
+        name: s.outName,
+        title,
+        description: s.ytDescription,
+      });
+      setState({ fbVideoId: videoId, fbUrl: url });
+      bell();
+    } finally {
       clearInterval(poll);
     }
   });
@@ -2827,6 +2864,8 @@ function renderStacking(): Node[] {
       ytTags: "",
       ytVideoId: "",
       ytThumbnail: false,
+      fbVideoId: "",
+      fbUrl: "",
     });
 
   // `go`, not `render` — a local named `render` would shadow this module's
@@ -2903,6 +2942,9 @@ function renderStacking(): Node[] {
  *  this is how it reaches it. Both are rebuilt in the same render() call, so
  *  this is never stale by the time a keystroke can fire. */
 let publishBtn: HTMLButtonElement | null = null;
+/** The Reel button, flipped by the same keystroke for the same reason. Null
+ *  whenever the bar does not build one (wide, long, lofi, or already sent). */
+let reelBtn: HTMLButtonElement | null = null;
 
 /** The left column during `preview`: everything about the upload that is
  *  editable. It moved out of the bar because a description is the one field
@@ -2951,7 +2993,9 @@ function renderPublishForm(): Node[] {
   title.oninput = () => {
     setQuiet({ ytTitle: title.value });
     showCount(title.value);
-    if (publishBtn) publishBtn.disabled = title.value.trim() === "" || Boolean(getState().busy);
+    const blocked = title.value.trim() === "" || Boolean(getState().busy);
+    if (publishBtn) publishBtn.disabled = blocked;
+    if (reelBtn) reelBtn.disabled = blocked;
   };
   description.oninput = () => setQuiet({ ytDescription: description.value });
   tags.oninput = () => setQuiet({ ytTags: tags.value });
@@ -3017,6 +3061,27 @@ function renderPreview(): Node[] {
   // Handed to the panel, which owns the title this is gated on.
   publishBtn = publish;
 
+  // Tall shorts only: a Reel must be 9:16, and wide cuts, long-form and lofi
+  // renders are all 16:9. Over-90s is the server's 400, answered before any
+  // upload. ponytail: gate on the preview <video>'s duration if that round
+  // trip ever annoys.
+  const reelable = s.mode === "short" && !isWide(resolveLayout(s.layoutId));
+  const reeled = s.fbVideoId !== "";
+  const reel = el("button", {
+    textContent: "Reel (draft)",
+    title: "Upload to the Facebook Page as a Reel draft, to schedule in Business Suite",
+    disabled: s.ytTitle.trim() === "" || Boolean(s.busy),
+  });
+  reel.onclick = () => void doPublishReel();
+  reelBtn = reelable && !reeled ? reel : null;
+  const suite = el("a", {
+    className: "btn-link",
+    href: s.fbUrl,
+    target: "_blank",
+    rel: "noreferrer",
+    textContent: "Open in Business Suite →",
+  });
+
   // The Studio edit page, and the same URL the button beside it opens —
   // one const rather than two literals, since a copied link that pointed
   // somewhere other than where Studio opens is a difference nobody would
@@ -3069,6 +3134,7 @@ function renderPreview(): Node[] {
       published
         ? el("span", { className: "badge badge-info", textContent: "uploaded — private" })
         : el("span"),
+      reeled ? el("span", { className: "badge badge-info", textContent: "reel draft" }) : el("span"),
       // Only worth saying when it did NOT take: a set thumbnail is the
       // expected outcome and needs no badge, but a skipped one is something
       // to fix by hand in Studio, and silence would hide it.
@@ -3088,6 +3154,7 @@ function renderPreview(): Node[] {
         { className: "bar-end" },
         finder,
         back,
+        ...(reelable ? (reeled ? [suite] : [reel]) : []),
         ...(published ? [copy, studio] : [publish]),
       ),
     ),
@@ -3650,6 +3717,8 @@ function renderLofiBar(): Node[] {
       ytTags: "",
       ytVideoId: "",
       ytThumbnail: false,
+      fbVideoId: "",
+      fbUrl: "",
     });
 
   const ready = (live: AppState) =>

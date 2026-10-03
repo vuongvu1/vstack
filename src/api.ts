@@ -374,6 +374,24 @@ export async function publishProgress(): Promise<{ sent: number; total: number }
   }>;
 }
 
+/** Uploads the finished short to the Facebook Page as a Reel DRAFT. The
+ *  caption is built server-side from the same title and description the
+ *  YouTube upload uses, minus `#Shorts`. */
+export async function publishReel(body: {
+  name: string;
+  title: string;
+  description: string;
+}): Promise<{ videoId: string; url: string }> {
+  return (await post("/api/publish-reel", body)).json() as Promise<{ videoId: string; url: string }>;
+}
+
+export async function reelProgress(): Promise<{ sent: number; total: number }> {
+  return (await post("/api/publish-reel/progress", {})).json() as Promise<{
+    sent: number;
+    total: number;
+  }>;
+}
+
 /** How far the running render has got. Polled while a lofi render is in
  *  flight; `total` of 0 means nothing is running.
  *

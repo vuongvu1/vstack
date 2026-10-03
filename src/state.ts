@@ -260,6 +260,11 @@ export type AppState = {
   /** Whether the thumbnail took. Only meaningful once `ytVideoId` is set —
    *  before that it is just the initial `false`. */
   ytThumbnail: boolean;
+  /** The Facebook Reel draft, once it lands — the `ytVideoId` of the other
+   *  publish target, cleared everywhere that one is. */
+  fbVideoId: string;
+  /** Where to find that draft. */
+  fbUrl: string;
 };
 
 const initial: AppState = {
@@ -313,6 +318,8 @@ const initial: AppState = {
   ytTags: "",
   ytVideoId: "",
   ytThumbnail: false,
+  fbVideoId: "",
+  fbUrl: "",
 };
 
 let state: AppState = { ...initial };
