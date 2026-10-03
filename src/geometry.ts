@@ -2,7 +2,11 @@ export type Size = { w: number; h: number };
 export type Rect = { x: number; y: number; w: number; h: number };
 export type Corner = "nw" | "ne" | "sw" | "se";
 
-export const OUTPUT: Size = { w: 1080, h: 1920 };
+/** The two output frames. A layout carries one of these as `frame`, and
+ *  everything that bounds by "the frame" takes it from there — see
+ *  docs/specs/2026-10-02-vstack-horizontal-short-design.md. */
+export const TALL: Size = { w: 1080, h: 1920 };
+export const WIDE: Size = { w: 1920, h: 1080 };
 
 /** Source px, applied to the box's *shorter* axis. 142 * 9/8 = 160 wide at
  *  9:8 — small enough to be useful, large enough that a box can still be

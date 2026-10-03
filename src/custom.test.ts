@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OUTPUT, isValidBox } from "./geometry.ts";
+import { TALL, WIDE, isValidBox } from "./geometry.ts";
 import type { Corner, Rect, Size } from "./geometry.ts";
 import {
   MAX_CUSTOM,
@@ -16,20 +16,20 @@ import {
 
 const HD: Size = { w: 1920, h: 1080 };
 const SD: Size = { w: 1280, h: 720 };
-const TALL: Size = { w: 720, h: 1280 };
-const SOURCES = [HD, SD, TALL];
+const PORTRAIT: Size = { w: 720, h: 1280 };
+const SOURCES = [HD, SD, PORTRAIT];
 const CORNERS: Corner[] = ["nw", "ne", "sw", "se"];
 const OUT: Rect = { x: 300, y: 700, w: 480, h: 480 };
 
-function assertLegalOut(r: Rect): void {
+function assertLegalOut(r: Rect, frame: Size = TALL): void {
   expect([r.x, r.y, r.w, r.h].every(Number.isInteger)).toBe(true);
   expect([r.x, r.y, r.w, r.h].every((n) => n % 2 === 0)).toBe(true);
   expect(r.w).toBeGreaterThanOrEqual(MIN_OUT_SIDE);
   expect(r.h).toBeGreaterThanOrEqual(MIN_OUT_SIDE);
   expect(r.x).toBeGreaterThanOrEqual(0);
   expect(r.y).toBeGreaterThanOrEqual(0);
-  expect(r.x + r.w).toBeLessThanOrEqual(OUTPUT.w);
-  expect(r.y + r.h).toBeLessThanOrEqual(OUTPUT.h);
+  expect(r.x + r.w).toBeLessThanOrEqual(frame.w);
+  expect(r.y + r.h).toBeLessThanOrEqual(frame.h);
 }
 
 describe("MAX_CUSTOM / MIN_OUT_SIDE", () => {
@@ -50,47 +50,47 @@ describe("clampOut", () => {
       { x: 1079, y: 1919, w: 2, h: 2 },
       OUT,
     ];
-    for (const r of inputs) assertLegalOut(clampOut(r));
+    for (const r of inputs) assertLegalOut(clampOut(r, TALL));
   });
 
   it("is idempotent, so re-snapping every drag frame cannot drift", () => {
-    const once = clampOut({ x: 101, y: 203, w: 305, h: 407 });
-    expect(clampOut(once)).toEqual(once);
+    const once = clampOut({ x: 101, y: 203, w: 305, h: 407 }, TALL);
+    expect(clampOut(once, TALL)).toEqual(once);
   });
 });
 
 describe("moveOut", () => {
   it("slides without resizing", () => {
-    const moved = moveOut(OUT, -1000, 5000);
+    const moved = moveOut(OUT, -1000, 5000, TALL);
     expect(moved.w).toBe(OUT.w);
     expect(moved.h).toBe(OUT.h);
     assertLegalOut(moved);
     expect(moved.x).toBe(0);
-    expect(moved.y).toBe(OUTPUT.h - OUT.h);
+    expect(moved.y).toBe(TALL.h - OUT.h);
   });
 });
 
 describe("resizeOut", () => {
   it("keeps the opposite corner anchored", () => {
-    const se = resizeOut(OUT, "se", 100, 40);
+    const se = resizeOut(OUT, "se", 100, 40, TALL);
     expect(se.x).toBe(OUT.x);
     expect(se.y).toBe(OUT.y);
-    const nw = resizeOut(OUT, "nw", -100, -40);
+    const nw = resizeOut(OUT, "nw", -100, -40, TALL);
     expect(nw.x + nw.w).toBe(OUT.x + OUT.w);
     expect(nw.y + nw.h).toBe(OUT.y + OUT.h);
   });
 
   it("changes the ratio freely — that is the whole point of a custom box", () => {
-    const wide = resizeOut(OUT, "se", 400, -200);
+    const wide = resizeOut(OUT, "se", 400, -200, TALL);
     expect(outRatio(wide)).toBeGreaterThan(outRatio(OUT));
     assertLegalOut(wide);
   });
 
   it("floors each side and never leaves the frame, from every corner", () => {
     for (const corner of CORNERS) {
-      const collapsed = resizeOut(OUT, corner, -5000, -5000);
+      const collapsed = resizeOut(OUT, corner, -5000, -5000, TALL);
       assertLegalOut(collapsed);
-      const blown = resizeOut(OUT, corner, 5000, 5000);
+      const blown = resizeOut(OUT, corner, 5000, 5000, TALL);
       assertLegalOut(blown);
     }
   });
@@ -105,60 +105,60 @@ const MARGIN = 10;
 
 describe("clampOut — with a margin", () => {
   it("keeps the box a margin clear of every frame edge", () => {
-    const nw = clampOut({ x: -500, y: -500, w: 400, h: 400 }, MARGIN);
+    const nw = clampOut({ x: -500, y: -500, w: 400, h: 400 }, TALL, MARGIN);
     expect(nw.x).toBe(MARGIN);
     expect(nw.y).toBe(MARGIN);
-    const se = clampOut({ x: 5000, y: 5000, w: 400, h: 400 }, MARGIN);
-    expect(se.x + se.w).toBe(OUTPUT.w - MARGIN);
-    expect(se.y + se.h).toBe(OUTPUT.h - MARGIN);
+    const se = clampOut({ x: 5000, y: 5000, w: 400, h: 400 }, TALL, MARGIN);
+    expect(se.x + se.w).toBe(TALL.w - MARGIN);
+    expect(se.y + se.h).toBe(TALL.h - MARGIN);
   });
 
   it("caps a frame-sized box at the inset bounds", () => {
-    const big = clampOut({ x: 0, y: 0, w: 5000, h: 5000 }, MARGIN);
+    const big = clampOut({ x: 0, y: 0, w: 5000, h: 5000 }, TALL, MARGIN);
     expect(big).toEqual({
       x: MARGIN,
       y: MARGIN,
-      w: OUTPUT.w - 2 * MARGIN,
-      h: OUTPUT.h - 2 * MARGIN,
+      w: TALL.w - 2 * MARGIN,
+      h: TALL.h - 2 * MARGIN,
     });
   });
 
   it("is idempotent with a margin, as it is without one", () => {
-    const once = clampOut({ x: 3, y: 7, w: 305, h: 407 }, MARGIN);
-    expect(clampOut(once, MARGIN)).toEqual(once);
+    const once = clampOut({ x: 3, y: 7, w: 305, h: 407 }, TALL, MARGIN);
+    expect(clampOut(once, TALL, MARGIN)).toEqual(once);
   });
 
   it("defaults to no margin, so the un-inset behaviour is unchanged", () => {
     const rect: Rect = { x: -100, y: -100, w: 400, h: 400 };
-    expect(clampOut(rect, 0)).toEqual(clampOut(rect));
-    expect(clampOut(rect).x).toBe(0);
+    expect(clampOut(rect, TALL, 0)).toEqual(clampOut(rect, TALL));
+    expect(clampOut(rect, TALL).x).toBe(0);
   });
 });
 
 describe("moveOut — with a margin", () => {
   it("stops a slide a margin short of the edge, without resizing", () => {
-    const moved = moveOut(OUT, -1000, 5000, MARGIN);
+    const moved = moveOut(OUT, -1000, 5000, TALL, MARGIN);
     expect(moved.w).toBe(OUT.w);
     expect(moved.h).toBe(OUT.h);
     expect(moved.x).toBe(MARGIN);
-    expect(moved.y + moved.h).toBe(OUTPUT.h - MARGIN);
+    expect(moved.y + moved.h).toBe(TALL.h - MARGIN);
   });
 });
 
 describe("resizeOut — with a margin", () => {
   it("never grows past the inset bounds, from every corner", () => {
     for (const corner of CORNERS) {
-      const blown = resizeOut(OUT, corner, 5000, 5000, MARGIN);
+      const blown = resizeOut(OUT, corner, 5000, 5000, TALL, MARGIN);
       assertLegalOut(blown);
       expect(blown.x).toBeGreaterThanOrEqual(MARGIN);
       expect(blown.y).toBeGreaterThanOrEqual(MARGIN);
-      expect(blown.x + blown.w).toBeLessThanOrEqual(OUTPUT.w - MARGIN);
-      expect(blown.y + blown.h).toBeLessThanOrEqual(OUTPUT.h - MARGIN);
+      expect(blown.x + blown.w).toBeLessThanOrEqual(TALL.w - MARGIN);
+      expect(blown.y + blown.h).toBeLessThanOrEqual(TALL.h - MARGIN);
     }
   });
 
   it("keeps the anchored corner put when the margin is not in play", () => {
-    const se = resizeOut(OUT, "se", 100, 40, MARGIN);
+    const se = resizeOut(OUT, "se", 100, 40, TALL, MARGIN);
     expect(se.x).toBe(OUT.x);
     expect(se.y).toBe(OUT.y);
   });
@@ -169,7 +169,7 @@ describe("resizeOut — with a margin", () => {
     // emit a rect under MIN_OUT_SIDE or hanging over the inset edge.
     const legacy: Rect = { x: 0, y: 0, w: 200, h: 200 };
     for (const corner of CORNERS) {
-      const next = resizeOut(legacy, corner, 40, 40, MARGIN);
+      const next = resizeOut(legacy, corner, 40, 40, TALL, MARGIN);
       assertLegalOut(next);
       expect(next.x).toBeGreaterThanOrEqual(MARGIN);
       expect(next.y).toBeGreaterThanOrEqual(MARGIN);
@@ -205,13 +205,13 @@ describe("resnapCrop", () => {
 
 describe("isValidOut", () => {
   it("accepts what clampOut emits and rejects everything illegal", () => {
-    expect(isValidOut(clampOut(OUT))).toBe(true);
-    expect(isValidOut({ ...OUT, x: 301 })).toBe(false); // odd
-    expect(isValidOut({ ...OUT, w: 100 })).toBe(false); // under the floor
-    expect(isValidOut({ ...OUT, x: 900 })).toBe(false); // off the frame
-    expect(isValidOut({ ...OUT, h: Number.NaN })).toBe(false);
-    expect(isValidOut(null)).toBe(false);
-    expect(isValidOut("nope")).toBe(false);
+    expect(isValidOut(clampOut(OUT, TALL), TALL)).toBe(true);
+    expect(isValidOut({ ...OUT, x: 301 }, TALL)).toBe(false); // odd
+    expect(isValidOut({ ...OUT, w: 100 }, TALL)).toBe(false); // under the floor
+    expect(isValidOut({ ...OUT, x: 900 }, TALL)).toBe(false); // off the frame
+    expect(isValidOut({ ...OUT, h: Number.NaN }, TALL)).toBe(false);
+    expect(isValidOut(null, TALL)).toBe(false);
+    expect(isValidOut("nope", TALL)).toBe(false);
   });
 });
 
@@ -219,7 +219,7 @@ describe("isValidCustom", () => {
   it("accepts defaultCustom for every source and index", () => {
     for (const source of SOURCES) {
       for (let i = 0; i < MAX_CUSTOM; i++) {
-        expect(isValidCustom(defaultCustom(source, i), source)).toBe(true);
+        expect(isValidCustom(defaultCustom(source, i, TALL), source, TALL)).toBe(true);
       }
     }
   });
@@ -229,27 +229,63 @@ describe("isValidCustom", () => {
     // crop two px off the ratio its own out demands would export
     // stretched. `out` stays legal here on purpose — otherwise
     // isValidOut short-circuits and this never reaches the ratio check.
-    const custom = defaultCustom(HD, 0);
-    expect(isValidCustom({ ...custom, crop: { ...custom.crop, w: custom.crop.w + 2 } }, HD)).toBe(false);
+    const custom = defaultCustom(HD, 0, TALL);
+    expect(isValidCustom({ ...custom, crop: { ...custom.crop, w: custom.crop.w + 2 } }, HD, TALL)).toBe(false);
   });
 
   it("rejects a crop hanging over the source edge", () => {
-    const custom = defaultCustom(HD, 0);
-    expect(isValidCustom({ ...custom, crop: { ...custom.crop, x: 1900 } }, HD)).toBe(false);
+    const custom = defaultCustom(HD, 0, TALL);
+    expect(isValidCustom({ ...custom, crop: { ...custom.crop, x: 1900 } }, HD, TALL)).toBe(false);
   });
 
   it("rejects non-objects without throwing", () => {
-    expect(isValidCustom(null, HD)).toBe(false);
-    expect(isValidCustom([], HD)).toBe(false);
-    expect(isValidCustom({ out: null, crop: null }, HD)).toBe(false);
+    expect(isValidCustom(null, HD, TALL)).toBe(false);
+    expect(isValidCustom([], HD, TALL)).toBe(false);
+    expect(isValidCustom({ out: null, crop: null }, HD, TALL)).toBe(false);
   });
 });
 
 describe("defaultCustom", () => {
   it("offsets the second box so its handles are not buried", () => {
-    const first = defaultCustom(HD, 0);
-    const second = defaultCustom(HD, 1);
+    const first = defaultCustom(HD, 0, TALL);
+    const second = defaultCustom(HD, 1, TALL);
     expect(second.out.x).not.toBe(first.out.x);
     expect(second.out.y).not.toBe(first.out.y);
+  });
+});
+
+describe("custom boxes in the WIDE frame", () => {
+  it("clamps inside 1920x1080, not 1080x1920", () => {
+    const r = clampOut({ x: 5000, y: 5000, w: 400, h: 400 }, WIDE);
+    expect(r.x + r.w).toBe(WIDE.w);
+    expect(r.y + r.h).toBe(WIDE.h);
+    assertLegalOut(r, WIDE);
+  });
+
+  it("moves and resizes against the wide frame with a margin", () => {
+    const moved = moveOut({ x: 300, y: 300, w: 480, h: 480 }, 5000, 5000, WIDE, 10);
+    expect(moved.x + moved.w).toBe(WIDE.w - 10);
+    expect(moved.y + moved.h).toBe(WIDE.h - 10);
+    for (const corner of CORNERS) {
+      const blown = resizeOut({ x: 600, y: 300, w: 480, h: 480 }, corner, 5000, 5000, WIDE, 10);
+      assertLegalOut(blown, WIDE);
+      expect(blown.y + blown.h).toBeLessThanOrEqual(WIDE.h - 10);
+    }
+  });
+
+  it("rejects a tall-frame out rect that sits below the wide frame", () => {
+    const tallOnly = { x: 300, y: 1500, w: 300, h: 300 };
+    expect(isValidOut(tallOnly, TALL)).toBe(true);
+    expect(isValidOut(tallOnly, WIDE)).toBe(false);
+  });
+
+  it("places defaultCustom inside the wide frame for every source and index", () => {
+    for (const source of SOURCES) {
+      for (let i = 0; i < MAX_CUSTOM; i++) {
+        const c = defaultCustom(source, i, WIDE);
+        assertLegalOut(c.out, WIDE);
+        expect(isValidCustom(c, source, WIDE)).toBe(true);
+      }
+    }
   });
 });

@@ -282,9 +282,11 @@ export async function exportClip(body: {
   starterTitle: string;
   /** What to read aloud instead of `starterTitle`. `""` means "read
    *  `starterTitle`" — the fallback is applied server-side, so this side
-   *  sends the field raw rather than resolving it twice. */
-  voiceTitle: string;
-  /** The same title as a transparent 1080x1920 PNG, bare base64. Rendered
+   *  sends the field raw rather than resolving it twice. Omitted on a wide
+   *  layout, which speaks nothing. */
+  voiceTitle?: string;
+  /** The same title as a transparent PNG the size of the layout's frame,
+   *  bare base64. Rendered
    *  here because the server's ffmpeg has no `drawtext` — see
    *  `renderTitleArt` in `starter.ts`. */
   titlePng: string;
@@ -294,8 +296,8 @@ export async function exportClip(body: {
    *  sent, empty when there are none. */
   customs: CustomBox[];
   /** Which preset reads the title. Validated server-side against the engine's
-   *  own table — it reaches a subprocess as argv. */
-  voice: string;
+   *  own table — it reaches a subprocess as argv. Omitted on a wide layout. */
+  voice?: string;
   /** The render this one replaces, deleted server-side once the new file is
    *  in place — so a re-export after a mark or title edit leaves one final
    *  version rather than two. `""` on the first export of a session. */

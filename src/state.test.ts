@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { MAX_CUSTOM, isValidCustom } from "./custom.ts";
+import { TALL } from "./geometry.ts";
 import { DEFAULT_LAYOUT_ID } from "./layout.ts";
 import { MAX_SEGMENTS } from "./segments.ts";
 import {
@@ -638,6 +639,31 @@ describe("save / restore — custom boxes", () => {
     expect(restore(videoId, source).customs).toEqual([]);
   });
 
+  it("checks pieces against the restored layout's own frame", () => {
+    // A piece legal in the tall frame (y=1500) is off the bottom of a wide
+    // one. The wide layout must survive; the piece must not.
+    const videoId = "customs-wrong-frame";
+    const tallPiece = { out: { x: 300, y: 1500, w: 300, h: 300 }, crop: { x: 0, y: 100, w: 300, h: 300 } };
+    const widePiece = { out: { x: 300, y: 300, w: 300, h: 300 }, crop: { x: 0, y: 100, w: 300, h: 300 } };
+    const record = (customs: unknown[]) =>
+      JSON.stringify({
+        segments: [{ start: 0, end: 10 }],
+        layoutId: "w-1",
+        boxes: [{ x: 0, y: 0, w: 1920, h: 1080 }],
+        customs,
+        sourceW: 1920,
+        sourceH: 1080,
+      });
+    localStorage.setItem(`vstack:${videoId}`, record([tallPiece]));
+    const dropped = restore(videoId, source);
+    expect(dropped.layoutId).toBe("w-1");
+    expect(dropped.customs).toEqual([]);
+    expect(dropped.boxes).toEqual([{ x: 0, y: 0, w: 1920, h: 1080 }]);
+
+    localStorage.setItem(`vstack:${videoId}`, record([widePiece]));
+    expect(restore(videoId, source).customs).toEqual([widePiece]);
+  });
+
   it("drops a record holding more pieces than MAX_CUSTOM, however legal each is", () => {
     // localStorage is untrusted input. Each of these three passes
     // isValidCustom on its own, so without the count bound the session mounts
@@ -648,7 +674,7 @@ describe("save / restore — custom boxes", () => {
       out: { x: 300 + i * 2, y: 700, w: 480, h: 480 },
       crop: { x: i * 2, y: 100, w: 480, h: 480 },
     }));
-    expect(legal.every((c) => isValidCustom(c, source))).toBe(true);
+    expect(legal.every((c) => isValidCustom(c, source, TALL))).toBe(true);
     localStorage.setItem(
       `vstack:${videoId}`,
       JSON.stringify({

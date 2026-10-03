@@ -160,7 +160,7 @@ body {
    long-form stack is 16:9, and squeezing it into the vertical box letterboxes
    it into a thin strip with most of the card empty. Toggled by render() on
    the phase AND the mode, not set once — the same slot holds the framing
-   canvas, which is always vertical.
+   canvas, which is vertical or 16:9 by layout.
 
    The sizing runs the OPPOSITE way round from the 9:16 case, and the stage
    rule above is what makes that possible. A full-height card at 16:9 is
@@ -580,6 +580,10 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   font-weight: 500;
   white-space: nowrap;
 }
+/* `display: inline-flex` above beats the UA's `[hidden]` rule, the same
+   fight `.source > [hidden]` documents — so a badge toggled in place with
+   `hidden` (the wide title warning) needs this to actually disappear. */
+.badge[hidden] { display: none; }
 /* The picked long-form thumbnail, beside its picker in the stacking bar.
    Sized off --control-height so it lines up with the picker and the badge
    rather than setting its own metric, and deliberately WITHOUT a `display`
@@ -942,6 +946,20 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   border-radius: var(--radius-1);
   background: var(--slate-a3);
   cursor: pointer;
+}
+
+/* The Short | Long toggle: the pressed side reads as solid. `:not(.layout-pick)`
+   keeps the swatches on their own pressed style, and its extra class is
+   what outranks the bare button's (0,2,1) hover rule. */
+.layouts > button:not(.layout-pick)[aria-pressed="true"] {
+  background: var(--blue-9);
+  color: #fff;
+}
+
+/* A wide preset's swatch is the wide frame's shape. */
+.layout-pick.is-wide {
+  width: calc(var(--pick-w) * 16 / 9);
+  height: var(--pick-w);
 }
 
 /* :not(:disabled) isn't just for parity with the generic button rule below

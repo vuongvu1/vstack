@@ -1,8 +1,8 @@
-import { OUTPUT, boxFromHeight, clampToBounds, isValidBox, maxBox } from "./geometry.ts";
+import { boxFromHeight, clampToBounds, isValidBox, maxBox } from "./geometry.ts";
 import type { Corner, Rect, Size } from "./geometry.ts";
 
 /** A piece that floats over the preset layout. `out` is where it lands in
- *  the 1080x1920 frame; `crop` is the region of the source it shows. Both
+ *  the layout's frame; `crop` is the region of the source it shows. Both
  *  are stored raw, with zero conversion between them — the invariant that
  *  makes canvas drawImage and ffmpeg's crop= agree for the preset cells
  *  applies here unchanged.
@@ -38,6 +38,8 @@ export function outRatio(out: Rect): number {
 /** The nearest legal output rect: even on all four fields, at least
  *  MIN_OUT_SIDE per side, wholly inside the frame inset by `margin` on all
  *  four edges. Idempotent, because it runs on every frame of a drag.
+ *  `frame` has no default on purpose: a default of the tall frame would make
+ *  every call site that forgot it silently tall.
  *
  *  `margin` is how the piece's own white ring is kept on the frame rather
  *  than off it. A ring is one gutter wide, so bounding placement by a
@@ -51,21 +53,21 @@ export function outRatio(out: Rect): number {
  *  — output-space decoration, which sits above this module in the layering
  *  and must not be imported into it. The caller that knows about rings
  *  passes it; the validators deliberately do not (see `isValidOut`). */
-export function clampOut(rect: Rect, margin = 0): Rect {
-  const w = even(clamp(rect.w, MIN_OUT_SIDE, OUTPUT.w - 2 * margin));
-  const h = even(clamp(rect.h, MIN_OUT_SIDE, OUTPUT.h - 2 * margin));
+export function clampOut(rect: Rect, frame: Size, margin = 0): Rect {
+  const w = even(clamp(rect.w, MIN_OUT_SIDE, frame.w - 2 * margin));
+  const h = even(clamp(rect.h, MIN_OUT_SIDE, frame.h - 2 * margin));
   return {
     w,
     h,
-    x: even(clamp(rect.x, margin, OUTPUT.w - margin - w)),
-    y: even(clamp(rect.y, margin, OUTPUT.h - margin - h)),
+    x: even(clamp(rect.x, margin, frame.w - margin - w)),
+    y: even(clamp(rect.y, margin, frame.h - margin - h)),
   };
 }
 
 /** Slides an output rect, never resizing it — the same discipline
  *  `clampToBounds` keeps on the source side. */
-export function moveOut(rect: Rect, dx: number, dy: number, margin = 0): Rect {
-  return clampOut({ ...rect, x: rect.x + dx, y: rect.y + dy }, margin);
+export function moveOut(rect: Rect, dx: number, dy: number, frame: Size, margin = 0): Rect {
+  return clampOut({ ...rect, x: rect.x + dx, y: rect.y + dy }, frame, margin);
 }
 
 /** Free resize about the opposite corner: `resizeFromCorner`'s shape minus
@@ -80,7 +82,14 @@ export function moveOut(rect: Rect, dx: number, dy: number, margin = 0): Rect {
  *  the raw cap would be negative and `clamp`'s `hi < lo` would emit a rect
  *  under the floor. For an already-inset rect the cap is never binding and
  *  `clampOut` is a no-op, so the anchor stays under the pointer. */
-export function resizeOut(rect: Rect, corner: Corner, dx: number, dy: number, margin = 0): Rect {
+export function resizeOut(
+  rect: Rect,
+  corner: Corner,
+  dx: number,
+  dy: number,
+  frame: Size,
+  margin = 0,
+): Rect {
   const west = corner === "nw" || corner === "sw";
   const north = corner === "nw" || corner === "ne";
 
@@ -89,13 +98,13 @@ export function resizeOut(rect: Rect, corner: Corner, dx: number, dy: number, ma
   const draggedX = (west ? rect.x : rect.x + rect.w) + dx;
   const draggedY = (north ? rect.y : rect.y + rect.h) + dy;
 
-  const maxW = Math.max(MIN_OUT_SIDE, west ? anchorX - margin : OUTPUT.w - margin - anchorX);
-  const maxH = Math.max(MIN_OUT_SIDE, north ? anchorY - margin : OUTPUT.h - margin - anchorY);
+  const maxW = Math.max(MIN_OUT_SIDE, west ? anchorX - margin : frame.w - margin - anchorX);
+  const maxH = Math.max(MIN_OUT_SIDE, north ? anchorY - margin : frame.h - margin - anchorY);
 
   const w = even(clamp(west ? anchorX - draggedX : draggedX - anchorX, MIN_OUT_SIDE, maxW));
   const h = even(clamp(north ? anchorY - draggedY : draggedY - anchorY, MIN_OUT_SIDE, maxH));
 
-  return clampOut({ x: west ? anchorX - w : anchorX, y: north ? anchorY - h : anchorY, w, h }, margin);
+  return clampOut({ x: west ? anchorX - w : anchorX, y: north ? anchorY - h : anchorY, w, h }, frame, margin);
 }
 
 /** The crop that follows an `out` whose ratio just changed: same height,
@@ -124,7 +133,7 @@ export function resnapCrop(crop: Rect, source: Size, out: Rect): Rect {
  *  flush to the edge renders exactly as it always did — one that a drag then
  *  pulls inside. Validators stay a superset of what the constructors emit,
  *  never the reverse. */
-export function isValidOut(out: unknown): out is Rect {
+export function isValidOut(out: unknown, frame: Size): out is Rect {
   if (typeof out !== "object" || out === null) return false;
   const r = out as Rect;
   if (![r.x, r.y, r.w, r.h].every(Number.isInteger)) return false;
@@ -137,8 +146,8 @@ export function isValidOut(out: unknown): out is Rect {
     r.h >= MIN_OUT_SIDE &&
     r.x >= 0 &&
     r.y >= 0 &&
-    r.x + r.w <= OUTPUT.w &&
-    r.y + r.h <= OUTPUT.h
+    r.x + r.w <= frame.w &&
+    r.y + r.h <= frame.h
   );
 }
 
@@ -146,24 +155,27 @@ export function isValidOut(out: unknown): out is Rect {
  *  and `assertCustoms` on the server — the split `isValidBox` already has
  *  for the preset cells. Either side alone would let a bad box preview
  *  cleanly and die only at export. */
-export function isValidCustom(custom: unknown, source: Size): custom is CustomBox {
+export function isValidCustom(custom: unknown, source: Size, frame: Size): custom is CustomBox {
   if (typeof custom !== "object" || custom === null || Array.isArray(custom)) return false;
   const c = custom as CustomBox;
-  return isValidOut(c.out) && isValidBox(c.crop, source, outRatio(c.out));
+  return isValidOut(c.out, frame) && isValidBox(c.crop, source, outRatio(c.out));
 }
 
 /** A fresh box: a 540x540 square in the middle of the frame showing the
  *  largest square the source holds, offset per index so a second box's
  *  handles do not land exactly under the first's. */
-export function defaultCustom(source: Size, index: number): CustomBox {
+export function defaultCustom(source: Size, index: number, frame: Size): CustomBox {
   const side = 540;
   const offset = index * 60;
-  const out = clampOut({
-    x: (OUTPUT.w - side) / 2 + offset,
-    y: (OUTPUT.h - side) / 2 + offset,
-    w: side,
-    h: side,
-  });
+  const out = clampOut(
+    {
+      x: (frame.w - side) / 2 + offset,
+      y: (frame.h - side) / 2 + offset,
+      w: side,
+      h: side,
+    },
+    frame,
+  );
   const size = maxBox(source, outRatio(out));
   const crop = clampToBounds(
     { x: Math.round((source.w - size.w) / 2), y: Math.round((source.h - size.h) / 2), ...size },

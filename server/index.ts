@@ -16,7 +16,7 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import type { Rect } from "../src/geometry.ts";
-import { layoutById } from "../src/layout.ts";
+import { isWide, layoutById } from "../src/layout.ts";
 import type { CustomBox } from "../src/custom.ts";
 import {
   MAX_DROPS,
@@ -48,6 +48,7 @@ import {
   outName,
   outPath,
   probeAudio,
+  pngSize,
   probeFile,
   removeExport,
   reportCache,
@@ -61,7 +62,7 @@ import { scriptMp3 } from "./script.ts";
 import { fetchChat, parseChat, peaks } from "./chat.ts";
 import { ensureMask } from "./mask.ts";
 import type { Trim } from "./longform.ts";
-import { checkLongform, detectTrim, keptRange, stackWide } from "./longform.ts";
+import { appendOutro, checkLongform, detectTrim, keptRange, stackWide } from "./longform.ts";
 import {
   checkLofi,
   clearProgress,
@@ -78,6 +79,7 @@ import {
   knownVoices,
   prependStarter,
   speak,
+  titleCard,
 } from "./starter.ts";
 import {
   buildSnippet,
@@ -290,7 +292,8 @@ function jpeg(v: unknown, name: string): Buffer {
  *  so there is nothing to render.
  *
  *  Note what decides: the file's presence, never the journey. `thumbPath`
- *  is a name only `/api/stack` writes, so this needs no mode flag and stays
+ *  is written by `/api/stack`, `/api/lofi` and a wide `/api/export` — all
+ *  three a picture meant as the thumbnail — so this needs no mode flag and stays
  *  as blind to the two journeys as `serveOut` and `isOutName` are.
  *
  *  Best-effort by design, and the return value says which: by the time this
@@ -359,6 +362,21 @@ async function saveStill(video: string): Promise<void> {
   } catch (err) {
     console.warn(`vstack: could not save a still beside ${video}:`, err);
     await rm(still, { force: true }).catch(() => undefined);
+  }
+}
+
+/** Writes a wide export's thumbnail — the title card over the body's first
+ *  frame — as the `.thumb.jpg` sidecar `applyThumbnail` already prefers.
+ *
+ *  Best-effort, like `saveStill`: the video is the product. Without the card
+ *  a publish falls back to `firstFrame(…, "wide")`, the plain composite. */
+async function saveTitleCard(body: string, title: string, video: string): Promise<void> {
+  const card = thumbPath(video);
+  try {
+    await titleCard({ main: body, title, out: card });
+  } catch (err) {
+    console.warn(`vstack: could not save a title card beside ${video}:`, err);
+    await rm(card, { force: true }).catch(() => undefined);
   }
 }
 
@@ -564,10 +582,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const start = num(raw.start, "start");
     const end = num(raw.end, "end");
     const starterTitle = readTitle(raw.starterTitle);
-    const voiceTitle = readVoiceTitle(raw.voiceTitle, starterTitle);
     const titlePng = png(raw.titlePng, "titlePng");
     const layoutId = str(raw.layoutId, "layoutId");
-    const voiceName = str(raw.voice, "voice");
     // The one client-supplied component of a cache path this route accepts,
     // and it is not a path: exactly 8 lowercase hex characters, which cannot
     // traverse, cannot escape MEDIA_DIR, and is still assembled into a path
@@ -635,12 +651,30 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const layout = layoutById(layoutId);
     if (!layout) return send(res, 400, { error: `Unknown layout ${layoutId}.` });
 
-    // The voice reaches a subprocess as argv, so it is checked against the
-    // engine's own preset table rather than pattern-matched — the same
-    // posture as the layout lookup above and `isOutName` below. Voice, the
-    // out name and the `digest` block above are the only client-supplied
-    // strings this API acts on.
-    if (!knownVoices().some((v) => v.name === voiceName)) {
+    // Orientation is the layout's frame — there is no second field to agree
+    // with it. A wide export has no starter screen: nothing is spoken.
+    const wide = isWide(layout);
+
+    // The title art must be the frame's own size. A PNG for the other frame
+    // overlays off-centre with no error at all.
+    const artSize = pngSize(titlePng);
+    if (artSize.w !== layout.frame.w || artSize.h !== layout.frame.h) {
+      return send(res, 400, {
+        error:
+          `titlePng is ${artSize.w}x${artSize.h}; layout ${layout.id} needs ` +
+          `${layout.frame.w}x${layout.frame.h}.`,
+      });
+    }
+
+    // Read only when something will be spoken. The voice reaches a
+    // subprocess as argv, so it is checked against the engine's own preset
+    // table rather than pattern-matched — the same posture as the layout
+    // lookup above and `isOutName` below. Voice, the out name and the
+    // `digest` block above are the only client-supplied strings this API
+    // acts on.
+    const voiceTitle = wide ? "" : readVoiceTitle(raw.voiceTitle, starterTitle);
+    const voiceName = wide ? "" : str(raw.voice, "voice");
+    if (!wide && !knownVoices().some((v) => v.name === voiceName)) {
       return send(res, 400, { error: `Unknown voice ${voiceName}.` });
     }
 
@@ -663,7 +697,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // wrong for a client-supplied box).
     try {
       assertBoxes(layout, boxes, { w: source.width, h: source.height });
-      assertCustoms(customs, { w: source.width, h: source.height });
+      assertCustoms(customs, { w: source.width, h: source.height }, layout.frame);
     } catch (err) {
       throw new HttpError(400, err instanceof Error ? err.message : String(err));
     }
@@ -732,16 +766,31 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         mask: await ensureMask(layout, customs.map((c) => c.out)),
         out: body,
       });
-      const voicePath = join(dir, "voice.wav");
-      await prependStarter({
-        main: body,
-        title: art,
-        voice: voicePath,
-        voiceSeconds: await speak(voiceTitle, dir, voicePath, voiceName),
-        out: partial,
-      });
-      await rename(partial, out);
-      await saveStill(out);
+      if (wide) {
+        // No title card in the video, so no voice and no screen: the body,
+        // then the outro letterboxed for the wide frame.
+        await appendOutro({ main: body, outro: END_PATH, out: partial });
+        await rename(partial, out);
+        await saveTitleCard(body, art, out);
+        // Same title and marks exported tall before would have left its
+        // vertical still under this exact name.
+        await rm(stillPath(out), { force: true }).catch(() => undefined);
+      } else {
+        const voicePath = join(dir, "voice.wav");
+        await prependStarter({
+          main: body,
+          title: art,
+          voice: voicePath,
+          voiceSeconds: await speak(voiceTitle, dir, voicePath, voiceName),
+          out: partial,
+        });
+        await rename(partial, out);
+        await saveStill(out);
+        // The other direction: a wide export of this same name left a title
+        // card that `applyThumbnail` would otherwise prefer over this
+        // short's own starter screen.
+        await rm(thumbPath(out), { force: true }).catch(() => undefined);
+      }
       // Only now, and only if the edit actually moved the name: `outName` is
       // deterministic in title and marks, so an unchanged range already
       // overwrote itself above and `prev` names the file just written.

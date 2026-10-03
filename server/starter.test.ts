@@ -5,15 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { OUTPUT } from "../src/geometry.ts";
+import { TALL, WIDE } from "../src/geometry.ts";
 import {
   END_PATH,
   VOICE,
   installedVoices,
   prependStarter,
+  screenFilter,
   speak,
   starterDuration,
   synthesize,
+  titleCard,
 } from "./starter.ts";
 
 const run = promisify(execFile);
@@ -22,7 +24,7 @@ const run = promisify(execFile);
  *  half red, 1 second. The hard seam down the middle is what makes the blur
  *  observable — a solid colour blurs to itself. */
 const CLIP_S = 1;
-const SEAM = OUTPUT.w / 2;
+const SEAM = TALL.w / 2;
 /** The title art's opaque corner. Away from the seam and away from the
  *  centre, so the two assertions can't be reading the same pixels. */
 const ART = 100;
@@ -32,6 +34,8 @@ let main = "";
 let mute = "";
 let anamorphic = "";
 let art = "";
+let wideMain = "";
+let wideArt = "";
 let voice = "";
 let voiceSeconds = 0;
 /** The bundled outro's own length, probed rather than hardcoded — every
@@ -42,8 +46,8 @@ let endSeconds = 0;
 async function clip(out: string, withAudio: boolean, sar = "1/1"): Promise<void> {
   const args = [
     "-v", "error",
-    "-f", "lavfi", "-i", `color=c=green:s=${SEAM}x${OUTPUT.h}:d=${CLIP_S}:r=30`,
-    "-f", "lavfi", "-i", `color=c=red:s=${SEAM}x${OUTPUT.h}:d=${CLIP_S}:r=30`,
+    "-f", "lavfi", "-i", `color=c=green:s=${SEAM}x${TALL.h}:d=${CLIP_S}:r=30`,
+    "-f", "lavfi", "-i", `color=c=red:s=${SEAM}x${TALL.h}:d=${CLIP_S}:r=30`,
   ];
   if (withAudio) args.push("-f", "lavfi", "-i", `sine=f=440:d=${CLIP_S}`);
   args.push(
@@ -71,10 +75,10 @@ beforeAll(async () => {
   // The title art the client would have rendered, stood in for by a
   // transparent frame with one opaque magenta square. Written as raw RGBA and
   // encoded by ffmpeg, the same way mask.ts avoids needing a PNG encoder.
-  const rgba = new Uint8Array(OUTPUT.w * OUTPUT.h * 4);
+  const rgba = new Uint8Array(TALL.w * TALL.h * 4);
   for (let y = 0; y < ART; y++) {
     for (let x = 0; x < ART; x++) {
-      const i = (y * OUTPUT.w + x) * 4;
+      const i = (y * TALL.w + x) * 4;
       rgba[i] = 255;
       rgba[i + 2] = 255;
       rgba[i + 3] = 255;
@@ -86,8 +90,36 @@ beforeAll(async () => {
   await run("ffmpeg", [
     "-v", "error",
     "-f", "rawvideo", "-pixel_format", "rgba",
-    "-video_size", `${OUTPUT.w}x${OUTPUT.h}`,
+    "-video_size", `${TALL.w}x${TALL.h}`,
     "-i", raw, "-frames:v", "1", "-y", art,
+  ]);
+
+  // The wide body: green | red, seamed at x=960, 1s.
+  wideMain = join(dir, "wide-main.mp4");
+  await run("ffmpeg", [
+    "-v", "error",
+    "-f", "lavfi", "-i", `color=c=green:s=960x1080:d=1:r=30`,
+    "-f", "lavfi", "-i", `color=c=red:s=960x1080:d=1:r=30`,
+    "-filter_complex", "[0:v][1:v]hstack=inputs=2[v]",
+    "-map", "[v]", "-pix_fmt", "yuv420p", "-y", wideMain,
+  ]);
+  const wideRgba = new Uint8Array(WIDE.w * WIDE.h * 4);
+  for (let y = 0; y < ART; y++) {
+    for (let x = 0; x < ART; x++) {
+      const i = (y * WIDE.w + x) * 4;
+      wideRgba[i] = 255;
+      wideRgba[i + 2] = 255;
+      wideRgba[i + 3] = 255;
+    }
+  }
+  const wideRaw = join(dir, "wide-art.rgba");
+  wideArt = join(dir, "wide-art.png");
+  await writeFile(wideRaw, wideRgba);
+  await run("ffmpeg", [
+    "-v", "error",
+    "-f", "rawvideo", "-pixel_format", "rgba",
+    "-video_size", `${WIDE.w}x${WIDE.h}`,
+    "-i", wideRaw, "-frames:v", "1", "-y", wideArt,
   ]);
 
   voice = join(dir, "voice.aiff");
@@ -113,9 +145,65 @@ async function pixelAt(path: string, t: number, x: number, y: number) {
     { encoding: "buffer", maxBuffer: 64 << 20 },
   );
   const buf = stdout as unknown as Buffer;
-  const i = (y * OUTPUT.w + x) * 3;
+  const i = (y * TALL.w + x) * 3;
   return { r: buf[i] ?? 0, g: buf[i + 1] ?? 0, b: buf[i + 2] ?? 0 };
 }
+
+/** One RGB pixel of a still image, `width` px wide. */
+async function stillPixel(path: string, width: number, x: number, y: number) {
+  const { stdout } = await run(
+    "ffmpeg",
+    ["-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+    { encoding: "buffer", maxBuffer: 64 << 20 },
+  );
+  const buf = stdout as unknown as Buffer;
+  const i = (y * width + x) * 3;
+  return { r: buf[i] ?? 0, g: buf[i + 1] ?? 0, b: buf[i + 2] ?? 0 };
+}
+
+describe("screenFilter", () => {
+  it("is today's SCREEN_FILTER at the tall band, character for character", () => {
+    expect(screenFilter(820)).toBe(
+      "[0:v]format=rgb24,split=2[sharp][tosoften];" +
+        "[tosoften]gblur=sigma=30,colorchannelmixer=rr=0.65:gg=0.65:bb=0.65,format=rgb24[soft];" +
+        "[sharp][soft]blend=all_expr='" +
+        "A+(B-A)*clip(min(Y-(H-820)/2,(H+820)/2-Y)/60,0,1)'",
+    );
+  });
+});
+
+describe("titleCard", () => {
+  it("is a 1280x720 title card: band blurred, outside sharp, art on top", async () => {
+    const out = join(dir, "card.jpg");
+    await titleCard({ main: wideMain, title: wideArt, out });
+    const { stdout } = await run("ffprobe", [
+      "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0", out,
+    ]);
+    expect(stdout.trim()).toBe("1280,720");
+
+    // MUTATION TEST: drop the gblur and this reads pure green or pure red.
+    const seam = await stillPixel(out, 1280, 640, 360);
+    expect(seam.r).toBeGreaterThan(30);
+    expect(seam.g).toBeGreaterThan(30);
+
+    // Above the band (frame y 50 -> card y 33) stays sharp, unscrimmed red.
+    const top = await stillPixel(out, 1280, 900, 33);
+    expect(top.r).toBeGreaterThan(200);
+    expect(top.g).toBeLessThan(60);
+
+    // Pins the wide band at 860, not the tall 820: frame y 126 (card y 84)
+    // is inside an 860 band (opens at frame y 110) and above an 820 one
+    // (opens at 130). Measured r=229 here, 254 with WIDE_BAND_H at 820.
+    const inBand = await stillPixel(out, 1280, 900, 84);
+    expect(inBand.r).toBeLessThan(242);
+    expect(inBand.g).toBeLessThan(60);
+
+    const art = await stillPixel(out, 1280, 20, 20);
+    expect(art.r).toBeGreaterThan(200);
+    expect(art.b).toBeGreaterThan(200);
+    expect(art.g).toBeLessThan(80);
+  });
+});
 
 /** The loudest sample in `dur` seconds of audio starting at `t`, as 0..1.
  *
@@ -226,8 +314,8 @@ describe("prependStarter", () => {
     // outro leg is ever dropped from either concat.
     expect(Number(info.format.duration)).toBeCloseTo(intro + CLIP_S + endSeconds, 1);
     const video = info.streams.find((s) => s.codec_type === "video");
-    expect(video?.width).toBe(OUTPUT.w);
-    expect(video?.height).toBe(OUTPUT.h);
+    expect(video?.width).toBe(TALL.w);
+    expect(video?.height).toBe(TALL.h);
 
     // The title art is opaque only in its corner, and only over the screen.
     const titled = await pixelAt(out, 0.2, ART / 2, ART / 2);
@@ -241,9 +329,9 @@ describe("prependStarter", () => {
     // colour or the other.
     //
     // Sampled at the vertical centre, NOT near the bottom: only a band around
-    // OUTPUT.h / 2 is blurred now, and a sample outside it passes on chroma
+    // TALL.h / 2 is blurred now, and a sample outside it passes on chroma
     // bleed alone — which is a test that no longer guards anything.
-    const blurred = await pixelAt(out, 0.2, SEAM, OUTPUT.h / 2);
+    const blurred = await pixelAt(out, 0.2, SEAM, TALL.h / 2);
     expect(blurred.r).toBeGreaterThan(30);
     expect(blurred.g).toBeGreaterThan(30);
 
@@ -251,12 +339,12 @@ describe("prependStarter", () => {
     // no scrim. This is the other half of the pair — it fails if the blur
     // ever goes back to covering the whole frame, which would drag this
     // pixel down by the scrim factor.
-    const sharp = await pixelAt(out, 0.2, SEAM + 200, OUTPUT.h - 100);
+    const sharp = await pixelAt(out, 0.2, SEAM + 200, TALL.h - 100);
     expect(sharp.r).toBeGreaterThan(200);
     expect(sharp.g).toBeLessThan(60);
 
     // Past the screen, the clip itself, unblurred and untitled.
-    const clipPixel = await pixelAt(out, intro + 0.3, SEAM + 200, OUTPUT.h - 100);
+    const clipPixel = await pixelAt(out, intro + 0.3, SEAM + 200, TALL.h - 100);
     expect(clipPixel.r).toBeGreaterThan(200);
     expect(clipPixel.g).toBeLessThan(60);
     const corner = await pixelAt(out, intro + 0.3, ART / 2, ART / 2);
@@ -328,8 +416,8 @@ describe("prependStarter", () => {
     const info = await probeOut(out);
     const video = info.streams.find((s) => s.codec_type === "video");
     expect(video?.sample_aspect_ratio).toBe("1:1");
-    expect(video?.width).toBe(OUTPUT.w);
-    expect(video?.height).toBe(OUTPUT.h);
+    expect(video?.width).toBe(TALL.w);
+    expect(video?.height).toBe(TALL.h);
   });
 
   it("gives a silent clip an audio track so the two segments can concat", async () => {

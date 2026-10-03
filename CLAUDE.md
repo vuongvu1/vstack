@@ -90,8 +90,15 @@ nothing and adds a SIXTH journey and third dead end: `idle` → `reading` →
 characters, ~12 minutes) is read aloud by the same VieNeu engine and comes
 back as one `<slug>-voice.mp3` in `OUT_DIR`, played in the panel from a blob
 and revealed in Finder. It claims no `mode` and borrows only `speak`, the
-`vstack:voice` key and the cutter's `MP3_QUALITY`. No
-spec covers the speech engine: every one of them
+`vstack:voice` key and the cutter's `MP3_QUALITY`, plus
+`docs/specs/2026-10-02-vstack-horizontal-short-design.md`, which supersedes
+nothing and adds a second OUTPUT SHAPE to the short journey: a layout now
+carries its `frame` (`TALL` 1080x1920 or `WIDE` 1920x1080), and a wide export
+skips the starter screen and the voice, keeps the outro (letterboxed by
+`appendOutro`), and writes a title-card `.thumb.jpg` (`titleCard`). No new
+`mode`, no new phase, no new request field.
+
+No spec covers the speech engine: every one of them
 describes macOS `say` and its `Linh` voice, which this codebase no longer
 uses at all (see "the voice" below).
 `docs/plans/2026-08-20-vstack.md` is the historical build plan and carries
@@ -104,7 +111,7 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 523 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 559 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -138,10 +145,12 @@ server/ffmpeg.ts   MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
                    UPLOADS_DIR/uploadPath, isUploadId,
                    probeFile, probeAudio, ConcatPart/
                    concatClips, buildFilter, assertBoxes, exportClip,
-                   firstFrame,
+                   firstFrame, pngSize,
                    reportCache
 server/mask.ts     MASK_DIR, maskPath, ensureMask (frame-overlay PNG cache)
 server/longform.ts WIDE, FADE, TRANSITION_PATH/TRANSITION_PEAK,
+                   letterboxLegs (module-private), appendOutro (the wide export's
+                   pass 2),
                    checkLongform, Trim/MIN_KEPT/detectTrim/keptRange,
                    stackWide (the long journey's one ffmpeg pass)
 server/lofi.ts     WIDE, FADE, TRACK_FADE, CRACKLE_PATH, LOGO_PATH/LOGO_RECT/
@@ -172,7 +181,8 @@ server/cut.ts      MP3_QUALITY, cutMp3 (the cutter's one ffmpeg pass, run
 server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
                    starterDuration, checkStarter, installedVoices,
                    knownVoices, synthesize, speak, prependStarter (the title
-                   card *and* the outro, pass 2 of the export)
+                   card *and* the outro, pass 2 of the export),
+                   screenFilter/WIDE_BAND_H, titleCard (the wide thumbnail)
 server/tts.py      VieNeu-TTS front end: `--list` (preset table, no model) and
                    variadic `<text-file> <voice> <out.wav> ...` synthesis
 scripts/tts-setup.ts `pnpm tts-setup` — builds ~/.vstack/vieneu
@@ -199,20 +209,22 @@ server/chat.ts     ChatMsg/Moment, BIN/WIN/LAG/TOP/MIN_GAP/SKIP_HEAD,
                    parseChat, peaks (the scorer)
 server/index.ts    19 routes (18 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
-src/geometry.ts    pure rect math — THE tested core
+src/geometry.ts    pure rect math — THE tested core; TALL/WIDE
 src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
                    totalDuration, keepRanges, editMark
 src/lofi.ts        Speech/Placement, BUCKETS_PER_SEC/MIN_GAP/SKIP_HEAD/
                    SKIP_TAIL, troughs (the detector — longest speech first),
                    orderByPrefix (a `1_` file first, the rest shuffled once),
                    fill (troughs' own answer at spacing 0, slots above it)
-src/layout.ts      nine layout presets, cellsOf, ratioOf, defaultBoxes
+src/layout.ts      twelve layout presets (nine tall, three wide), isWide,
+                   DEFAULT_WIDE_LAYOUT, cellsOf, ratioOf, defaultBoxes
 src/custom.ts      CustomBox, MAX_CUSTOM/MIN_OUT_SIDE, outRatio, clampOut/
                    moveOut/resizeOut, resnapCrop, isValidOut/isValidCustom,
                    defaultCustom
 src/frame.ts       GUTTER/CORNER_RADIUS, windowOf/windowsOf, ringOf, maskRgba
 src/starter.ts     TITLE_FONT, drawTitle (title → a canvas), renderTitleArt
-                   (that same draw, encoded as a transparent PNG)
+                   (that same draw, encoded as a transparent PNG),
+                   titleRules/fitTitle (the pure fit), titleFits
 src/thumb.ts       THUMB, renderThumb (any picture → 1280x720 JPEG, stretched),
                    WIDE_IMAGE, renderWide (any picture → 1920x1080 JPEG,
                    cover-cropped — the lofi journey's background)
@@ -411,8 +423,9 @@ ill-defined and says nothing about why this route cannot run.
 reach `ratioOf`.** `src/frame.ts` insets each *cell* into a *window* and paints
 white over everything outside the windows — over the finished composite, in
 both the canvas preview and (as a pre-rendered PNG overlay) the export. Cells
-themselves are untouched, so `cellsOf` still tiles 1080×1920 exactly and
-`ratioOf` still returns 1.125 / 0.5625 / 2.25. Inset the cell instead and a
+themselves are untouched, so `cellsOf` still tiles its layout's frame exactly and
+`ratioOf` still returns 1.125 / 0.5625 / 2.25 on a tall frame and 16/9 / 8/9 on a
+wide one. Inset the cell instead and a
 1080×960 cell becomes 1060×945: its ratio moves to 1.1217, every stored box is
 suddenly invalid against its own cell, `restore` and `assertBoxes` reject a
 whole saved session, and whatever survives exports stretched. Painting over
@@ -424,11 +437,11 @@ neighbours each give up half the seam — the only rule that makes every
 internal seam identical. An odd gutter puts a fractional offset on a window,
 and a fractional overlay offset does not survive ffmpeg.
 
-**Box size is height-driven.** Canonical form is integer `h` with `w = round(h * ratio)`, where `ratio` is the *target cell's* — 1.125, 0.5625 or 2.25 (`ratioOf` in `src/layout.ts`), never a constant. A width-driven round trip is not idempotent — it loses a pixel per call, so a box re-snapped every drag frame visibly shrinks.
+**Box size is height-driven.** Canonical form is integer `h` with `w = round(h * ratio)`, where `ratio` is the *target cell's* — 1.125, 0.5625 or 2.25 tall, 16/9 or 8/9 wide (`ratioOf` in `src/layout.ts`), never a constant. A width-driven round trip is not idempotent — it loses a pixel per call, so a box re-snapped every drag frame visibly shrinks.
 
 **A box is only legal for its own cell.** A flawless 9:8 rect is illegal in a 540×960 cell and would export stretched. This is why `isValidBox` takes a `ratio` parameter instead of a constant, and why both `restore` (client) and `assertBoxes` (server) pass the per-cell value. Either one alone would let a wrong-cell box preview cleanly and die only at export.
 
-**The min-box floor is ceiled, not rounded.** The floor is `min(ceil(max(MIN_BOX_SIDE, MIN_BOX_SIDE / ratio)), maxBox(source, ratio).h)`. `MIN_BOX_SIDE / ratio` is fractional for a 9:16 cell (142 / 0.5625 = 252.444), and `boxFromHeight` rounds its clamped height, so a fractional floor would make the smallest constructible 9:16 box `h = 252` while `isValidBox` — reading that same fractional floor — requires `>= 252.444` and rejects it: the validator refuses its own constructor's output, at one ratio only. `ceil` fixes this because the floor must be an integer. The three floors evaluate to 142 / 253 / 142 for the 9:8 / 9:16 / 9:4 cells, so 9:8 behaviour is unchanged.
+**The min-box floor is ceiled, not rounded.** The floor is `min(ceil(max(MIN_BOX_SIDE, MIN_BOX_SIDE / ratio)), maxBox(source, ratio).h)`. `MIN_BOX_SIDE / ratio` is fractional for a 9:16 cell (142 / 0.5625 = 252.444), and `boxFromHeight` rounds its clamped height, so a fractional floor would make the smallest constructible 9:16 box `h = 252` while `isValidBox` — reading that same fractional floor — requires `>= 252.444` and rejects it: the validator refuses its own constructor's output, at one ratio only. `ceil` fixes this because the floor must be an integer. The five floors evaluate to 142 / 253 / 142 for the tall 9:8 / 9:16 / 9:4 cells and 142 / 160 for the wide 16:9 (`w-1`, `w-2x2` cells) / 8:9 (`w-2h` cells) ones — 142 / 0.889 = 159.75 ceils to 160 — so 9:8 behaviour is unchanged.
 
 **`clampToBounds` slides, never shrinks.** Shrinking breaks the box's aspect lock and ships a stretched region that nobody notices until export. This holds per ratio: safe only because every constructor caps size at `maxBox(source, ratio)` first. Mutation-tested: making it shrink fails 3 tests.
 
@@ -441,7 +454,10 @@ Two invariants are mutation-tested and should stay that way: swapping two entrie
 **The voice is the other client-supplied string that reaches a subprocess.**
 `/api/export`'s `voice` becomes argv of `tts.py`, so it is checked against
 `knownVoices()` — the engine's own preset table, cached at boot by
-`checkStarter` — and not against a pattern. A table lookup is the same posture
+`checkStarter` — and not against a pattern. On a wide layout there is no
+speech at all: `voice` and `voiceTitle` are optional and never read (no
+`speak`, no lookup), and the client omits them. `titlePng` must match
+`layout.frame` in size or the route answers 400. A table lookup is the same posture
 as `layoutById`: there is no regex to get subtly wrong, and the set of legal
 values is by definition whatever the installed engine ships. `checkStarter`
 filling that cache is therefore load-bearing for the *validator*, not just for
@@ -605,6 +621,30 @@ white stripe straight through a piece that straddles it. The walk reduces
 byte-for-byte to the old code at zero and one piece — verified, and fenced by
 `server/mask.test.ts` — so that identity is what any future rework has to
 preserve.
+
+**Orientation is the layout's `frame`, and every frame-bounded function takes
+it with no default.** `OUTPUT` was deleted rather than aliased so the
+compiler found every reader. A default of `TALL` on `clampOut`/`isValidOut`/
+`windowOf`/`maskRgba`/… would make any forgotten call site silently tall —
+pieces clamped to 1920 high in a 1080-high frame. `restore` validates pieces
+against the restored layout's frame, and switching orientation clears both
+boxes and pieces.
+
+**A wide title has a 120px floor and the fit is pure.** `fitTitle` takes the
+measurer as a parameter so `src/starter.test.ts` can pin it in node; tall
+rules are fenced against a verbatim copy of the old loop. A title past the
+floor's three lines is surfaced by a badge in the framing bar, never shrunk
+below 120 and never blocking Export.
+
+**A same-name re-export in the other orientation sweeps the other sidecar.**
+`outName` ignores orientation. Tall removes `<name>.thumb.jpg` after its
+rename (or `applyThumbnail` would publish the wide card on a short); wide
+removes `<name>.jpg`.
+
+**A one-cell layout bypasses `xstack`, which refuses `inputs=1`.** `buildFilter`
+composes `w-1` as `[s0]null[stack]`. Found in a real browser export, not by a
+test: the only wide export test used a two-cell layout. `w-1` now has its own
+real export test, with and without a floating piece.
 
 **A custom box survives a layout switch; a cell's box does not.** Switching
 layouts clears `boxes` because a preset's cells just changed shape or count,
@@ -814,12 +854,16 @@ which never touch `mode` at all, so nothing pins the three call sites down.
 enumeration growth this invariant warns about, arriving on schedule. The
 wide-slot test reads `s.mode !== "short"` rather than adding a third arm, for
 the reason `src/main.ts`'s own comment at that line gives: an enumeration
-there grows with every journey, and "not the short journey" does not.
+there grows with every journey, and "not the short journey" does not. It also
+ORs in `wideCut` (`mode === "short"` on a wide layout): `is-wide` is on in
+`preview` when `mode !== "short" || wideCut`, and in `framing` when `wideCut`,
+so a short-journey cut framed 16:9 gets the wide slot in both phases.
 
 **`#shorts` is what classifies an upload, so `buildSnippet` must not force
 it.** The flag is optional and defaults to `true`, which is what keeps every
 existing caller and every request body written before it exact — only the
-long journey sends `false`. A twenty-minute compilation carrying the tag is
+long journey, the lofi journey and a short-journey cut framed on a wide layout
+(`shorts: s.mode === "short" && !isWide(...)`) send `false`. A twenty-minute compilation carrying the tag is
 misfiled by YouTube at the platform level, and the uploader cannot undo it
 from Studio.
 
@@ -2149,7 +2193,8 @@ mask cached before this feature shipped keeps hitting, and editing a custom's
 **`/api/export` takes window bounds plus an optional 8-hex `digest`, still
 never a path.** Its body is `videoId` + window/mark bounds + `layoutId` +
 `boxes` + `customs` + `starterTitle` + `voiceTitle` + `titlePng` + `voice` +
-`digest` + `cuts` + `prev`. The
+`digest` + `cuts` + `prev` — `voiceTitle` and `voice` optional and not read on a
+wide layout, whose `titlePng` must be `layout.frame`'s size. The
 server reconstructs the cache filename itself, so there is no client-supplied
 path to validate for traversal — except a stitch's filename carries a third
 component, `segmentDigest`'s hash of the segment bounds, that window bounds
@@ -2648,6 +2693,15 @@ spending its ranges through that module. The `cutting` panel, the strip, the
 chip row, the object URL's lifecycle, `/api/cut`'s HTTP surface and `open -R`
 have no tests, like the rest of the network and DOM surface.
 
+The wide frame's tests: `src/starter.test.ts` (`fitTitle`; tall rules fenced
+against a verbatim copy of the old loop, the wide 120px floor
+mutation-tested), the wide additions to `custom`/`frame`/`state`/`layout`
+tests, `server/ffmpeg.test.ts` (the `buildFilter` `xstack=inputs=2` string pin, the
+`w-1` one-cell bypass test, `w-2h` and `w-1` wide exports, `pngSize`,
+`assertCustoms`' frame bound), `server/longform.test.ts` (`appendOutro`: leg
+order, blur edge, silent body, the real asset) and `server/starter.test.ts`
+(`screenFilter(820)` string pin, `titleCard`).
+
 DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by design — vitest runs `environment: "node"` here and those behaviours are verified by hand.
 
 ## Environment notes for agents
@@ -2810,7 +2864,7 @@ DOM-driven modules (`main`, `editor`, `preview`, `player`) have no tests by desi
   most likely to mark.
 
 **`.out` is `aspect-ratio: 9 / 16` and a long-form video is not.** The slot
-holds the framing canvas (always vertical) as well as the preview `<video>`,
+holds the framing canvas (vertical, or 16:9 on a wide layout) as well as the preview `<video>`,
 so the shape is toggled by `render()` on the phase AND the mode
 (`.out.is-wide`), never set once. Without it a 16:9 output is squeezed into
 a thin strip with most of the card empty, which reads as a broken render.

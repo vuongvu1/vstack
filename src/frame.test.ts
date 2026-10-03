@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OUTPUT } from "./geometry.ts";
+import { TALL, WIDE } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
 import { CORNER_RADIUS, GUTTER, maskRgba, ringOf, windowOf, windowsOf } from "./frame.ts";
 import { DEFAULT_LAYOUT, LAYOUTS, cellsOf, layoutById } from "./layout.ts";
@@ -12,12 +12,12 @@ function byId(id: string) {
   return layout;
 }
 
-function alphaAt(mask: Uint8Array, x: number, y: number): number {
-  return mask[(y * OUTPUT.w + x) * 4 + 3] ?? -1;
+function alphaAt(mask: Uint8Array, frameW: number, x: number, y: number): number {
+  return mask[(y * frameW + x) * 4 + 3] ?? -1;
 }
 
-function rgbAt(mask: Uint8Array, x: number, y: number) {
-  const i = (y * OUTPUT.w + x) * 4;
+function rgbAt(mask: Uint8Array, frameW: number, x: number, y: number) {
+  const i = (y * frameW + x) * 4;
   return { r: mask[i] ?? -1, g: mask[i + 1] ?? -1, b: mask[i + 2] ?? -1 };
 }
 
@@ -52,7 +52,7 @@ describe("windowOf", () => {
     // way rather than taking a second parallel array that could disagree
     // with the one the mask was rendered from.
     for (const l of LAYOUTS) {
-      expect(cellsOf(l).map(windowOf)).toEqual(windowsOf(l));
+      expect(cellsOf(l).map((c) => windowOf(c, l.frame))).toEqual(windowsOf(l));
     }
   });
 });
@@ -93,8 +93,8 @@ describe("windowsOf", () => {
       const windows = windowsOf(l);
       expect(Math.min(...windows.map((w) => w.x))).toBe(GUTTER);
       expect(Math.min(...windows.map((w) => w.y))).toBe(GUTTER);
-      expect(Math.max(...windows.map((w) => w.x + w.w))).toBe(OUTPUT.w - GUTTER);
-      expect(Math.max(...windows.map((w) => w.y + w.h))).toBe(OUTPUT.h - GUTTER);
+      expect(Math.max(...windows.map((w) => w.x + w.w))).toBe(l.frame.w - GUTTER);
+      expect(Math.max(...windows.map((w) => w.y + w.h))).toBe(l.frame.h - GUTTER);
     }
   });
 
@@ -104,6 +104,7 @@ describe("windowsOf", () => {
     // only inset rule that makes every internal seam identical.
     for (const l of LAYOUTS) {
       const cells = cellsOf(l);
+      if (cells.length < 2) continue;
       const windows = windowsOf(l);
       let adjacencies = 0;
       for (let i = 0; i < cells.length; i++) {
@@ -137,44 +138,44 @@ describe("windowsOf", () => {
 });
 
 describe("maskRgba", () => {
-  const mask = maskRgba(windowsOf(DEFAULT_LAYOUT));
+  const mask = maskRgba(TALL, windowsOf(DEFAULT_LAYOUT));
   const [top] = windowsOf(DEFAULT_LAYOUT);
   if (!top) throw new Error("1-1 has no first window");
 
   it("is an RGBA buffer the size of the output frame", () => {
-    expect(mask).toHaveLength(OUTPUT.w * OUTPUT.h * 4);
+    expect(mask).toHaveLength(TALL.w * TALL.h * 4);
   });
 
   it("is white everywhere, so partial alpha never bleeds a colour", () => {
-    expect(rgbAt(mask, 0, 0)).toEqual({ r: 255, g: 255, b: 255 });
-    expect(rgbAt(mask, 540, 480)).toEqual({ r: 255, g: 255, b: 255 });
-    expect(rgbAt(mask, OUTPUT.w - 1, OUTPUT.h - 1)).toEqual({ r: 255, g: 255, b: 255 });
+    expect(rgbAt(mask, TALL.w, 0, 0)).toEqual({ r: 255, g: 255, b: 255 });
+    expect(rgbAt(mask, TALL.w, 540, 480)).toEqual({ r: 255, g: 255, b: 255 });
+    expect(rgbAt(mask, TALL.w, TALL.w - 1, TALL.h - 1)).toEqual({ r: 255, g: 255, b: 255 });
   });
 
   it("is transparent inside a window", () => {
-    expect(alphaAt(mask, 540, 480)).toBe(0);
-    expect(alphaAt(mask, 540, 1440)).toBe(0);
+    expect(alphaAt(mask, TALL.w, 540, 480)).toBe(0);
+    expect(alphaAt(mask, TALL.w, 540, 1440)).toBe(0);
   });
 
   it("is opaque in the frame margin and in the seam", () => {
-    expect(alphaAt(mask, 0, 0)).toBe(255);
-    expect(alphaAt(mask, 540, 2)).toBe(255);
+    expect(alphaAt(mask, TALL.w, 0, 0)).toBe(255);
+    expect(alphaAt(mask, TALL.w, 540, 2)).toBe(255);
     // The seam between 1-1's two halves runs y 955..964.
-    expect(alphaAt(mask, 540, 960)).toBe(255);
+    expect(alphaAt(mask, TALL.w, 540, 960)).toBe(255);
   });
 
   it("is opaque at a window's square corner, proving the corner is rounded", () => {
     // The bounding-box corner of the window sits outside the arc — a
     // radius of 0 would make this transparent.
-    expect(alphaAt(mask, top.x, top.y)).toBe(255);
-    expect(alphaAt(mask, top.x + top.w - 1, top.y)).toBe(255);
-    expect(alphaAt(mask, top.x, top.y + top.h - 1)).toBe(255);
-    expect(alphaAt(mask, top.x + top.w - 1, top.y + top.h - 1)).toBe(255);
+    expect(alphaAt(mask, TALL.w, top.x, top.y)).toBe(255);
+    expect(alphaAt(mask, TALL.w, top.x + top.w - 1, top.y)).toBe(255);
+    expect(alphaAt(mask, TALL.w, top.x, top.y + top.h - 1)).toBe(255);
+    expect(alphaAt(mask, TALL.w, top.x + top.w - 1, top.y + top.h - 1)).toBe(255);
   });
 
   it("is transparent along a window's straight edge between the arcs", () => {
-    expect(alphaAt(mask, top.x + (top.w >> 1), top.y)).toBe(0);
-    expect(alphaAt(mask, top.x, top.y + (top.h >> 1))).toBe(0);
+    expect(alphaAt(mask, TALL.w, top.x + (top.w >> 1), top.y)).toBe(0);
+    expect(alphaAt(mask, TALL.w, top.x, top.y + (top.h >> 1))).toBe(0);
   });
 
   it("antialiases the arc rather than stepping it", () => {
@@ -183,7 +184,7 @@ describe("maskRgba", () => {
     let partial = 0;
     for (let y = top.y; y < top.y + CORNER_RADIUS; y++) {
       for (let x = top.x; x < top.x + CORNER_RADIUS; x++) {
-        const a = alphaAt(mask, x, y);
+        const a = alphaAt(mask, TALL.w, x, y);
         if (a > 0 && a < 255) partial++;
       }
     }
@@ -198,26 +199,26 @@ describe("maskRgba — floating custom boxes", () => {
   const windows = windowsOf(DEFAULT_LAYOUT);
 
   it("cuts a transparent window where the piece is drawn", () => {
-    const mask = maskRgba(windows, [CUSTOM]);
-    expect(alphaAt(mask, CUSTOM.x + CUSTOM.w / 2, CUSTOM.y + CUSTOM.h / 2)).toBe(0);
+    const mask = maskRgba(TALL, windows, [CUSTOM]);
+    expect(alphaAt(mask, TALL.w, CUSTOM.x + CUSTOM.w / 2, CUSTOM.y + CUSTOM.h / 2)).toBe(0);
   });
 
   it("paints an opaque white ring one gutter wide around it", () => {
-    const mask = maskRgba(windows, [CUSTOM]);
+    const mask = maskRgba(TALL, windows, [CUSTOM]);
     const midX = CUSTOM.x + CUSTOM.w / 2;
     // Half a gutter above the top edge: inside the ring band.
-    expect(alphaAt(mask, midX, CUSTOM.y - GUTTER / 2)).toBe(255);
-    expect(rgbAt(mask, midX, CUSTOM.y - GUTTER / 2)).toEqual({ r: 255, g: 255, b: 255 });
+    expect(alphaAt(mask, TALL.w, midX, CUSTOM.y - GUTTER / 2)).toBe(255);
+    expect(rgbAt(mask, TALL.w, midX, CUSTOM.y - GUTTER / 2)).toEqual({ r: 255, g: 255, b: 255 });
     // Two px beyond the ring: back to the cell's own content.
-    expect(alphaAt(mask, midX, CUSTOM.y - GUTTER - 2)).toBe(0);
+    expect(alphaAt(mask, TALL.w, midX, CUSTOM.y - GUTTER - 2)).toBe(0);
   });
 
   it("keeps the corner nub opaque even where it sits over a cell window", () => {
     // The failure this prevents: the piece is drawn as a plain rect, so its
     // square corner would show through wherever the mask is transparent.
     // MUTATION TEST: drop the ring∪nub rule and this drops to 0.
-    const mask = maskRgba(windows, [CUSTOM]);
-    expect(alphaAt(mask, CUSTOM.x + 1, CUSTOM.y + 1)).toBe(255);
+    const mask = maskRgba(TALL, windows, [CUSTOM]);
+    expect(alphaAt(mask, TALL.w, CUSTOM.x + 1, CUSTOM.y + 1)).toBe(255);
   });
 
   it("lets a piece straddle a cell seam without a white stripe through it", () => {
@@ -225,17 +226,17 @@ describe("maskRgba — floating custom boxes", () => {
     // that row is opaque white with no customs — and must not be, inside a
     // custom's window.
     // MUTATION TEST: let the gutter rule win over customs and this is 255.
-    const bare = maskRgba(windows);
-    expect(alphaAt(bare, CUSTOM.x + CUSTOM.w / 2, 960)).toBe(255);
-    const mask = maskRgba(windows, [CUSTOM]);
-    expect(alphaAt(mask, CUSTOM.x + CUSTOM.w / 2, 960)).toBe(0);
+    const bare = maskRgba(TALL, windows);
+    expect(alphaAt(bare, TALL.w, CUSTOM.x + CUSTOM.w / 2, 960)).toBe(255);
+    const mask = maskRgba(TALL, windows, [CUSTOM]);
+    expect(alphaAt(mask, TALL.w, CUSTOM.x + CUSTOM.w / 2, 960)).toBe(0);
   });
 
   it("leaves the frame margin and the rest of the gutters alone", () => {
-    const mask = maskRgba(windows, [CUSTOM]);
-    expect(alphaAt(mask, 2, 2)).toBe(255);
-    expect(alphaAt(mask, 100, 960)).toBe(255);
-    expect(alphaAt(mask, 540, 480)).toBe(0);
+    const mask = maskRgba(TALL, windows, [CUSTOM]);
+    expect(alphaAt(mask, TALL.w, 2, 2)).toBe(255);
+    expect(alphaAt(mask, TALL.w, 100, 960)).toBe(255);
+    expect(alphaAt(mask, TALL.w, 540, 480)).toBe(0);
   });
 });
 
@@ -246,43 +247,43 @@ describe("maskRgba — two overlapping pieces", () => {
   const LOWER: Rect = { x: 270, y: 690, w: 540, h: 540 };
   const UPPER: Rect = { x: 330, y: 750, w: 540, h: 540 };
   const windows = windowsOf(DEFAULT_LAYOUT);
-  const mask = maskRgba(windows, [LOWER, UPPER]);
+  const mask = maskRgba(TALL, windows, [LOWER, UPPER]);
 
   it("keeps the upper piece's corner nub opaque over the lower piece", () => {
     // MUTATION TEST: this is 0 unless the walk is z-aware. Testing any
     // piece's window before every piece's ring — which is what this did
     // before — finds the LOWER piece's window here and calls it transparent,
     // so the upper piece shows a square corner over its neighbour.
-    expect(alphaAt(mask, UPPER.x + 1, UPPER.y + 1)).toBe(255);
+    expect(alphaAt(mask, TALL.w, UPPER.x + 1, UPPER.y + 1)).toBe(255);
     // The same nub outside the lower piece was always opaque — the control
     // that shows the two differ only where the pieces overlap.
-    expect(alphaAt(mask, UPPER.x + UPPER.w - 1, UPPER.y + UPPER.h - 1)).toBe(255);
+    expect(alphaAt(mask, TALL.w, UPPER.x + UPPER.w - 1, UPPER.y + UPPER.h - 1)).toBe(255);
   });
 
   it("keeps the upper piece's ring opaque over the lower piece", () => {
     // MUTATION TEST: 0 without the z-aware walk, for the same reason — the
     // upper piece loses the whole top and left of its ring, which is the
     // half that happens to sit over its neighbour.
-    expect(alphaAt(mask, 600, UPPER.y - GUTTER / 2)).toBe(255);
-    expect(rgbAt(mask, 600, UPPER.y - GUTTER / 2)).toEqual({ r: 255, g: 255, b: 255 });
+    expect(alphaAt(mask, TALL.w, 600, UPPER.y - GUTTER / 2)).toBe(255);
+    expect(rgbAt(mask, TALL.w, 600, UPPER.y - GUTTER / 2)).toEqual({ r: 255, g: 255, b: 255 });
     // Below the upper piece, clear of the lower one: opaque either way.
-    expect(alphaAt(mask, 600, UPPER.y + UPPER.h + GUTTER / 2)).toBe(255);
+    expect(alphaAt(mask, TALL.w, 600, UPPER.y + UPPER.h + GUTTER / 2)).toBe(255);
   });
 
   it("hides the lower piece's ring inside the upper piece's window", () => {
     // The other half of z-awareness, and why the fix is not simply swapping
     // the two tests: ring∪nub-beats-everything would paint this white and
     // stripe the lower piece's ring across the upper piece.
-    expect(alphaAt(mask, LOWER.x + LOWER.w + GUTTER / 2, 1000)).toBe(0);
+    expect(alphaAt(mask, TALL.w, LOWER.x + LOWER.w + GUTTER / 2, 1000)).toBe(0);
     // Where the two windows overlap, the upper piece just shows.
-    expect(alphaAt(mask, 600, 1000)).toBe(0);
+    expect(alphaAt(mask, TALL.w, 600, 1000)).toBe(0);
   });
 
   it("leaves the gutters and the pieces' own windows alone", () => {
-    expect(alphaAt(mask, 2, 2)).toBe(255);
-    expect(alphaAt(mask, 100, 960)).toBe(255);
+    expect(alphaAt(mask, TALL.w, 2, 2)).toBe(255);
+    expect(alphaAt(mask, TALL.w, 100, 960)).toBe(255);
     // Inside the lower piece, clear of the upper one.
-    expect(alphaAt(mask, 300, 720)).toBe(0);
+    expect(alphaAt(mask, TALL.w, 300, 720)).toBe(0);
   });
 });
 
@@ -295,5 +296,26 @@ describe("ringOf", () => {
       w: out.w + 2 * GUTTER,
       h: out.h + 2 * GUTTER,
     });
+  });
+});
+
+describe("the WIDE frame", () => {
+  const twoUp = byId("w-2h");
+
+  it("insets w-2h's halves by a full gutter outside and half inside", () => {
+    expect(windowsOf(twoUp)).toEqual([
+      { x: 10, y: 10, w: 945, h: 1060 },
+      { x: 965, y: 10, w: 945, h: 1060 },
+    ]);
+  });
+
+  it("renders a mask the size of the wide frame, with square corners opaque", () => {
+    const mask = maskRgba(WIDE, windowsOf(twoUp));
+    expect(mask).toHaveLength(WIDE.w * WIDE.h * 4);
+    const [left] = windowsOf(twoUp);
+    if (!left) throw new Error("w-2h has no first window");
+    expect(alphaAt(mask, WIDE.w, left.x, left.y)).toBe(255);
+    expect(alphaAt(mask, WIDE.w, left.x + 400, left.y + 500)).toBe(0);
+    expect(alphaAt(mask, WIDE.w, 960, 540)).toBe(255);
   });
 });

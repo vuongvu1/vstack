@@ -100,7 +100,7 @@ const SCRIM = 0.65;
  *
  *  Only a band, not the whole frame: the clip is what makes someone stop
  *  scrolling, and blurring all of it throws that away. `renderTitleArt`
- *  centres the title block on `OUTPUT.h / 2`, so the band is centred there
+ *  centres the title block on the frame's centre, so the band is centred there
  *  too.
  *
  *  820 covers roughly four lines at `MAX_SIZE` (180px each). A longer title
@@ -115,6 +115,10 @@ const BAND_H = 820;
 /** Feathering the mask is what stops the band reading as a bar across the
  *  frame — a hard edge shows two visible seams. */
 const BAND_FEATHER = 60;
+/** The wide title card's band: three lines at 220px (`titleRules`' wide
+ *  maximum block, 756px) plus feather. More of the frame goes soft than on a
+ *  short, which costs nothing — the card is a thumbnail only. */
+export const WIDE_BAND_H = 860;
 
 /** Turns the clip's first frame into the starter screen's background: sharp
  *  everywhere except a feathered band across the middle, which is blurred and
@@ -130,18 +134,25 @@ const BAND_FEATHER = 60;
  *
  *  A is the sharp layer, B the treated one; the weight ramps 0→1 across
  *  BAND_FEATHER pixels at each edge. `H` is the frame height, so nothing here
- *  needs to know OUTPUT.
+ *  needs to know the frame's size.
  *
  *  Applied in the frame-extraction pass, not the composite: the background is
  *  one static image, and a per-pixel expression evaluated across every frame
  *  of the screen would be paying ~300M evaluations for a picture that never
- *  changes. */
-const SCREEN_FILTER =
-  "[0:v]format=rgb24,split=2[sharp][tosoften];" +
-  `[tosoften]gblur=sigma=${BLUR_SIGMA},` +
-  `colorchannelmixer=rr=${SCRIM}:gg=${SCRIM}:bb=${SCRIM},format=rgb24[soft];` +
-  "[sharp][soft]blend=all_expr='" +
-  `A+(B-A)*clip(min(Y-(H-${BAND_H})/2\,(H+${BAND_H})/2-Y)/${BAND_FEATHER}\,0\,1)'`;
+ *  changes.
+ *
+ *  A function of the band height so the wide title card can use a taller
+ *  band; the tall screen calls it with BAND_H and is unchanged. */
+export function screenFilter(bandH: number): string {
+  return (
+    "[0:v]format=rgb24,split=2[sharp][tosoften];" +
+    `[tosoften]gblur=sigma=${BLUR_SIGMA},` +
+    `colorchannelmixer=rr=${SCRIM}:gg=${SCRIM}:bb=${SCRIM},format=rgb24[soft];` +
+    "[sharp][soft]blend=all_expr='" +
+    `A+(B-A)*clip(min(Y-(H-${bandH})/2\,(H+${bandH})/2-Y)/${BAND_FEATHER}\,0\,1)'`
+  );
+}
+const SCREEN_FILTER = screenFilter(BAND_H);
 /** The music is a bed under a voice, so it sits well below it. The cue is a
  *  transition, not scenery, so it does not. */
 const MUSIC_GAIN = 0.35;
@@ -484,4 +495,30 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
       console.error("vstack: starter still cleanup failed:", err);
     });
   }
+}
+
+/** The wide export's thumbnail: the starter screen's look — blurred,
+ *  scrimmed band, title on top — over the body's first frame, at 1280x720.
+ *  It never appears in the video; a wide export has no starter screen.
+ *
+ *  The body is 1920x1080, already 16:9, so it scales straight to 1280x720
+ *  with nothing cropped. `-q:v 3` for `thumbnails.set`'s 2 MB cap, the same
+ *  as `firstFrame`. The caller writes this to `thumbPath`, which
+ *  `applyThumbnail` already prefers, so publishing needs no change. */
+export async function titleCard(opts: { main: string; title: string; out: string }): Promise<string> {
+  try {
+    await run("ffmpeg", [
+      "-v", "error",
+      "-i", opts.main,
+      "-i", opts.title,
+      "-frames:v", "1",
+      "-filter_complex",
+      `${screenFilter(WIDE_BAND_H)}[bg];[bg][1:v]overlay=0:0:format=auto,scale=1280:720`,
+      "-q:v", "3",
+      "-y", opts.out,
+    ]);
+  } catch (err) {
+    throw toolError("ffmpeg", err);
+  }
+  return opts.out;
 }

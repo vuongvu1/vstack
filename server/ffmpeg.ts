@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { OUTPUT, isValidBox } from "../src/geometry.ts";
+import { isValidBox } from "../src/geometry.ts";
 import type { Rect, Size } from "../src/geometry.ts";
 import { cellsOf, ratioOf } from "../src/layout.ts";
 import type { Layout } from "../src/layout.ts";
@@ -243,6 +243,20 @@ export function isScriptName(name: unknown): name is string {
   return typeof name === "string" && SCRIPT_NAME.test(name);
 }
 
+/** A PNG's dimensions, from its IHDR chunk — which the format requires to be
+ *  the first chunk, straight after the 8-byte signature. The caller has
+ *  already checked the signature (`png()` in index.ts); this reads only
+ *  what follows. `{ w: 0, h: 0 }` for anything shorter or not IHDR-first, so
+ *  a comparison against a real frame simply fails.
+ *
+ *  `/api/export` uses it to refuse title art sized for the other frame: a
+ *  1080x1920 PNG overlaid on a 1920x1080 frame lands off-centre with no
+ *  error at all. */
+export function pngSize(buf: Buffer): Size {
+  if (buf.length < 24 || buf.toString("ascii", 12, 16) !== "IHDR") return { w: 0, h: 0 };
+  return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+}
+
 function cacheSize(dir: string): number {
   let total = 0;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -435,7 +449,10 @@ export function buildFilter(layout: Layout, boxes: Rect[], customs: CustomBox[] 
   return [
     `[0:v]split=${cells.length + customs.length}${inputs}${customInputs}`,
     ...legs,
-    `${scaled}xstack=inputs=${cells.length}:layout=${positions}[stack]`,
+    // xstack refuses inputs=1, so a one-cell layout passes its leg through.
+    cells.length === 1
+      ? `${scaled}null[stack]`
+      : `${scaled}xstack=inputs=${cells.length}:layout=${positions}[stack]`,
     ...customLegs,
     ...overlays,
     // The frame overlay is still last: it arbitrates between the pieces and
@@ -475,7 +492,7 @@ export function assertBoxes(layout: Layout, boxes: Rect[], source: Size): void {
  *  numbers are the one thing interpolated into the filter string. Legality
  *  is `isValidCustom` — the same predicate `restore` runs on the client — so
  *  a box cannot preview cleanly and die at export. */
-export function assertCustoms(customs: CustomBox[], source: Size): void {
+export function assertCustoms(customs: CustomBox[], source: Size, frame: Size): void {
   if (!Array.isArray(customs)) {
     throw new Error(`customs must be an array, got ${typeof customs}.`);
   }
@@ -483,11 +500,11 @@ export function assertCustoms(customs: CustomBox[], source: Size): void {
     throw new Error(`At most ${MAX_CUSTOM} custom boxes, got ${customs.length}.`);
   }
   customs.forEach((custom, i) => {
-    if (!isValidCustom(custom, source)) {
+    if (!isValidCustom(custom, source, frame)) {
       throw new Error(
         `Invalid custom box ${i + 1} ${JSON.stringify(custom)} for source ` +
           `${source.w}x${source.h}: out must be even integers, at least ` +
-          `${MIN_OUT_SIDE} per side, inside ${OUTPUT.w}x${OUTPUT.h}; crop must ` +
+          `${MIN_OUT_SIDE} per side, inside ${frame.w}x${frame.h}; crop must ` +
           `be integers matching that box's own ratio and inside the source.`,
       );
     }
@@ -496,7 +513,7 @@ export function assertCustoms(customs: CustomBox[], source: Size): void {
 
 export async function exportClip(opts: ExportOpts): Promise<string> {
   assertBoxes(opts.layout, opts.boxes, opts.source);
-  assertCustoms(opts.customs ?? [], opts.source);
+  assertCustoms(opts.customs ?? [], opts.source, opts.layout.frame);
   if (!Number.isFinite(opts.start) || opts.start < 0) {
     throw new Error(`Invalid start ${opts.start}: must be a non-negative number of seconds.`);
   }
@@ -649,7 +666,7 @@ export async function concatClips(parts: ConcatPart[], out: string): Promise<str
  *    this is the file to drag into it.
  *
  *  Cropping is safe because `renderTitleArt` centres the title block
- *  vertically (`OUTPUT.h / 2`), and the crop is 607px of source height taken
+ *  vertically (the frame's centre), and the crop is 607px of source height taken
  *  around that same centre. Its limit: lines are 180px at `MAX_SIZE`, so a
  *  title of four or more lines loses its outer lines from the *thumbnail*.
  *  The video itself is untouched either way.

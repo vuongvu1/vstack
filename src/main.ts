@@ -11,7 +11,7 @@ import type { CustomBox } from "./custom.ts";
 import { mountEditor } from "./editor.ts";
 import type { EditorHandle } from "./editor.ts";
 import { GUTTER } from "./frame.ts";
-import { OUTPUT, SHORTS_MAX_S, SKIP_TRIM_UNDER, moveBy, resizeFromCorner } from "./geometry.ts";
+import { SHORTS_MAX_S, SKIP_TRIM_UNDER, moveBy, resizeFromCorner } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
 import {
   defaultDescription,
@@ -24,17 +24,20 @@ import {
   OUTRO_SECONDS,
   SCRIPT_MAX,
   TITLE_MAX,
-  TAGS_DEFAULT,
   UPLOAD_MAX_BYTES,
   YT_TITLE_MAX,
   defaultTitle,
+  tagsFor,
 } from "./defaults.ts";
 import { clock, parseTimestamp, sampleOf } from "./format.ts";
 import {
+  DEFAULT_LAYOUT,
   DEFAULT_LAYOUT_ID,
+  DEFAULT_WIDE_LAYOUT,
   LAYOUTS,
   cellsOf,
   defaultBoxes,
+  isWide,
   ratioOf,
   resolveLayout,
 } from "./layout.ts";
@@ -44,7 +47,7 @@ import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
 import { MAX_SEGMENTS, editMark, isValidSegments, normalize } from "./segments.ts";
 import type { Segment } from "./segments.ts";
-import { renderTitleArt } from "./starter.ts";
+import { renderTitleArt, titleFits } from "./starter.ts";
 import { renderThumb, renderWide } from "./thumb.ts";
 import type { AppState, UploadTrack } from "./state.ts";
 import {
@@ -1216,6 +1219,7 @@ function ensureFraming(): void {
   const s = getState();
   const layout = resolveLayout(s.layoutId);
   const cells = cellsOf(layout);
+  const frame = layout.frame;
   const sameClip = videoEl !== null && canvasEl !== null && framingFor === s.clipUrl;
   // The remount key carries the piece count alongside the layout id: both
   // overlays' node counts derive from it (source: cells.length +
@@ -1255,7 +1259,7 @@ function ensureFraming(): void {
     save();
   }
 
-  stopPreview = startPreview(canvasEl, videoEl, cells, currentBoxes, currentCustoms, currentStill);
+  stopPreview = startPreview(canvasEl, videoEl, layout.frame, cells, currentBoxes, currentCustoms, currentStill);
 
   const cellCount = cells.length;
   sourceEditor?.stop();
@@ -1307,8 +1311,8 @@ function ensureFraming(): void {
     outEditor = mountEditor({
       host: outSlot,
       media: canvasEl,
-      // Output space: the canvas is 1080x1920 whatever size it renders at.
-      bounds: () => OUTPUT,
+      // Output space: the canvas is the layout's frame whatever size it renders at.
+      bounds: () => frame,
       count: s.customs.length,
       labelFrom: cellCount,
       boxes: () => currentCustoms().map((c) => c.out),
@@ -1317,8 +1321,8 @@ function ensureFraming(): void {
       // frame's own white margin — one band, not two, and none of it off
       // the frame. A piece dragged into a corner then reads like a cell's
       // window, which is the same 10px inset at the same 24px radius.
-      move: (rect, dx, dy) => moveOut(rect, dx, dy, GUTTER),
-      resize: (rect, corner, dx, dy) => resizeOut(rect, corner, dx, dy, GUTTER),
+      move: (rect, dx, dy) => moveOut(rect, dx, dy, frame, GUTTER),
+      resize: (rect, corner, dx, dy) => resizeOut(rect, corner, dx, dy, frame, GUTTER),
       // One patch carrying both halves: the piece's crop is locked to the
       // piece's own ratio, so a resize that changes that ratio has to move
       // the crop in the same frame or the two disagree until the next drag.
@@ -1418,9 +1422,10 @@ async function doExport(): Promise<void> {
   const layout = resolveLayout(s.layoutId);
   const boxes = s.boxes;
   if (boxes.length !== cellsOf(layout).length) return;
+  const wide = isWide(layout);
   // Same check the Export button is disabled on, and the same one the server
-  // repeats: the title is spoken aloud on the starter screen, so a blank one
-  // is a silent screen, not a missing caption.
+  // repeats: a blank title names the file and paints the screen (tall: and
+  // is spoken), so it is a missing title, not a missing caption.
   const starterTitle = s.starterTitle.trim();
   if (starterTitle === "") return;
   await guard("Rendering… (a 30s clip takes ~5–10s)", async () => {
@@ -1437,15 +1442,17 @@ async function doExport(): Promise<void> {
       cuts: s.cuts,
       digest: s.clipDigest,
       starterTitle,
-      // Sent raw, blank included: the server resolves blank to `starterTitle`,
-      // so the fallback is written once rather than on both sides of the wire.
-      // Only the *shown* title is rendered to art and only it names the file.
-      voiceTitle: s.voiceTitle.trim(),
-      titlePng: await renderTitleArt(starterTitle),
+      titlePng: await renderTitleArt(starterTitle, layout.frame),
+      // Wide has no starter screen, so nothing is spoken — and the server
+      // does not read either field for a wide layout. Otherwise `voiceTitle`
+      // is sent raw, blank included: the server resolves blank to
+      // `starterTitle`, so the fallback is written once rather than on both
+      // sides of the wire. Only the *shown* title is rendered to art and
+      // only it names the file.
+      ...(wide ? {} : { voiceTitle: s.voiceTitle.trim(), voice: currentVoice(s) }),
       layoutId: layout.id,
       boxes,
       customs: s.customs,
-      voice: currentVoice(s),
       // The render this one supersedes. In-memory only, so a reload between
       // two exports leaves the older file on the Desktop — deliberate: the
       // alternative is another persisted field whose only job is naming a
@@ -1462,7 +1469,9 @@ async function doExport(): Promise<void> {
       // work this phase exists to remove.
       ytTitle: getState().ytTitle || defaultTitle(starterTitle),
       ytDescription: getState().ytDescription || defaultDescription(s.videoId),
-      ytTags: getState().ytTags || TAGS_DEFAULT,
+      // `tagsFor` swaps one orientation's untouched default for the other's,
+      // so a cut re-exported across Short/Long does not keep `shorts`.
+      ytTags: tagsFor(getState().ytTags, wide),
       // A fresh file has not been published, whatever the last one did, and
       // its thumbnail state belongs to that upload rather than this file.
       ytVideoId: "",
@@ -1823,8 +1832,10 @@ async function doPublish(): Promise<void> {
         tags: s.ytTags,
         // `#shorts` in the description is what classifies an upload as a
         // Short. A long-form compilation carrying it is misfiled at the
-        // platform level, and the uploader cannot undo that from Studio.
-        shorts: s.mode === "short",
+        // platform level, and the uploader cannot undo that from Studio —
+        // so never on a long-form or lofi render, and never on a cut framed
+        // wide.
+        shorts: s.mode === "short" && !isWide(resolveLayout(s.layoutId)),
       });
       setState({ ytVideoId: videoId, ytThumbnail: thumbnail });
       bell();
@@ -1836,6 +1847,37 @@ async function doPublish(): Promise<void> {
   });
 }
 
+/** Short or Long: which frame the export is. A switch to the other
+ *  orientation lands on that side's default layout and clears the boxes AND
+ *  the pieces — a tall piece's `out` rect is meaningless in a 1080-tall
+ *  frame. Within one orientation the layout picker keeps pieces as before. */
+function renderOrientation(currentId: string, busy: boolean): Node {
+  const wide = isWide(resolveLayout(currentId));
+  const pick = (label: string, toWide: boolean, hint: string) => {
+    const b = el("button", { textContent: label, title: hint, disabled: busy });
+    b.setAttribute("aria-pressed", String(wide === toWide));
+    b.onclick = () => {
+      if (wide === toWide) return;
+      setState({
+        layoutId: (toWide ? DEFAULT_WIDE_LAYOUT : DEFAULT_LAYOUT).id,
+        boxes: [],
+        customs: [],
+        showThumb: false,
+      });
+      save();
+    };
+    return b;
+  };
+  const wrap = el(
+    "div",
+    { className: "layouts", ariaLabel: "Output shape" },
+    pick("Short", false, "1080×1920 vertical short, with the starter screen"),
+    pick("Long", true, "1920×1080 video — no starter screen, outro kept"),
+  );
+  wrap.setAttribute("role", "group");
+  return wrap;
+}
+
 /** One button per layout, each drawing its own cells. The diagram is
  *  generated from `cellsOf`, so a picker swatch cannot drift from what the
  *  layout actually composes — which a hand-drawn icon set would.
@@ -1845,10 +1887,11 @@ async function doPublish(): Promise<void> {
  *  a second independent read here is exactly how a render pass can end up
  *  observing two different moments of state and disagreeing with itself. */
 function renderLayoutPicker(currentId: string, busy: boolean): Node {
-  const picks = LAYOUTS.map((layout) => {
+  const wide = isWide(resolveLayout(currentId));
+  const picks = LAYOUTS.filter((layout) => isWide(layout) === wide).map((layout) => {
     const selected = layout.id === currentId;
     const pick = el("button", {
-      className: "layout-pick",
+      className: wide ? "layout-pick is-wide" : "layout-pick",
       title: layout.label,
       ariaLabel: layout.label,
       disabled: busy,
@@ -1861,10 +1904,10 @@ function renderLayoutPicker(currentId: string, busy: boolean): Node {
         el("span", {
           className: "layout-cell",
           style:
-            `left: calc(${(cell.x / OUTPUT.w) * 100}% + 1px);` +
-            `top: calc(${(cell.y / OUTPUT.h) * 100}% + 1px);` +
-            `width: calc(${(cell.w / OUTPUT.w) * 100}% - 2px);` +
-            `height: calc(${(cell.h / OUTPUT.h) * 100}% - 2px);`,
+            `left: calc(${(cell.x / layout.frame.w) * 100}% + 1px);` +
+            `top: calc(${(cell.y / layout.frame.h) * 100}% + 1px);` +
+            `width: calc(${(cell.w / layout.frame.w) * 100}% - 2px);` +
+            `height: calc(${(cell.h / layout.frame.h) * 100}% - 2px);`,
         }),
       );
     }
@@ -1915,6 +1958,8 @@ function renderLayoutPicker(currentId: string, busy: boolean): Node {
  *  builds no wrapper of its own around them. */
 function renderFraming(): Node[] {
   const s = getState();
+  const layout = resolveLayout(s.layoutId);
+  const wide = isWide(layout);
   // Called for its effects: it mounts the <video>, canvas, crop-box overlay
   // and preview loop into the persistent shell. Nothing in this bar reads
   // the video handle it returns any more — marking, the only thing that did,
@@ -2214,23 +2259,36 @@ function renderFraming(): Node[] {
     // read off `s` — both `busy` and the MAX_CUSTOM cap only move via
     // setState, which re-renders this bar.
     const cur = getState();
-    setState({ customs: [...cur.customs, defaultCustom(cur.source, cur.customs.length)] });
+    setState({ customs: [...cur.customs, defaultCustom(cur.source, cur.customs.length, resolveLayout(cur.layoutId).frame)] });
     save();
   };
 
-  // The starter screen's title, and the gate on Export: the screen reads it
-  // aloud, so a blank one is a silent screen rather than a missing caption.
+  // The starter screen's title, and the gate on Export: it names the file
+  // and is painted on the screen (tall: spoken too), so a blank one is a
+  // missing title rather than a missing caption.
   const title = el("input", {
     type: "text",
-    placeholder: "Starter screen title (required)",
-    title: "Shown on the starter screen, names the file, prefills the upload",
-    ariaLabel: "Starter screen title",
+    placeholder: wide ? "Title (required)" : "Starter screen title (required)",
+    title: wide
+      ? "Names the file, drawn on the thumbnail, prefills the upload"
+      : "Shown on the starter screen, names the file, prefills the upload",
+    ariaLabel: wide ? "Title" : "Starter screen title",
     // Grows to fill its row instead of carrying a `size`: it is the thing
-    // Export is gated on, so it gets the space. It shares the row with the
-    // voice field, which grows from the same basis — an even split.
+    // Export is gated on, so it gets the space. On a tall layout it shares
+    // the row with the voice field (an even split); on a wide one, with the
+    // too-long badge.
     className: "field-grow",
     value: s.starterTitle,
     disabled: Boolean(s.busy),
+  });
+
+  // Wide only: the title is a thumbnail there, and a title past the 120px
+  // floor's three lines would be cut from it. Surfaced, never blocking —
+  // toggled in place from oninput below, because the field writes quietly.
+  const titleWarn = el("span", {
+    className: "badge badge-warn",
+    textContent: "too long for a readable thumbnail — shorten to ~75 characters",
+    hidden: !wide || titleFits(s.starterTitle.trim(), layout.frame),
   });
 
   // What gets *said*, when that should differ from what is shown. Optional and
@@ -2263,7 +2321,8 @@ function renderFraming(): Node[] {
   // duration for a stitch), and the server re-validates the pair regardless.
   const exportable = (text: string) => keptLength(s) > 0 && text.trim() !== "" && !s.busy;
 
-  const long = keptLength(s) > SHORTS_MAX_S;
+  // Wide is not a Short, so YouTube's three-minute limit says nothing about it.
+  const long = !wide && keptLength(s) > SHORTS_MAX_S;
   const download = el("button", {
     className: "btn-solid",
     textContent: "Export",
@@ -2294,7 +2353,9 @@ function renderFraming(): Node[] {
   // outer lines from the thumbnail while the video keeps them.
   const thumb = el("button", {
     textContent: s.showThumb ? "↩ Live" : "🖼 Thumbnail",
-    title: "Show the starter screen and the 16:9 crop YouTube takes from it",
+    title: wide
+      ? "Show the thumbnail this export will get"
+      : "Show the starter screen and the 16:9 crop YouTube takes from it",
     ariaPressed: String(s.showThumb),
     disabled: Boolean(s.busy) || s.starterTitle.trim() === "",
   });
@@ -2309,6 +2370,7 @@ function renderFraming(): Node[] {
     // And again — the thumbnail paints this title, so a blank one has no
     // screen to show.
     thumb.disabled = title.value.trim() === "";
+    titleWarn.hidden = !wide || titleFits(title.value.trim(), layout.frame);
   };
   // On blur rather than per keystroke: the value is settled by then, and
   // save() notifies nothing, so the caret is safe either way. The thumbnail
@@ -2325,6 +2387,7 @@ function renderFraming(): Node[] {
     el(
       "div",
       { className: "bar-row" },
+      renderOrientation(s.layoutId, Boolean(s.busy)),
       renderLayoutPicker(s.layoutId, Boolean(s.busy)),
       addBox,
       el(
@@ -2371,9 +2434,8 @@ function renderFraming(): Node[] {
       "div",
       { className: "bar-row" },
       title,
-      voiceTitle,
-      renderVoicePicker(s),
-      tryVoice,
+      // Wide speaks nothing, so the voice controls have nothing to do.
+      ...(wide ? [titleWarn] : [voiceTitle, renderVoicePicker(s), tryVoice]),
       thumb,
       // Re-fetch first: it is the odd one out, a utility rather than a step,
       // so it sits furthest from the action that ends the phase.
@@ -4503,11 +4565,17 @@ function render(): void {
     outVideoEl.hidden = s.phase !== "preview";
     if (s.phase !== "preview") outVideoEl.pause();
   }
-  // Only in preview, and NOT `=== "long"`: every journey but the short one
-  // renders 16:9, and an enumeration here grows with each new journey. The
-  // framing canvas lives in this same slot on the short path and is always
-  // 1080x1920.
-  outSlot.classList.toggle("is-wide", s.phase === "preview" && s.mode !== "short");
+  // `mode !== "short"` rather than `=== "long"`: every journey but the short
+  // one renders 16:9, and an enumeration here grows with each new journey.
+  // Wide when the thing on the right is 16:9: a long-form or lofi render in
+  // preview, or a short-journey cut framed on a wide layout — in framing AND
+  // in its preview. The framing canvas is safe here only because
+  // `style.css` scopes `object-fit: contain` to `.out.is-wide > video`.
+  const wideCut = s.mode === "short" && isWide(resolveLayout(s.layoutId));
+  outSlot.classList.toggle(
+    "is-wide",
+    (s.phase === "preview" && (s.mode !== "short" || wideCut)) || (s.phase === "framing" && wideCut),
+  );
   // The crop-box overlay is positioned against videoEl and, like it, is
   // built once and never torn down on a phase change (see the comment by
   // its declaration) — only hidden, so "Back to trim" doesn't leave it

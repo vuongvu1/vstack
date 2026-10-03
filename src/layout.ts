@@ -1,18 +1,19 @@
-import { OUTPUT, clampToBounds, maxBox } from "./geometry.ts";
+import { TALL, WIDE, clampToBounds, maxBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
 
 /** One row of a layout: the full output width, `h` output px tall, split
  *  into `cols` equal cells.
  *
  *  Layouts are authored as rows and cells are *derived* (see `cellsOf`),
- *  never listed. Row heights sum to OUTPUT.h and OUTPUT.w is divisible by
- *  every `cols`, so an exact tiling of the frame is structural: a
- *  hand-written cell list can express a 4px seam or an overlap, a row list
- *  cannot. That matters because a seam is a silent defect — it survives
- *  preview and only shows up as a black line in an exported short. */
+ *  never listed. Row heights sum to the layout's frame height and the frame
+ *  width is divisible by every `cols`, so an exact tiling of the frame is
+ *  structural: a hand-written cell list can express a 4px seam or an
+ *  overlap, a row list cannot. That matters because a seam is a silent
+ *  defect — it survives preview and only shows up as a black line in an
+ *  exported short. */
 export type Row = { h: number; cols: number };
 
-export type Layout = { id: string; label: string; rows: Row[] };
+export type Layout = { id: string; label: string; frame: Size; rows: Row[] };
 
 /** Today's layout, and the regression fence for the layout feature: its two
  *  cells and their crop boxes must stay identical to what shipped before
@@ -25,6 +26,7 @@ export type Layout = { id: string; label: string; rows: Row[] };
 export const DEFAULT_LAYOUT: Layout = {
   id: "1-1",
   label: "1 top + 1 bottom",
+  frame: TALL,
   rows: [
     { h: 960, cols: 1 },
     { h: 960, cols: 1 },
@@ -32,6 +34,21 @@ export const DEFAULT_LAYOUT: Layout = {
 };
 
 export const DEFAULT_LAYOUT_ID = DEFAULT_LAYOUT.id;
+
+/** The wide frame's default, exported as a value for the same reason
+ *  `DEFAULT_LAYOUT` is: switching orientation lands here. */
+export const DEFAULT_WIDE_LAYOUT: Layout = {
+  id: "w-1",
+  label: "Full",
+  frame: WIDE,
+  rows: [{ h: 1080, cols: 1 }],
+};
+
+/** Orientation is the layout's frame, never a separate field — two fields
+ *  that had to agree would be a new illegal state to validate. */
+export function isWide(layout: Layout): boolean {
+  return layout.frame.w > layout.frame.h;
+}
 
 /** In an id, `v` means stacked (one above the other) and `h` means side by
  *  side. The plain word "vertical" is ambiguous for a split — it can name
@@ -42,6 +59,7 @@ export const LAYOUTS: readonly Layout[] = [
   {
     id: "2v-1",
     label: "2 top stacked + 1 bottom",
+    frame: TALL,
     rows: [
       { h: 480, cols: 1 },
       { h: 480, cols: 1 },
@@ -51,6 +69,7 @@ export const LAYOUTS: readonly Layout[] = [
   {
     id: "2h-1",
     label: "2 top side by side + 1 bottom",
+    frame: TALL,
     rows: [
       { h: 960, cols: 2 },
       { h: 960, cols: 1 },
@@ -59,6 +78,7 @@ export const LAYOUTS: readonly Layout[] = [
   {
     id: "1-2v",
     label: "1 top + 2 bottom stacked",
+    frame: TALL,
     rows: [
       { h: 960, cols: 1 },
       { h: 480, cols: 1 },
@@ -68,6 +88,7 @@ export const LAYOUTS: readonly Layout[] = [
   {
     id: "1-2h",
     label: "1 top + 2 bottom side by side",
+    frame: TALL,
     rows: [
       { h: 960, cols: 1 },
       { h: 960, cols: 2 },
@@ -76,6 +97,7 @@ export const LAYOUTS: readonly Layout[] = [
   {
     id: "2v-2v",
     label: "2 top + 2 bottom, all stacked",
+    frame: TALL,
     rows: [
       { h: 480, cols: 1 },
       { h: 480, cols: 1 },
@@ -86,6 +108,7 @@ export const LAYOUTS: readonly Layout[] = [
   {
     id: "2h-2h",
     label: "2 top + 2 bottom side by side",
+    frame: TALL,
     rows: [
       { h: 960, cols: 2 },
       { h: 960, cols: 2 },
@@ -94,6 +117,7 @@ export const LAYOUTS: readonly Layout[] = [
   {
     id: "2h-2v",
     label: "2 top side by side + 2 bottom stacked",
+    frame: TALL,
     rows: [
       { h: 960, cols: 2 },
       { h: 480, cols: 1 },
@@ -103,10 +127,27 @@ export const LAYOUTS: readonly Layout[] = [
   {
     id: "2v-2h",
     label: "2 top stacked + 2 bottom side by side",
+    frame: TALL,
     rows: [
       { h: 480, cols: 1 },
       { h: 480, cols: 1 },
       { h: 960, cols: 2 },
+    ],
+  },
+  DEFAULT_WIDE_LAYOUT,
+  {
+    id: "w-2h",
+    label: "2 side by side",
+    frame: WIDE,
+    rows: [{ h: 1080, cols: 2 }],
+  },
+  {
+    id: "w-2x2",
+    label: "2 × 2 grid",
+    frame: WIDE,
+    rows: [
+      { h: 540, cols: 2 },
+      { h: 540, cols: 2 },
     ],
   },
 ];
@@ -144,7 +185,7 @@ export function cellsOf(layout: Layout): Rect[] {
   const cells: Rect[] = [];
   let y = 0;
   for (const row of layout.rows) {
-    const w = OUTPUT.w / row.cols;
+    const w = layout.frame.w / row.cols;
     for (let c = 0; c < row.cols; c++) cells.push({ x: c * w, y, w, h: row.h });
     y += row.h;
   }
@@ -152,8 +193,9 @@ export function cellsOf(layout: Layout): Rect[] {
 }
 
 /** A cell's aspect ratio — exactly what its crop box's `w / h` must be.
- *  Only three values occur across all nine layouts: 1.125 (9:8, 1080x960),
- *  0.5625 (9:16, 540x960) and 2.25 (9:4, 1080x480). */
+ *  Five values occur across all layouts: 1.125 (9:8, 1080x960), 0.5625
+ *  (9:16, 540x960) and 2.25 (9:4, 1080x480) on tall layouts; 16/9 (1920x1080)
+ *  and 8/9 (960x1080) on wide ones. */
 export function ratioOf(cell: Rect): number {
   return cell.w / cell.h;
 }

@@ -38,7 +38,7 @@ export function mountEditor(opts: {
    *  Only its box and its `loadedmetadata` event are used. */
   media: HTMLElement;
   /** The coordinate space `boxes()` are expressed in, for the display
-   *  scale: source pixels for the crop overlay, OUTPUT for the output one. */
+   *  scale: source pixels for the crop overlay, the layout's frame for the output one. */
   bounds: () => Size;
   /** Node count, fixed for this mount — main.ts remounts when it changes,
    *  the same rule the cell list has always had. */

@@ -301,6 +301,30 @@ export async function checkLongform(): Promise<void> {
   }
 }
 
+/** The vertical-over-its-own-blur treatment, as filter steps from `input`
+ *  to `[lb<tag>]`: a cover-cropped background blurred at 480x270 and
+ *  stretched back up, with the source fitted inside it on both axes.
+ *  Shared by `stackWide`'s parts and `appendOutro`'s outro so the two
+ *  cannot drift into two different looks. */
+function letterboxLegs(input: string, tag: string): string[] {
+  return [
+    `[${input}]split=2[bg${tag}][fg${tag}]`,
+    `[bg${tag}]scale=${BG_W}:${BG_H}:force_original_aspect_ratio=increase,` +
+      `crop=${BG_W}:${BG_H},gblur=sigma=${BLUR_SIGMA},` +
+      `scale=${WIDE.w}:${WIDE.h},setsar=1[bgz${tag}]`,
+    `[fg${tag}]scale=${WIDE.w}:${WIDE.h}:force_original_aspect_ratio=decrease:` +
+      `force_divisible_by=2,setsar=1[fgz${tag}]`,
+    // `force_divisible_by=2` only guarantees the fitted size is even, not
+    // that `(W-w)/2` is: it lands odd whenever `w ≡ 2 (mod 4)` (e.g. a
+    // 1084x1920 upload fits to 610x1080, offset 655). An overlay at an odd
+    // offset in yuv420p sits on a half-chroma-sample boundary — the same
+    // invariant the custom-boxes feature states for its own overlay.
+    // floor(x/2)*2 forces both axes even; W/w are only known to ffmpeg, so
+    // this stays an expression rather than a TypeScript computation.
+    `[bgz${tag}][fgz${tag}]overlay=floor((W-w)/4)*2:floor((H-h)/4)*2[lb${tag}]`,
+  ];
+}
+
 /** Letterboxes each part onto a blurred copy of itself and concatenates the
  *  lot into one 1920x1080 file, in ONE encode.
  *
@@ -397,21 +421,8 @@ export async function stackWide(
       (i > 0 ? `afade=t=in:st=0:d=${d},` : "") +
       (i < paths.length - 1 ? `afade=t=out:st=${seconds - d}:d=${d},` : "");
     legs.push(
-      `[${i}:v]split=2[bg${i}][fg${i}]`,
-      `[bg${i}]scale=${BG_W}:${BG_H}:force_original_aspect_ratio=increase,` +
-        `crop=${BG_W}:${BG_H},gblur=sigma=${BLUR_SIGMA},` +
-        `scale=${WIDE.w}:${WIDE.h},setsar=1[bgz${i}]`,
-      `[fg${i}]scale=${WIDE.w}:${WIDE.h}:force_original_aspect_ratio=decrease:` +
-        `force_divisible_by=2,setsar=1[fgz${i}]`,
-      // `force_divisible_by=2` only guarantees the fitted size is even, not
-      // that `(W-w)/2` is: it lands odd whenever `w ≡ 2 (mod 4)` (e.g. a
-      // 1084x1920 upload fits to 610x1080, offset 655). An overlay at an odd
-      // offset in yuv420p sits on a half-chroma-sample boundary — the same
-      // invariant the custom-boxes feature states for its own overlay.
-      // floor(x/2)*2 forces both axes even; W/w are only known to ffmpeg, so
-      // this stays an expression rather than a TypeScript computation.
-      `[bgz${i}][fgz${i}]overlay=floor((W-w)/4)*2:floor((H-h)/4)*2,fps=${FPS},` +
-        `setpts=PTS-STARTPTS,${vFade}format=yuv420p[v${i}]`,
+      ...letterboxLegs(`${i}:v`, String(i)),
+      `[lb${i}]fps=${FPS},setpts=PTS-STARTPTS,${vFade}format=yuv420p[v${i}]`,
     );
     // A silent part's leg is cut out of the shared anullsrc instead, trimmed
     // to this part's own length so the two streams stay in step.
@@ -488,4 +499,55 @@ export async function stackWide(
     throw toolError("ffmpeg", err);
   }
   return out;
+}
+
+/** The wide export's second pass: the finished 1920x1080 body, then the
+ *  bundled outro — which is a 1080x1920 asset — letterboxed over its own
+ *  blurred copy, the treatment `stackWide` gives every vertical part.
+ *
+ *  A hard cut, no dip and no swell: the short's own outro is a hard cut too.
+ *  Both legs run at the BODY's frame rate (the asset is 34 fps), pinned to
+ *  square pixels and yuv420p, because `concat` refuses a mismatch rather than
+ *  picking a side. A silent body gets a stand-in trimmed to its own length,
+ *  appended LAST so it is the one conditional input index.
+ *
+ *  `outro` is the caller's — `END_PATH` lives in `starter.ts`, this module's
+ *  sibling — and must carry sound, as the bundled asset always does. */
+export async function appendOutro(opts: { main: string; outro: string; out: string }): Promise<string> {
+  const [main, outro] = await Promise.all([probeFile(opts.main), probeFile(opts.outro)]);
+  if (!outro.hasAudio) throw new Error(`appendOutro: ${opts.outro} has no audio stream.`);
+  const fmt = `aresample=${RATE},aformat=sample_fmts=fltp:channel_layouts=stereo`;
+  const inputs = ["-i", opts.main, "-i", opts.outro];
+  if (!main.hasAudio) inputs.push("-f", "lavfi", "-i", `anullsrc=r=${RATE}:cl=stereo`);
+  const graph = [
+    `[0:v]fps=${main.fps},setsar=1,format=yuv420p[v0]`,
+    ...letterboxLegs("1:v", "o"),
+    `[lbo]fps=${main.fps},setpts=PTS-STARTPTS,format=yuv420p[v1]`,
+    main.hasAudio
+      ? `[0:a]${fmt}[a0]`
+      : `[2:a]atrim=0:${main.seconds},asetpts=PTS-STARTPTS,${fmt}[a0]`,
+    `[1:a]${fmt}[a1]`,
+    "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]",
+  ].join(";");
+  try {
+    await run(
+      "ffmpeg",
+      [
+        "-v", "error",
+        ...inputs,
+        "-filter_complex", graph,
+        "-map", "[v]",
+        "-map", "[a]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", CRF,
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-y", opts.out,
+      ],
+      { maxBuffer: 16 << 20 },
+    );
+  } catch (err) {
+    throw toolError("ffmpeg", err);
+  }
+  return opts.out;
 }

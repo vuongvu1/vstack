@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TAGS_DEFAULT } from "../src/defaults.ts";
+import { TAGS_DEFAULT, WIDE_TAGS_DEFAULT } from "../src/defaults.ts";
 import { buildSnippet } from "./youtube.ts";
 
 const base = { title: "Ăn cơm chưa", description: "", tags: "" };
@@ -82,6 +82,12 @@ describe("buildSnippet with the shipped defaults", () => {
       "viral",
       "shorts",
     ]);
+  });
+
+  it("sends WIDE_TAGS_DEFAULT as tags with no shorts among them", () => {
+    const s = buildSnippet({ title: "t", description: "d", tags: WIDE_TAGS_DEFAULT, shorts: false });
+    expect(s.snippet.tags).not.toContain("shorts");
+    expect(s.snippet.tags).toContain("vtuber");
   });
 });
 

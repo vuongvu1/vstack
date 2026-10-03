@@ -162,7 +162,8 @@ export type SnippetInput = {
    *  and every request body written before this field existed behaves
    *  exactly as it did.
    *
-   *  It is false for exactly one thing: the long-form stack. `#shorts` is
+   *  It is false for every 16:9 output: the long-form stack, the lofi render
+   *  and a short-journey cut framed on a wide layout. `#shorts` is
    *  what tells YouTube to classify an upload as a Short, and a
    *  twenty-minute compilation carrying it is misfiled at the platform
    *  level — which is not a cosmetic difference, and not something the

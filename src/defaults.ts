@@ -40,6 +40,23 @@ export const DESCRIPTION_TEMPLATE = `${DESCRIPTION_TAGS}\n\n${DESCRIPTION_BODY}`
  *  characters and nothing downstream truncates, so keep additions short. */
 export const TAGS_DEFAULT = "vtuber, vtubervn, vtuber vietnam, viral, shorts";
 
+/** A horizontal export's tags: the short's, minus `shorts` — derived rather
+ *  than written out, so the two cannot drift. A normal video carrying the
+ *  tag is misfiled the way a compilation would be. */
+export const WIDE_TAGS_DEFAULT = TAGS_DEFAULT.split(", ")
+  .filter((t) => t !== "shorts")
+  .join(", ");
+
+/** The tags field's prefill for an export. Blank or the OTHER orientation's
+ *  untouched default becomes this one's default; anything the user typed is
+ *  theirs and is kept. Without the swap, a tall export followed by a wide
+ *  one would carry `shorts` into a normal video. */
+export function tagsFor(current: string, wide: boolean): string {
+  const own = wide ? WIDE_TAGS_DEFAULT : TAGS_DEFAULT;
+  const other = wide ? TAGS_DEFAULT : WIDE_TAGS_DEFAULT;
+  return current === "" || current === other ? own : current;
+}
+
 /** Pre-fills the description field on the LONG-FORM path.
  *
  *  The same channel links, with every shorts tag removed. Unlike its

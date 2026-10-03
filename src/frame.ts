@@ -1,5 +1,4 @@
-import { OUTPUT } from "./geometry.ts";
-import type { Rect } from "./geometry.ts";
+import type { Rect, Size } from "./geometry.ts";
 import { cellsOf } from "./layout.ts";
 import type { Layout } from "./layout.ts";
 
@@ -22,7 +21,7 @@ export const CORNER_RADIUS = 24;
  *  cells tile the frame exactly, two neighbours each give up half the seam,
  *  so every internal seam is `GUTTER` wide and so is every frame margin.
  *
- *  Windows are decoration, not geometry. `cellsOf` still tiles 1080x1920
+ *  Windows are decoration, not geometry. `cellsOf` still tiles the frame
  *  exactly and `ratioOf` still reports 1.125 / 0.5625 / 2.25, so every
  *  stored crop box stays valid. The gutter is painted *over* the finished
  *  composite, which trims a few px off each piece rather than squeezing it —
@@ -32,12 +31,12 @@ export const CORNER_RADIUS = 24;
  *  Per-cell rather than per-layout so the preview, which already holds
  *  `cells`, can map over them instead of accepting a second parallel array
  *  that could disagree with the one the mask was rendered from. */
-export function windowOf(cell: Rect): Rect {
+export function windowOf(cell: Rect, frame: Size): Rect {
   const half = GUTTER / 2;
   const left = cell.x === 0 ? GUTTER : half;
   const top = cell.y === 0 ? GUTTER : half;
-  const right = cell.x + cell.w === OUTPUT.w ? GUTTER : half;
-  const bottom = cell.y + cell.h === OUTPUT.h ? GUTTER : half;
+  const right = cell.x + cell.w === frame.w ? GUTTER : half;
+  const bottom = cell.y + cell.h === frame.h ? GUTTER : half;
   return {
     x: cell.x + left,
     y: cell.y + top,
@@ -50,7 +49,7 @@ export function windowOf(cell: Rect): Rect {
  *  boxes are stored in, the editor numbers, the canvas draws and `xstack`
  *  composes. */
 export function windowsOf(layout: Layout): Rect[] {
-  return cellsOf(layout).map(windowOf);
+  return cellsOf(layout).map((cell) => windowOf(cell, layout.frame));
 }
 
 /** Standard rounded-rect containment: clamp the point into the rect the four
@@ -127,7 +126,7 @@ function opaqueAt(windows: Rect[], customs: Rect[], rings: Rect[], px: number, p
   return true;
 }
 
-/** The frame overlay as a raw RGBA buffer, `OUTPUT.w * OUTPUT.h * 4` bytes:
+/** The frame overlay as a raw RGBA buffer, `frame.w * frame.h * 4` bytes:
  *  opaque white where the composite must be covered, transparent where it
  *  must show, antialiased on every arc by `SUB * SUB` coverage sampling.
  *
@@ -138,12 +137,12 @@ function opaqueAt(windows: Rect[], customs: Rect[], rings: Rect[], px: number, p
  *
  *  White in all three channels everywhere, including where alpha is 0, so a
  *  partially covered arc pixel can only ever blend towards white. */
-export function maskRgba(windows: Rect[], customs: Rect[] = []): Uint8Array {
-  const buf = new Uint8Array(OUTPUT.w * OUTPUT.h * 4);
+export function maskRgba(frame: Size, windows: Rect[], customs: Rect[] = []): Uint8Array {
+  const buf = new Uint8Array(frame.w * frame.h * 4);
   buf.fill(255);
   const rings = customs.map(ringOf);
-  for (let y = 0; y < OUTPUT.h; y++) {
-    for (let x = 0; x < OUTPUT.w; x++) {
+  for (let y = 0; y < frame.h; y++) {
+    for (let x = 0; x < frame.w; x++) {
       let opaque = 0;
       for (let sy = 0; sy < SUB; sy++) {
         for (let sx = 0; sx < SUB; sx++) {
@@ -154,7 +153,7 @@ export function maskRgba(windows: Rect[], customs: Rect[] = []): Uint8Array {
       }
       const transparent = SUB * SUB - opaque;
       if (transparent === 0) continue;
-      buf[(y * OUTPUT.w + x) * 4 + 3] = 255 - Math.round((transparent * 255) / (SUB * SUB));
+      buf[(y * frame.w + x) * 4 + 3] = 255 - Math.round((transparent * 255) / (SUB * SUB));
     }
   }
   return buf;

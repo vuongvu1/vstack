@@ -1,8 +1,7 @@
 import { CORNER_RADIUS, GUTTER, ringOf, windowOf } from "./frame.ts";
-import { OUTPUT } from "./geometry.ts";
 import { drawTitle } from "./starter.ts";
 import { THUMB } from "./thumb.ts";
-import type { Rect } from "./geometry.ts";
+import type { Rect, Size } from "./geometry.ts";
 import type { CustomBox } from "./custom.ts";
 
 /** The starter screen's look, mirrored from `server/starter.ts`'s
@@ -16,13 +15,17 @@ import type { CustomBox } from "./custom.ts";
  *  is exact: the title is the same PNG the export overlays, and the crop
  *  guide is arithmetic.
  *
- *  ponytail: four constants copied across the client/server line. They only
+ *  ponytail: five constants copied across the client/server line. They only
  *  move together when the screen is retuned. The exact fix is a `/api/still`
  *  route running the real pipeline; worth it the day the blur misleads
  *  someone about the screen rather than about the title. */
 const BLUR_SIGMA = 30;
 const SCRIM = 0.65;
 const BAND_H = 820;
+/** The band on a wide (1920x1080) frame, mirrored from `server/starter.ts`'s
+ *  WIDE_BAND_H — the same copy across the client/server line as the four
+ *  above, and it moves with them. */
+const WIDE_BAND_H = 860;
 const BAND_FEATHER = 60;
 
 /** How far past each edge the composite is stretched before it is blurred.
@@ -36,19 +39,12 @@ const BAND_FEATHER = 60;
  *  out of focus, the same trade `stackWide` makes by blurring at 480x270. */
 const EDGE = BLUR_SIGMA * 3;
 
-/** The 16:9 crop `firstFrame("wide")` takes, in output pixels. It scales to
- *  COVER 1280x720 and trims the overflow, so the full width survives and the
- *  height is whatever 16:9 makes of it, centred — which is why a title of
- *  four or more lines loses its outer lines from the thumbnail but never
- *  from the video. Showing that line is the whole point of the preview. */
-const CROP_H = Math.round((OUTPUT.w * THUMB.h) / THUMB.w);
-
 /** A full-frame scratch canvas. Two of these are ~16 MB of backing store, so
  *  they are built on the first thumbnail frame rather than with the loop. */
-function offscreen(): CanvasRenderingContext2D {
+function offscreen(frame: Size): CanvasRenderingContext2D {
   const canvas = document.createElement("canvas");
-  canvas.width = OUTPUT.w;
-  canvas.height = OUTPUT.h;
+  canvas.width = frame.w;
+  canvas.height = frame.h;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("2d context unavailable");
   return ctx;
@@ -58,9 +54,9 @@ function offscreen(): CanvasRenderingContext2D {
  *  window. `clip()` intersects, so applying this once per piece leaves the
  *  complement of the union of those pieces' windows — the canvas's answer to
  *  the containment tests `maskRgba` runs per sample. */
-function clipOutside(ctx: CanvasRenderingContext2D, out: Rect): void {
+function clipOutside(ctx: CanvasRenderingContext2D, out: Rect, frame: Size): void {
   ctx.beginPath();
-  ctx.rect(0, 0, OUTPUT.w, OUTPUT.h);
+  ctx.rect(0, 0, frame.w, frame.h);
   ctx.roundRect(out.x, out.y, out.w, out.h, CORNER_RADIUS);
   ctx.clip("evenodd");
 }
@@ -89,28 +85,31 @@ function clipOutside(ctx: CanvasRenderingContext2D, out: Rect): void {
 export function startPreview(
   canvas: HTMLCanvasElement,
   video: HTMLVideoElement,
+  frame: Size,
   cells: Rect[],
   boxes: () => Rect[],
   customs: () => CustomBox[],
   still: () => string | null,
 ): () => void {
-  canvas.width = OUTPUT.w;
-  canvas.height = OUTPUT.h;
+  canvas.width = frame.w;
+  canvas.height = frame.h;
   const ctx = canvas.getContext("2d", { alpha: false });
   if (!ctx) throw new Error("2d context unavailable");
 
   // Derived from the cells rather than passed in, so these are necessarily
   // the same windows the export's mask was rendered from.
-  const windows = cells.map(windowOf);
+  const windows = cells.map((cell) => windowOf(cell, frame));
 
   // Built on the first thumbnail frame, then kept. A session that never opens
   // the thumbnail allocates neither.
   let soft: CanvasRenderingContext2D | null = null;
   let band: CanvasRenderingContext2D | null = null;
   let mask: CanvasGradient | null = null;
+  const wide = frame.w > frame.h;
+  const bandH = wide ? WIDE_BAND_H : BAND_H;
 
   let raf = 0;
-  const frame = () => {
+  const tick = () => {
     if (video.readyState >= 2) {
       const bs = boxes();
       cells.forEach((cell, i) => {
@@ -139,14 +138,14 @@ export function startPreview(
       // per piece is the complement of the UNION of the pieces. A single
       // even-odd path would instead test parity, and two overlapping pieces
       // would cancel each other back to unprotected.
-      for (const c of cs) clipOutside(ctx, c.out);
+      for (const c of cs) clipOutside(ctx, c.out, frame);
       // The gutters and rounded corners, painted over the finished composite
       // exactly as ffmpeg overlays its mask: full-frame white with the
       // windows punched out of it by the even-odd rule. Drawing it every
       // frame costs one fill and needs no invalidation when the layout
       // changes, because `windows` is rebuilt with the preview.
       ctx.beginPath();
-      ctx.rect(0, 0, OUTPUT.w, OUTPUT.h);
+      ctx.rect(0, 0, frame.w, frame.h);
       for (const w of windows) ctx.roundRect(w.x, w.y, w.w, w.h, CORNER_RADIUS);
       ctx.fill("evenodd");
       ctx.restore();
@@ -160,7 +159,7 @@ export function startPreview(
         ctx.save();
         for (let k = j; k < cs.length; k++) {
           const above = cs[k];
-          if (above) clipOutside(ctx, above.out);
+          if (above) clipOutside(ctx, above.out, frame);
         }
         const r = ringOf(c.out);
         ctx.beginPath();
@@ -177,8 +176,8 @@ export function startPreview(
       const art = still();
       if (art) {
         if (!soft || !band || !mask) {
-          soft = offscreen();
-          band = offscreen();
+          soft = offscreen(frame);
+          band = offscreen(frame);
           // Each draw replaces what is under it: the blur leaves
           // semi-transparent pixels and a plain source-over blit would
           // composite this frame on top of the last one.
@@ -189,44 +188,52 @@ export function startPreview(
           // BAND_FEATHER, 0, 1)` — ramping 0 to 1 across BAND_FEATHER pixels
           // at each edge of a band centred on the frame, which is where
           // `renderTitleArt` centres the title block.
-          const top = (OUTPUT.h - BAND_H) / 2;
-          mask = band.createLinearGradient(0, top, 0, top + BAND_H);
-          const ramp = BAND_FEATHER / BAND_H;
+          const top = (frame.h - bandH) / 2;
+          mask = band.createLinearGradient(0, top, 0, top + bandH);
+          const ramp = BAND_FEATHER / bandH;
           mask.addColorStop(0, "rgba(0,0,0,0)");
           mask.addColorStop(ramp, "rgba(0,0,0,1)");
           mask.addColorStop(1 - ramp, "rgba(0,0,0,1)");
           mask.addColorStop(1, "rgba(0,0,0,0)");
         }
-        soft.drawImage(canvas, -EDGE, -EDGE, OUTPUT.w + 2 * EDGE, OUTPUT.h + 2 * EDGE);
+        soft.drawImage(canvas, -EDGE, -EDGE, frame.w + 2 * EDGE, frame.h + 2 * EDGE);
         band.globalCompositeOperation = "copy";
         band.drawImage(soft.canvas, 0, 0);
         band.globalCompositeOperation = "destination-in";
         band.fillStyle = mask;
-        band.fillRect(0, 0, OUTPUT.w, OUTPUT.h);
+        band.fillRect(0, 0, frame.w, frame.h);
 
         ctx.drawImage(band.canvas, 0, 0);
         // The same function `renderTitleArt` encodes for the export, drawn
         // straight onto the composite — so a keystroke in the title field
         // reaches this frame with nothing to re-encode or re-decode.
-        drawTitle(ctx, art);
+        drawTitle(ctx, art, frame);
 
-        // What `thumbnails.set` actually gets. Two strokes because this line
-        // has to read over both a bright title and dark video: black under,
-        // white dashed over.
-        const y = (OUTPUT.h - CROP_H) / 2;
-        ctx.save();
-        ctx.lineWidth = 10;
-        ctx.strokeStyle = "rgba(0,0,0,0.7)";
-        ctx.strokeRect(0, y, OUTPUT.w, CROP_H);
-        ctx.lineWidth = 6;
-        ctx.strokeStyle = "#fff";
-        ctx.setLineDash([36, 28]);
-        ctx.strokeRect(0, y, OUTPUT.w, CROP_H);
-        ctx.restore();
+        // What `thumbnails.set` actually gets: the 16:9 crop
+        // `firstFrame("wide")` takes, which scales to COVER 1280x720 and
+        // trims the overflow — full width, height centred — so a title of
+        // four or more lines loses its outer lines from the thumbnail but
+        // never from the video. Wide has no guide: the whole frame IS the
+        // thumbnail, scaled to 1280x720 with nothing cropped.
+        if (!wide) {
+          const cropH = Math.round((frame.w * THUMB.h) / THUMB.w);
+          // Two strokes because this line has to read over both a bright
+          // title and dark video: black under, white dashed over.
+          const y = (frame.h - cropH) / 2;
+          ctx.save();
+          ctx.lineWidth = 10;
+          ctx.strokeStyle = "rgba(0,0,0,0.7)";
+          ctx.strokeRect(0, y, frame.w, cropH);
+          ctx.lineWidth = 6;
+          ctx.strokeStyle = "#fff";
+          ctx.setLineDash([36, 28]);
+          ctx.strokeRect(0, y, frame.w, cropH);
+          ctx.restore();
+        }
       }
     }
-    raf = requestAnimationFrame(frame);
+    raf = requestAnimationFrame(tick);
   };
-  raf = requestAnimationFrame(frame);
+  raf = requestAnimationFrame(tick);
   return () => cancelAnimationFrame(raf);
 }

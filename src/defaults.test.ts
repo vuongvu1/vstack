@@ -5,6 +5,8 @@ import {
   LONG_DESCRIPTION_TEMPLATE,
   LONG_TAGS_DEFAULT,
   TAGS_DEFAULT,
+  WIDE_TAGS_DEFAULT,
+  tagsFor,
   YT_TITLE_MAX,
   defaultTitle,
 } from "./defaults.ts";
@@ -107,6 +109,29 @@ describe("the long-form defaults", () => {
     expect(LONG_TAGS_DEFAULT.length).toBeLessThan(400);
   });
 
+});
+
+describe("WIDE_TAGS_DEFAULT / tagsFor", () => {
+  it("is the short's tags with shorts removed, nothing else changed", () => {
+    expect(WIDE_TAGS_DEFAULT).toBe("vtuber, vtubervn, vtuber vietnam, viral");
+    expect(WIDE_TAGS_DEFAULT.split(", ")).toEqual(TAGS_DEFAULT.split(", ").filter((t) => t !== "shorts"));
+  });
+
+  it("fills a blank field with the orientation's own default", () => {
+    expect(tagsFor("", false)).toBe(TAGS_DEFAULT);
+    expect(tagsFor("", true)).toBe(WIDE_TAGS_DEFAULT);
+  });
+
+  it("swaps an untouched default for the other orientation's", () => {
+    // The carried-over case: exported tall, flipped to Long, re-exported.
+    expect(tagsFor(TAGS_DEFAULT, true)).toBe(WIDE_TAGS_DEFAULT);
+    expect(tagsFor(WIDE_TAGS_DEFAULT, false)).toBe(TAGS_DEFAULT);
+  });
+
+  it("keeps tags the user typed, in either orientation", () => {
+    expect(tagsFor("habine, shorts", true)).toBe("habine, shorts");
+    expect(tagsFor("habine", false)).toBe("habine");
+  });
 });
 
 describe("defaultDescription", () => {

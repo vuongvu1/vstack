@@ -4,7 +4,6 @@ import { existsSync } from "node:fs";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { OUTPUT } from "../src/geometry.ts";
 import type { Rect } from "../src/geometry.ts";
 import { CORNER_RADIUS, GUTTER, maskRgba, windowsOf } from "../src/frame.ts";
 import type { Layout } from "../src/layout.ts";
@@ -64,12 +63,12 @@ export async function ensureMask(
   const raw = join(dir, `${id}.rgba`);
   const partial = join(dir, `${id}.part.png`);
   try {
-    await writeFile(raw, maskRgba(windowsOf(layout), customs));
+    await writeFile(raw, maskRgba(layout.frame, windowsOf(layout), customs));
     await run("ffmpeg", [
       "-v", "error",
       "-f", "rawvideo",
       "-pixel_format", "rgba",
-      "-video_size", `${OUTPUT.w}x${OUTPUT.h}`,
+      "-video_size", `${layout.frame.w}x${layout.frame.h}`,
       "-i", raw,
       "-frames:v", "1",
       "-y", partial,

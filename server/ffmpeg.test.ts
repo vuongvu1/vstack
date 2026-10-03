@@ -5,11 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { boxFromHeight } from "../src/geometry.ts";
+import { TALL, WIDE, boxFromHeight } from "../src/geometry.ts";
 import type { Rect, Size } from "../src/geometry.ts";
 import { CORNER_RADIUS, GUTTER, windowsOf } from "../src/frame.ts";
 import { DEFAULT_LAYOUT, cellsOf, layoutById } from "../src/layout.ts";
 import type { Layout } from "../src/layout.ts";
+import { defaultCustom } from "../src/custom.ts";
 import type { CustomBox } from "../src/custom.ts";
 import {
   assertBoxes,
@@ -24,6 +25,7 @@ import {
   isOutName,
   isUploadId,
   outName,
+  pngSize,
   probeAudio,
   probeFile,
   removeExport,
@@ -382,6 +384,15 @@ describe("removeExport", () => {
 });
 
 describe("buildFilter", () => {
+  it("keeps xstack for a two-cell layout", () => {
+    const half = boxFromHeight(960, SOURCE, 8 / 9);
+    const f = buildFilter(byId("w-2h"), [
+      { x: 0, y: 60, ...half },
+      { x: 1020, y: 60, ...half },
+    ]);
+    expect(f).toContain("xstack=inputs=2");
+  });
+
   it("crops each box and composes them, every leg scaled to its cell", () => {
     const f = buildFilter(DEFAULT_LAYOUT, [TOP, BOTTOM]);
     expect(f).toContain("split=2");
@@ -487,37 +498,113 @@ describe("assertCustoms", () => {
   };
 
   it("accepts a legal box", () => {
-    expect(() => assertCustoms([custom], SOURCE)).not.toThrow();
-    expect(() => assertCustoms([], SOURCE)).not.toThrow();
+    expect(() => assertCustoms([custom], SOURCE, TALL)).not.toThrow();
+    expect(() => assertCustoms([], SOURCE, TALL)).not.toThrow();
   });
 
   it("rejects an odd output rect, which would misalign chroma on overlay", () => {
-    expect(() => assertCustoms([{ ...custom, out: { ...custom.out, x: 301 } }], SOURCE)).toThrow();
+    expect(() => assertCustoms([{ ...custom, out: { ...custom.out, x: 301 } }], SOURCE, TALL)).toThrow();
   });
 
   it("rejects an output rect hanging off the frame", () => {
-    expect(() => assertCustoms([{ ...custom, out: { ...custom.out, x: 800 } }], SOURCE)).toThrow();
+    expect(() => assertCustoms([{ ...custom, out: { ...custom.out, x: 800 } }], SOURCE, TALL)).toThrow();
   });
 
   it("rejects a crop off its own box's ratio", () => {
     // `out` stays legal on purpose: otherwise isValidCustom short-circuits
     // on the out-rect check and never reaches the ratio comparison.
     expect(() =>
-      assertCustoms([{ ...custom, crop: { ...custom.crop, w: custom.crop.w + 2 } }], SOURCE),
+      assertCustoms([{ ...custom, crop: { ...custom.crop, w: custom.crop.w + 2 } }], SOURCE, TALL),
     ).toThrow();
   });
 
+  it("bounds pieces by the frame it is given", () => {
+    const piece = { out: { x: 300, y: 1500, w: 300, h: 300 }, crop: { x: 0, y: 100, w: 300, h: 300 } };
+    expect(() => assertCustoms([piece], SOURCE, TALL)).not.toThrow();
+    expect(() => assertCustoms([piece], SOURCE, WIDE)).toThrow(/inside 1920x1080/);
+  });
+
   it("rejects more than MAX_CUSTOM", () => {
-    expect(() => assertCustoms([custom, custom, custom], SOURCE)).toThrow();
+    expect(() => assertCustoms([custom, custom, custom], SOURCE, TALL)).toThrow();
   });
 
   it("rejects a non-array and a non-object entry instead of throwing a TypeError", () => {
-    expect(() => assertCustoms(null as unknown as CustomBox[], SOURCE)).toThrow(/array/);
-    expect(() => assertCustoms([null as unknown as CustomBox], SOURCE)).toThrow(/Invalid custom/);
+    expect(() => assertCustoms(null as unknown as CustomBox[], SOURCE, TALL)).toThrow(/array/);
+    expect(() => assertCustoms([null as unknown as CustomBox], SOURCE, TALL)).toThrow(/Invalid custom/);
   });
 });
 
 describe("exportClip", () => {
+  it("writes a 1920x1080 w-1 file: one cell, so no xstack", async () => {
+    const one = byId("w-1");
+    const out = join(dir, "out-w1.mp4");
+    await exportClip({
+      input: src,
+      start: 0.5,
+      duration: 1,
+      layout: one,
+      boxes: [{ x: 0, y: 0, w: 1920, h: 1080 }],
+      source: SOURCE,
+      mask: await ensureMask(one, [], dir),
+      out,
+    });
+    expect(await probeFile(out)).toMatchObject({ width: 1920, height: 1080 });
+    const left = await pixelAt(out, 0.4, 480, 540, 1920);
+    expect(left.r).toBeGreaterThan(150);
+    expect(left.b).toBeLessThan(80);
+    const right = await pixelAt(out, 0.4, 1440, 540, 1920);
+    expect(right.b).toBeGreaterThan(150);
+    expect(right.r).toBeLessThan(80);
+  });
+
+  it("writes a w-1 file with a floating piece (split of 2)", async () => {
+    const one = byId("w-1");
+    const custom = defaultCustom(SOURCE, 0, WIDE);
+    const out = join(dir, "out-w1-custom.mp4");
+    await exportClip({
+      input: src,
+      start: 0.5,
+      duration: 1,
+      layout: one,
+      boxes: [{ x: 0, y: 0, w: 1920, h: 1080 }],
+      customs: [custom],
+      source: SOURCE,
+      mask: await ensureMask(one, [custom.out], dir),
+      out,
+    });
+    expect(await probeFile(out)).toMatchObject({ width: 1920, height: 1080 });
+  });
+
+  it("writes a 1920x1080 w-2h file whose halves match their boxes, seam white", async () => {
+    const twoUp = byId("w-2h");
+    const wideMask = await ensureMask(twoUp, [], dir);
+    // 8:9 boxes, 960 tall: x 0..852 is all red, x 1020..1872 all blue.
+    const half = boxFromHeight(960, SOURCE, 8 / 9);
+    const out = join(dir, "out-wide.mp4");
+    await exportClip({
+      input: src,
+      start: 0.5,
+      duration: 1,
+      layout: twoUp,
+      boxes: [
+        { x: 0, y: 60, ...half },
+        { x: 1020, y: 60, ...half },
+      ],
+      source: SOURCE,
+      mask: wideMask,
+      out,
+    });
+    expect(await probeFile(out)).toMatchObject({ width: 1920, height: 1080 });
+    const left = await pixelAt(out, 0.4, 480, 540, 1920);
+    expect(left.r).toBeGreaterThan(150);
+    expect(left.b).toBeLessThan(80);
+    const right = await pixelAt(out, 0.4, 1440, 540, 1920);
+    expect(right.b).toBeGreaterThan(150);
+    expect(right.r).toBeLessThan(80);
+    const seam = await pixelAt(out, 0.4, 960, 540, 1920);
+    expect(Math.min(seam.r, seam.g, seam.b)).toBeGreaterThan(200);
+  });
+
   it("writes a 1080x1920 file whose halves match the boxes' colours", async () => {
     const out = join(dir, "out.mp4");
     await exportClip({
@@ -1043,5 +1130,35 @@ describe("probeAudio", () => {
       "-y", silent,
     ]);
     await expect(probeAudio(silent)).rejects.toThrow(/no audio stream/);
+  });
+});
+
+describe("pngSize", () => {
+  /** The 8-byte signature, then an IHDR chunk header: length 13, "IHDR",
+   *  width and height as big-endian uint32. */
+  function header(w: number, h: number): Buffer {
+    const b = Buffer.alloc(24);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+    b.writeUInt32BE(13, 8);
+    b.write("IHDR", 12, "ascii");
+    b.writeUInt32BE(w, 16);
+    b.writeUInt32BE(h, 20);
+    return b;
+  }
+
+  it("reads width and height out of the IHDR chunk", () => {
+    expect(pngSize(header(1920, 1080))).toEqual({ w: 1920, h: 1080 });
+    expect(pngSize(header(1080, 1920))).toEqual({ w: 1080, h: 1920 });
+  });
+
+  it("reads a real PNG ensureMask wrote", async () => {
+    expect(pngSize(await readFile(mask))).toEqual({ w: 1080, h: 1920 });
+  });
+
+  it("answers 0x0 for a truncated buffer or a first chunk that is not IHDR", () => {
+    expect(pngSize(Buffer.alloc(10))).toEqual({ w: 0, h: 0 });
+    const notIhdr = header(1920, 1080);
+    notIhdr.write("tEXt", 12, "ascii");
+    expect(pngSize(notIhdr)).toEqual({ w: 0, h: 0 });
   });
 });

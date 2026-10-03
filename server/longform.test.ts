@@ -11,6 +11,7 @@ import {
   MIN_KEPT,
   TRANSITION_PATH,
   TRANSITION_PEAK,
+  appendOutro,
   checkLongform,
   detectTrim,
   keptRange,
@@ -32,6 +33,10 @@ let headless = "";
 /** Neither: a raw upload that never went through this app. */
 let raw = "";
 let outroSeconds = 0;
+/** A finished WIDE body, as `exportClip` writes one for a w-1 layout: green,
+ *  2s, with sound — and the same without. */
+let wideBody = "";
+let wideMute = "";
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "vstack-long-"));
@@ -134,6 +139,22 @@ beforeAll(async () => {
   await join3(raw, [noisy, body]);
 
   outroSeconds = (await probeFile(END_PATH)).seconds;
+
+  wideBody = join(dir, "wide-body.mp4");
+  await run("ffmpeg", [
+    "-v", "error",
+    "-f", "lavfi", "-i", "color=c=green:s=1920x1080:d=2:r=30",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+    "-y", wideBody,
+  ]);
+  wideMute = join(dir, "wide-mute.mp4");
+  await run("ffmpeg", [
+    "-v", "error",
+    "-f", "lavfi", "-i", "color=c=green:s=1920x1080:d=2:r=30",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    "-y", wideMute,
+  ]);
   // Explicit timeout: these fixtures are seven real encodes, two of them
   // concatenating the bundled outro, and vitest's default hook timeout is
   // 10s. It passes in isolation and times out in the full suite, where the
@@ -609,5 +630,45 @@ describe("stackWide", () => {
 
   it("refuses an empty part list", async () => {
     await expect(stackWide([], join(dir, "never.mp4"))).rejects.toThrow(/at least one/);
+  });
+});
+
+describe("appendOutro", () => {
+  it("is the body, then the outro letterboxed over its own blurred copy", async () => {
+    const out = join(dir, "append.mp4");
+    await appendOutro({ main: wideBody, outro: red, out });
+    const p = await probeFile(out);
+    expect(p).toMatchObject({ width: 1920, height: 1080, hasAudio: true });
+    expect(p.seconds).toBeCloseTo(4, 1);
+
+    // The body first — MUTATION TEST: reverse the legs and this reads red.
+    const body = await pixelAt(out, 1, 960, 540);
+    expect(body.g).toBeGreaterThan(100);
+    expect(body.r).toBeLessThan(80);
+
+    // The outro's own picture in the middle…
+    const centre = await pixelAt(out, 3, 960, 540);
+    expect(centre.r).toBeGreaterThan(150);
+    // …and its blurred copy at the edge, NOT black. MUTATION TEST: drop the
+    // background leg and this pillarboxes to black.
+    const edge = await pixelAt(out, 3, 20, 540);
+    expect(edge.r).toBeGreaterThan(60);
+  });
+
+  it("renders a silent body through a stand-in, keeping the outro's sound", async () => {
+    const out = join(dir, "append-mute.mp4");
+    await appendOutro({ main: wideMute, outro: red, out });
+    const p = await probeFile(out);
+    expect(p.hasAudio).toBe(true);
+    expect(p.seconds).toBeCloseTo(4, 1);
+    // Silence under the body, the outro's 440 Hz after the cut.
+    expect((await loudness(out, 0.5, 1)).max).toBeLessThan(-60);
+    expect((await loudness(out, 2.5, 1)).max).toBeGreaterThan(-30);
+  });
+
+  it("accepts the real bundled outro", async () => {
+    const out = join(dir, "append-real.mp4");
+    await appendOutro({ main: wideBody, outro: END_PATH, out });
+    expect((await probeFile(out)).seconds).toBeCloseTo(2 + outroSeconds, 1);
   });
 });

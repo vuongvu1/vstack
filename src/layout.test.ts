@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { OUTPUT, isValidBox, maxBox } from "./geometry.ts";
+import { TALL, WIDE, isValidBox, maxBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
 import {
   DEFAULT_LAYOUT,
   DEFAULT_LAYOUT_ID,
+  DEFAULT_WIDE_LAYOUT,
   LAYOUTS,
   cellsOf,
   defaultBoxes,
+  isWide,
   layoutById,
   ratioOf,
 } from "./layout.ts";
@@ -27,9 +29,17 @@ function overlapArea(a: Rect, b: Rect): number {
 }
 
 describe("LAYOUTS", () => {
-  it("has nine presets with unique ids", () => {
-    expect(LAYOUTS).toHaveLength(9);
-    expect(new Set(LAYOUTS.map((l) => l.id)).size).toBe(9);
+  it("has nine tall and three wide presets, all with unique ids", () => {
+    expect(LAYOUTS).toHaveLength(12);
+    expect(new Set(LAYOUTS.map((l) => l.id)).size).toBe(12);
+    expect(LAYOUTS.filter((l) => !isWide(l))).toHaveLength(9);
+    expect(LAYOUTS.filter(isWide).map((l) => l.id)).toEqual(["w-1", "w-2h", "w-2x2"]);
+  });
+
+  it("gives every tall preset the TALL frame and every wide one WIDE", () => {
+    for (const l of LAYOUTS) expect(l.frame).toEqual(isWide(l) ? WIDE : TALL);
+    expect(DEFAULT_LAYOUT.frame).toEqual(TALL);
+    expect(DEFAULT_WIDE_LAYOUT).toBe(byId("w-1"));
   });
 
   it("exposes the default as a real value and as a resolvable id", () => {
@@ -48,13 +58,13 @@ describe("LAYOUTS", () => {
     }
   });
 
-  it("has rows that fill the output height at full width", () => {
+  it("has rows that fill their own frame's height at full width", () => {
     for (const l of LAYOUTS) {
-      expect(l.rows.reduce((n, r) => n + r.h, 0)).toBe(OUTPUT.h);
+      expect(l.rows.reduce((n, r) => n + r.h, 0)).toBe(l.frame.h);
       for (const r of l.rows) {
         expect(Number.isInteger(r.h)).toBe(true);
         expect(r.cols).toBeGreaterThanOrEqual(1);
-        expect(OUTPUT.w % r.cols).toBe(0);
+        expect(l.frame.w % r.cols).toBe(0);
       }
     }
   });
@@ -69,7 +79,7 @@ describe("cellsOf", () => {
   it("tiles the output frame exactly for every preset", () => {
     for (const l of LAYOUTS) {
       const cells = cellsOf(l);
-      expect(cells.length).toBeGreaterThanOrEqual(2);
+      expect(cells.length).toBeGreaterThanOrEqual(1);
       expect(cells.length).toBeLessThanOrEqual(4);
 
       let area = 0;
@@ -79,13 +89,13 @@ describe("cellsOf", () => {
         }
         expect(c.x).toBeGreaterThanOrEqual(0);
         expect(c.y).toBeGreaterThanOrEqual(0);
-        expect(c.x + c.w).toBeLessThanOrEqual(OUTPUT.w);
-        expect(c.y + c.h).toBeLessThanOrEqual(OUTPUT.h);
+        expect(c.x + c.w).toBeLessThanOrEqual(l.frame.w);
+        expect(c.y + c.h).toBeLessThanOrEqual(l.frame.h);
         area += c.w * c.h;
       }
       // Area sum + zero pairwise overlap + in-bounds together mean an exact
       // tiling: no seam, no double-covered pixel.
-      expect(area).toBe(OUTPUT.w * OUTPUT.h);
+      expect(area).toBe(l.frame.w * l.frame.h);
       for (let i = 0; i < cells.length; i++) {
         for (let j = i + 1; j < cells.length; j++) {
           const a = cells[i];
@@ -123,9 +133,30 @@ describe("cellsOf", () => {
     ]);
   });
 
-  it("only ever produces the three documented cell shapes", () => {
-    const shapes = new Set(LAYOUTS.flatMap((l) => cellsOf(l)).map((c) => `${c.w}x${c.h}`));
-    expect([...shapes].sort()).toEqual(["1080x480", "1080x960", "540x960"]);
+  it("only ever produces the documented cell shapes, per frame", () => {
+    const shapes = (wide: boolean) =>
+      [...new Set(LAYOUTS.filter((l) => isWide(l) === wide).flatMap(cellsOf).map((c) => `${c.w}x${c.h}`))].sort();
+    expect(shapes(false)).toEqual(["1080x480", "1080x960", "540x960"]);
+    expect(shapes(true)).toEqual(["1920x1080", "960x1080", "960x540"]);
+  });
+
+  it("lays out the wide presets row-major", () => {
+    expect(cellsOf(byId("w-1"))).toEqual([{ x: 0, y: 0, w: 1920, h: 1080 }]);
+    expect(cellsOf(byId("w-2h"))).toEqual([
+      { x: 0, y: 0, w: 960, h: 1080 },
+      { x: 960, y: 0, w: 960, h: 1080 },
+    ]);
+    expect(cellsOf(byId("w-2x2"))).toEqual([
+      { x: 0, y: 0, w: 960, h: 540 },
+      { x: 960, y: 0, w: 960, h: 540 },
+      { x: 0, y: 540, w: 960, h: 540 },
+      { x: 960, y: 540, w: 960, h: 540 },
+    ]);
+  });
+
+  it("reports the two wide ratios exactly", () => {
+    expect(ratioOf(cellsOf(byId("w-1"))[0] ?? { x: 0, y: 0, w: 1, h: 1 })).toBeCloseTo(16 / 9, 10);
+    expect(ratioOf(cellsOf(byId("w-2h"))[0] ?? { x: 0, y: 0, w: 1, h: 1 })).toBeCloseTo(8 / 9, 10);
   });
 
   it("produces only even cell dimensions, so yuv420p is satisfiable", () => {

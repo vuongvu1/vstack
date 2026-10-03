@@ -4,3 +4,4 @@ media/
 .DS_Store
 
 .superpowers/
+.playwright-mcp/

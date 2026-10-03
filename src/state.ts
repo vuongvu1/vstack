@@ -556,11 +556,12 @@ export function restore(videoId: string, source: Size | null): Partial<AppState>
   // otherwise restore into a session that mounts three nodes, previews them,
   // and then 400s at export against `assertCustoms` — which is where this
   // limit is actually enforced.
+  const frame = (layout ?? resolveLayout(s.layoutId)).frame;
   const usableCustoms =
     source !== null &&
     sameSource &&
     s.customs.length <= MAX_CUSTOM &&
-    s.customs.every((c) => isValidCustom(c, source));
+    s.customs.every((c) => isValidCustom(c, source, frame));
   return {
     // The same validator the server runs on the wire. The count is bounded
     // as well as each element's shape, the way the boxes above are bounded
