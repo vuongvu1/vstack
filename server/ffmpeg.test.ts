@@ -32,11 +32,13 @@ import {
   scriptName,
   isScriptName,
   segmentDigest,
+  speedFilter,
   stillPath,
   thumbPath,
   UPLOADS_DIR,
   uploadPath,
 } from "./ffmpeg.ts";
+import { BADGE, BADGE_INSET } from "../src/defaults.ts";
 import { ensureMask } from "./mask.ts";
 
 const run = promisify(execFile);
@@ -116,6 +118,19 @@ async function pixelAt(path: string, t: number, x: number, y: number, width = 10
   const buf = stdout as unknown as Buffer;
   const i = (y * width + x) * 3;
   return { r: buf[i] ?? 0, g: buf[i + 1] ?? 0, b: buf[i + 2] ?? 0 };
+}
+
+/** Mean and peak dB of the audio in `[t, t + dur)`. -91 is ffmpeg's floor
+ *  for digital silence — what volumedetect reports when nothing matched. */
+async function loudness(path: string, t: number, dur: number) {
+  const { stderr } = await run(
+    "ffmpeg",
+    ["-hide_banner", "-ss", String(t), "-t", String(dur), "-i", path,
+     "-map", "0:a", "-af", "volumedetect", "-f", "null", "-"],
+  );
+  const mean = /mean_volume: (-?[0-9.]+) dB/.exec(stderr);
+  const max = /max_volume: (-?[0-9.]+) dB/.exec(stderr);
+  return { mean: mean ? Number(mean[1]) : -91, max: max ? Number(max[1]) : -91 };
 }
 
 /** `layoutById` returns `Layout | null` by design. Tests know their ids
@@ -1095,6 +1110,85 @@ describe("concatClips", () => {
     );
     expect((await probeFile(out)).seconds).toBeGreaterThan(1.5);
   });
+
+  it("plays a sped part at its speed and silences it", async () => {
+    // Same banded source as the ordering test: 0-3 red, 3-6 green, 6-9 blue,
+    // 9-12 white, with a tone throughout. [0,2] at x1 then [6,8] at x4 is
+    // 2 + 0.5 = 2.5 seconds, the sped half blue and silent.
+    const banded = join(dir, "banded-speed.mp4");
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i",
+      "color=c=red:s=320x240:d=3:r=30[a];" +
+        "color=c=green:s=320x240:d=3:r=30[b];" +
+        "color=c=blue:s=320x240:d=3:r=30[c];" +
+        "color=c=white:s=320x240:d=3:r=30[d];" +
+        "[a][b][c][d]concat=n=4:v=1:a=0",
+      "-f", "lavfi", "-i", "sine=frequency=440:duration=12",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+      "-y", banded,
+    ]);
+    const out = join(dir, "stitch-speed.mp4");
+    await concatClips(
+      [
+        { path: banded, start: 0, end: 2 },
+        { path: banded, start: 6, end: 8, speed: 4 },
+      ],
+      out,
+    );
+
+    const probed = await probeFile(out);
+    expect(probed.seconds).toBeGreaterThan(2.3);
+    expect(probed.seconds).toBeLessThan(2.7);
+
+    const sped = await pixelAt(out, 2.25, 160, 120, 320);
+    expect(sped.b).toBeGreaterThan(150);
+    expect(sped.r).toBeLessThan(80);
+
+    expect((await loudness(out, 0.5, 1)).mean).toBeGreaterThan(-40);
+    expect((await loudness(out, 2.05, 0.4)).max).toBeLessThan(-80);
+  });
+
+  it("blurs a sped part's motion by averaging the frames it skips", async () => {
+    // Black and white on alternate frames: a speed-up that merely drops
+    // frames keeps every survivor the same parity, so the sped half would
+    // read pure black or pure white. Averaging the skipped frames (tmix)
+    // lands it mid-grey. The x1 half must stay unblurred.
+    const flicker = join(dir, "flicker.mp4");
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i", "color=c=black:s=320x240:d=4:r=30",
+      "-f", "lavfi", "-i", "color=c=white:s=320x240:d=4:r=30",
+      "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+      "-filter_complex", "[0][1]blend=all_expr='if(mod(N,2),B,A)'[v]",
+      "-map", "[v]", "-map", "2:a",
+      "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p", "-c:a", "aac",
+      "-y", flicker,
+    ]);
+    const out = join(dir, "stitch-blur.mp4");
+    await concatClips(
+      [
+        { path: flicker, start: 0, end: 2 },
+        { path: flicker, start: 2, end: 4, speed: 4 },
+      ],
+      out,
+    );
+    const plain = await pixelAt(out, 0.5, 160, 120, 320);
+    expect(plain.g < 30 || plain.g > 225).toBe(true);
+    const sped = await pixelAt(out, 2.25, 160, 120, 320);
+    expect(sped.g).toBeGreaterThan(80);
+    expect(sped.g).toBeLessThan(175);
+  }, 60_000);
+
+  it("gives a silent clip's sped part an audio stream", async () => {
+    // Review focus 5: the whoosh mix reads [0:a] of this output, so a silent
+    // source must still come out with sound (silence) after a speed leg.
+    const out = join(dir, "silent-speed.mp4");
+    await concatClips([{ path: src, start: 0, end: 2, speed: 8 }], out);
+    const probed = await probeFile(out);
+    expect(probed.hasAudio).toBe(true);
+    expect(probed.seconds).toBeLessThan(0.6);
+  });
 });
 
 describe("probeAudio", () => {
@@ -1160,5 +1254,224 @@ describe("pngSize", () => {
     const notIhdr = header(1920, 1080);
     notIhdr.write("tEXt", 12, "ascii");
     expect(pngSize(notIhdr)).toEqual({ w: 0, h: 0 });
+  });
+});
+
+async function frameAt(path: string, t: number): Promise<Buffer> {
+  const { stdout } = await run(
+    "ffmpeg",
+    ["-v", "error", "-ss", String(t), "-i", path, "-frames:v", "1",
+     "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+    { encoding: "buffer", maxBuffer: 64 << 20 },
+  );
+  return stdout as unknown as Buffer;
+}
+
+describe("exportClip speed stage", () => {
+  let grey = "";
+  let badge = "";
+  let whoosh = "";
+  let out = "";
+
+  beforeAll(async () => {
+    // Flat grey, silent: so the badge is the only red, and the whoosh the only sound.
+    grey = join(dir, "grey.mp4");
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i", "color=c=0x808080:s=1920x1080:d=3:r=30",
+      "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+      "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+      "-y", grey,
+    ]);
+    badge = join(dir, "badge.png");
+    await run("ffmpeg", [
+      "-v", "error", "-f", "lavfi", "-i", `color=c=red:s=${BADGE.w}x${BADGE.h}`,
+      "-frames:v", "1", "-pix_fmt", "rgba", "-y", badge,
+    ]);
+    whoosh = join(dir, "whoosh.m4a");
+    await run("ffmpeg", [
+      "-v", "error", "-f", "lavfi", "-i", "sine=frequency=1000:duration=3",
+      "-c:a", "aac", "-y", whoosh,
+    ]);
+    out = join(dir, "out-speed.mp4");
+    await exportClip({
+      input: grey,
+      start: 0,
+      duration: 3,
+      layout: DEFAULT_LAYOUT,
+      boxes: [TOP, BOTTOM],
+      source: SOURCE,
+      mask: await ensureMask(DEFAULT_LAYOUT, [], dir),
+      speed: { windows: [{ at: 1, until: 2, speed: 4 }], badges: { 4: badge }, whoosh },
+      out,
+    });
+  }, 180_000);
+
+  it("draws the badge top-right inside the window only", async () => {
+    const x = TALL.w - BADGE_INSET - BADGE.w / 2;
+    const y = BADGE_INSET + BADGE.h / 2;
+    const inside = await pixelAt(out, 1.5, x, y);
+    expect(inside.r).toBeGreaterThan(200);
+    expect(inside.g).toBeLessThan(60);
+    const before = await pixelAt(out, 0.5, x, y);
+    expect(before.r).toBeLessThan(160);
+  });
+
+  it("splits red from blue at an edge inside the window only", async () => {
+    // A black/white vertical edge in the source: inside the window the red
+    // plane is shifted left and the blue one right, so the edge picks up a
+    // red/blue disagreement that outside the window is exactly zero.
+    const halves = join(dir, "halves.mp4");
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i", "color=c=black:s=1920x1080:d=3:r=30",
+      "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+      "-vf", "drawbox=x=960:y=0:w=960:h=1080:color=white:t=fill",
+      "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+      "-y", halves,
+    ]);
+    const split = join(dir, "out-split.mp4");
+    await exportClip({
+      input: halves,
+      start: 0,
+      duration: 3,
+      layout: DEFAULT_LAYOUT,
+      boxes: [TOP, BOTTOM],
+      source: SOURCE,
+      mask: await ensureMask(DEFAULT_LAYOUT, [], dir),
+      speed: { windows: [{ at: 1, until: 2, speed: 4 }], badges: { 4: badge }, whoosh },
+      out: split,
+    });
+    const widest = (buf: Buffer) => {
+      const y = 500;
+      let worst = 0;
+      for (let x = 0; x < TALL.w; x++) {
+        const i = (y * TALL.w + x) * 3;
+        worst = Math.max(worst, Math.abs((buf[i] ?? 0) - (buf[i + 2] ?? 0)));
+      }
+      return worst;
+    };
+    expect(widest(await frameAt(split, 1.5))).toBeGreaterThan(60);
+    expect(widest(await frameAt(split, 0.5))).toBeLessThan(20);
+  }, 60_000);
+
+  it("keeps grey grey inside the window", async () => {
+    const p = await pixelAt(out, 1.5, 300, 500, TALL.w);
+    expect(Math.abs(p.r - p.g)).toBeLessThan(8);
+    expect(Math.abs(p.b - p.g)).toBeLessThan(8);
+  });
+
+  it("plays the whoosh from the window's start", async () => {
+    expect((await loudness(out, 0.2, 0.6)).max).toBeLessThan(-80);
+    expect((await loudness(out, 1.05, 0.5)).max).toBeGreaterThan(-40);
+  });
+
+  it("repeats the whoosh through a window longer than it", async () => {
+    const blip = join(dir, "whoosh-short.m4a");
+    await run("ffmpeg", [
+      "-v", "error", "-f", "lavfi", "-i", "sine=frequency=1000:duration=0.5",
+      "-c:a", "aac", "-y", blip,
+    ]);
+    const long = join(dir, "out-speed-long.mp4");
+    await exportClip({
+      input: grey,
+      start: 0,
+      duration: 3,
+      layout: DEFAULT_LAYOUT,
+      boxes: [TOP, BOTTOM],
+      source: SOURCE,
+      mask: await ensureMask(DEFAULT_LAYOUT, [], dir),
+      speed: { windows: [{ at: 0.5, until: 2.9, speed: 4 }], badges: { 4: badge }, whoosh: blip },
+      out: long,
+    });
+    // 1.2s into the window is past the 0.5s asset's own end.
+    expect((await loudness(long, 1.7, 0.4)).max).toBeGreaterThan(-40);
+  });
+
+  it("survives a window shorter than the whoosh's fade", async () => {
+    // Review focus 3: a 1s range at x16 is 0.0625s of output.
+    const tiny = join(dir, "out-speed-tiny.mp4");
+    await exportClip({
+      input: grey,
+      start: 0,
+      duration: 2,
+      layout: DEFAULT_LAYOUT,
+      boxes: [TOP, BOTTOM],
+      source: SOURCE,
+      mask: await ensureMask(DEFAULT_LAYOUT, [], dir),
+      speed: { windows: [{ at: 1, until: 1.0625, speed: 16 }], badges: { 16: badge }, whoosh },
+      out: tiny,
+    });
+    expect((await probeFile(tiny)).seconds).toBeGreaterThan(1.8);
+  });
+
+  it("keeps frame 0 clean when a window opens the clip", async () => {
+    // The starter screen and the thumbnails are body.mp4's first frame, so
+    // t=0 must stay out of the stage even when a range starts there.
+    const first = join(dir, "out-speed-first.mp4");
+    await exportClip({
+      input: grey,
+      start: 0,
+      duration: 2,
+      layout: DEFAULT_LAYOUT,
+      boxes: [TOP, BOTTOM],
+      source: SOURCE,
+      mask: await ensureMask(DEFAULT_LAYOUT, [], dir),
+      speed: { windows: [{ at: 0, until: 1, speed: 4 }], badges: { 4: badge }, whoosh },
+      out: first,
+    });
+    const x = TALL.w - BADGE_INSET - BADGE.w / 2;
+    const y = BADGE_INSET + BADGE.h / 2;
+    const at0 = await pixelAt(first, 0, x, y);
+    expect(at0.r).toBeLessThan(160);
+    const at05 = await pixelAt(first, 0.5, x, y);
+    expect(at05.r).toBeGreaterThan(200);
+    expect(at05.g).toBeLessThan(60);
+  }, 60_000);
+
+  it("pins each speed's badge input and the whoosh mix across several windows", () => {
+    const g = speedFilter(
+      {
+        windows: [
+          { at: 0.5, until: 1, speed: 2 },
+          { at: 1.2, until: 1.5, speed: 8 },
+          { at: 2, until: 2.5, speed: 2 },
+        ],
+        badges: { 2: "/b2.png", 8: "/b8.png" },
+        whoosh,
+      },
+      TALL,
+      2,
+    );
+    const overlay = (idx: number) => g.split(";").find((p) => p.includes(`[${idx}:v]overlay`)) ?? "";
+    const x2 = overlay(2);
+    expect(x2).toContain("between(t,0.5,1)");
+    expect(x2).toContain("between(t,2,2.5)");
+    expect(x2).not.toContain("between(t,1.2,1.5)");
+    const x8 = overlay(3);
+    expect(x8).toContain("between(t,1.2,1.5)");
+    expect(x8).not.toContain("between(t,0.5,1)");
+    expect(g).toContain("[4:a]asplit=3");
+    expect(g).toContain("amix=inputs=4");
+  });
+
+  it("refuses a speed stage on an input that does not start at 0", async () => {
+    await expect(
+      exportClip({
+        input: grey,
+        start: 1,
+        duration: 1,
+        layout: DEFAULT_LAYOUT,
+        boxes: [TOP, BOTTOM],
+        source: SOURCE,
+        mask: await ensureMask(DEFAULT_LAYOUT, [], dir),
+        speed: { windows: [{ at: 0.2, until: 0.5, speed: 4 }], badges: { 4: badge }, whoosh },
+        out: join(dir, "never.mp4"),
+      }),
+    ).rejects.toThrow(/stitched input starting at 0/);
+  });
+
+  it("emits no speed stage without windows", () => {
+    expect(speedFilter({ windows: [], badges: {}, whoosh }, TALL, 2)).toBe("");
   });
 });

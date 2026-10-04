@@ -4,8 +4,8 @@ import type { CustomBox } from "./custom.ts";
 import { isValidBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
 import { DEFAULT_LAYOUT_ID, cellsOf, layoutById, ratioOf, resolveLayout } from "./layout.ts";
-import { isValidSegments, keepRanges, totalDuration } from "./segments.ts";
-import type { Segment } from "./segments.ts";
+import { isValidSegments, legsDuration, planLegs, totalDuration } from "./segments.ts";
+import type { Segment, SpeedRange } from "./segments.ts";
 import type { Placement, Speech } from "./lofi.ts";
 
 export type Phase =
@@ -211,6 +211,9 @@ export type AppState = {
    *  holes applied at export, on a file that is already one continuous
    *  thing however it was assembled. */
   cuts: Segment[];
+  /** The framing strip's violet speed-up ranges, clip timeline. Not
+   *  persisted, for the reason `cuts` are not. */
+  speeds: SpeedRange[];
   /** Whether the framing canvas is painting the export's thumbnail — the
    *  starter screen with the 16:9 crop YouTube takes marked on it — instead
    *  of the live composite. Framing-only, and not persisted: it is a way of
@@ -296,6 +299,7 @@ const initial: AppState = {
   clipStart: 0,
   clipEnd: 0,
   cuts: [],
+  speeds: [],
   showThumb: false,
   clipDigest: "",
   clipUrl: "",
@@ -594,9 +598,9 @@ export function restore(videoId: string, source: Size | null): Partial<AppState>
  *  sum of its parts — which is precisely why reading the wrong one is
  *  silent rather than loud. */
 export function keptLength(
-  s: Pick<AppState, "phase" | "segments" | "clipStart" | "clipEnd" | "cuts">,
+  s: Pick<AppState, "phase" | "segments" | "clipStart" | "clipEnd" | "cuts" | "speeds">,
 ): number {
   return s.phase === "framing"
-    ? totalDuration(keepRanges(s.clipStart, Math.max(s.clipStart, s.clipEnd), s.cuts))
+    ? legsDuration(planLegs(s.clipStart, Math.max(s.clipStart, s.clipEnd), s.cuts, s.speeds))
     : totalDuration(s.segments);
 }

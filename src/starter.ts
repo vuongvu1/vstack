@@ -159,6 +159,12 @@ export async function renderTitleArt(title: string, frame: Size): Promise<string
   if (!ctx) throw new Error("2d context unavailable");
   drawTitle(ctx, title, frame);
 
+  return pngBase64(canvas);
+}
+
+/** A canvas as bare base64 PNG — what every client-rendered image this
+ *  server takes arrives as. */
+export async function pngBase64(canvas: HTMLCanvasElement): Promise<string> {
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
   if (!blob) throw new Error("Could not render the title image.");
   const dataUrl = await new Promise<string>((resolve, reject) => {

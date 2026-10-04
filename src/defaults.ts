@@ -204,3 +204,10 @@ export const SCRIPT_MAX = 15_000;
  *  Shared because the script reader's Try button sends its sample through
  *  `/api/say` as a title and has to cut it to fit before it goes. */
 export const TITLE_MAX = 200;
+
+/** The speed badge's PNG size and its inset from the frame's top-right
+ *  corner. One size for both frames: TALL and WIDE share a 1080px short
+ *  side. The client rasterises at exactly this size and the server rejects
+ *  anything else, so the overlay can never land off-position. */
+export const BADGE = { w: 324, h: 130 };
+export const BADGE_INSET = 48;

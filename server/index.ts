@@ -19,6 +19,7 @@ import type { Rect } from "../src/geometry.ts";
 import { isWide, layoutById } from "../src/layout.ts";
 import type { CustomBox } from "../src/custom.ts";
 import {
+  BADGE,
   MAX_DROPS,
   MAX_PARTS,
   MAX_SPEECHES,
@@ -27,8 +28,15 @@ import {
   TITLE_MAX,
   UPLOAD_MAX_BYTES,
 } from "../src/defaults.ts";
-import { MAX_SEGMENTS, isValidSegments, keepRanges, totalDuration } from "../src/segments.ts";
-import type { Segment } from "../src/segments.ts";
+import {
+  MAX_SEGMENTS,
+  isValidSegments,
+  isValidSpeeds,
+  legsDuration,
+  planLegs,
+  speedWindows,
+} from "../src/segments.ts";
+import type { Segment, Speed } from "../src/segments.ts";
 import { HttpError } from "./errors.ts";
 import {
   OUT_DIR,
@@ -75,6 +83,7 @@ import {
 import {
   END_PATH,
   VOICE,
+  WHOOSH_PATH,
   checkStarter,
   knownVoices,
   prependStarter,
@@ -637,13 +646,39 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (cuts.some((c) => c.start < start || c.end > end)) {
       return send(res, 400, { error: "cuts must be within start/end." });
     }
-    // What is left once the drops are taken out. Empty means the drops cover
-    // the whole cut, which is a 400 rather than an ffmpeg graph with no legs
-    // in it.
-    const keeps = keepRanges(start, end, cuts);
-    if (keeps.length === 0) {
+    // The violet speed-up ranges, same coordinate system as the cuts.
+    // Absent means none, so an older body still exports untouched.
+    const speedsRaw = raw.speeds ?? [];
+    if (!isValidSpeeds(speedsRaw, start, end)) return send(res, 400, { error: "Bad speeds." });
+    // One rule with the client's kept badge: what plays, in order, at what
+    // rate. Cut beats speed inside it.
+    const legs = planLegs(start, end, cuts, speedsRaw);
+    if (legs.length === 0) {
       return send(res, 400, { error: "cuts must leave something to export." });
     }
+    const stitched = cuts.length > 0 || speedsRaw.length > 0;
+
+    // One badge PNG per speed that SURVIVES the cuts — a range a cut swallows
+    // whole needs none. The client derives the set from the same planLegs,
+    // so the two cannot disagree; "exactly" rather than "at least" keeps
+    // unused bytes out of the temp dir.
+    const used = [...new Set(legs.flatMap((l) => (l.speed === 1 ? [] : [l.speed])))].sort((a, b) => a - b);
+    const badgesRaw = raw.badgePngs ?? {};
+    if (typeof badgesRaw !== "object" || badgesRaw === null || Array.isArray(badgesRaw)) {
+      return send(res, 400, { error: "Bad badgePngs." });
+    }
+    const badgeKeys = Object.keys(badgesRaw).sort((a, b) => Number(a) - Number(b));
+    if (badgeKeys.join(",") !== used.join(",")) {
+      return send(res, 400, { error: "badgePngs must cover exactly the speeds used." });
+    }
+    const badgePngs = used.map((sp) => {
+      const buf = png((badgesRaw as Record<string, unknown>)[String(sp)], `badgePngs.${sp}`);
+      const sz = pngSize(buf);
+      if (sz.w !== BADGE.w || sz.h !== BADGE.h) {
+        throw new HttpError(400, `badgePngs.${sp} is ${sz.w}x${sz.h}; needs ${BADGE.w}x${BADGE.h}.`);
+      }
+      return { speed: sp as Speed, buf };
+    });
 
     // A table lookup, so nothing from the request body is ever interpolated
     // into the filter graph — the same posture as taking window bounds
@@ -729,33 +764,40 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     inFlight.add(partial);
     try {
       await writeFile(art, titlePng);
-      // With drops, one extra pass before the composite: the kept ranges are
+      // With drops or speed ranges, one extra pass before the composite: the kept ranges are
       // stitched back into one continuous file, and the composite then runs
       // on that from 0. `concatClips` is the stitch `/api/window` already
       // uses — a drop list is exactly that operation with the same path in
       // every leg — so the SAR/fps/audio normalisation and the silent-part
       // stand-in come for free, already proven against real pixels.
       //
-      // Without drops nothing is stitched and nothing is re-encoded: the
+      // Without either nothing is stitched and nothing is re-encoded: the
       // path below is byte-identical to the one every export took before
       // this field existed.
-      const composed =
-        cuts.length === 0
-          ? input
-          : await concatClips(
-              keeps.map((k) => ({
-                path: input,
-                start: k.start - windowStart,
-                end: k.end - windowStart,
-              })),
-              join(dir, "body-cut.mp4"),
-            );
+      const composed = !stitched
+        ? input
+        : await concatClips(
+            legs.map((l) => ({
+              path: input,
+              start: l.start - windowStart,
+              end: l.end - windowStart,
+              speed: l.speed,
+            })),
+            join(dir, "body-cut.mp4"),
+          );
+      const badges: Partial<Record<Speed, string>> = {};
+      for (const b of badgePngs) {
+        const path = join(dir, `badge-${b.speed}.png`);
+        await writeFile(path, b.buf);
+        badges[b.speed] = path;
+      }
+      const windows = speedWindows(legs);
       await exportClip({
         input: composed,
         // The stitch starts at its own 0 and is already exactly the kept
         // length; an uncut clip is still seeked into.
-        start: cuts.length === 0 ? start - windowStart : 0,
-        duration: totalDuration(keeps),
+        start: stitched ? 0 : start - windowStart,
+        duration: legsDuration(legs),
         layout,
         boxes,
         customs,
@@ -764,6 +806,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         // cached from then on, keyed on the layout id, GUTTER, CORNER_RADIUS
         // and a digest of the pieces' output rects.
         mask: await ensureMask(layout, customs.map((c) => c.out)),
+        speed: windows.length > 0 ? { windows, badges, whoosh: WHOOSH_PATH } : undefined,
         out: body,
       });
       if (wide) {

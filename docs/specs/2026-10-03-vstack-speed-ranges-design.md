@@ -204,16 +204,18 @@ become five. It must carry audio; its length is taken on trust, and
 
 Nothing differs. `badgeSize(frame)` scales the pill to the frame's short
 side, and the VHS column is `frame.h` tall. The starter screen (tall) and
-the outro are later passes over `body.mp4`, so neither ever sees an effect.
+the outro are later passes over `body.mp4`, but the starter is built from
+its FIRST FRAME, so `speedFilter` gates every video effect with `gt(t,0)*`:
+frame 0 is never touched, even when a range opens the clip. The whoosh is
+audio and still starts at the window.
 
 ## What does not change
 
 - `outName`: the marks are unchanged, so the name is too. A speed edit
   overwrites the render of the same marks, like a crop tweak.
-- The thumbnail (`firstFrame`, `titleCard`) is the starter screen / title
-  card, never a body frame, so no badge reaches it. If the clip *opens* in a
-  speed range the wide title card still crops the body's first frame —
-  which then carries the badge. Accepted: the user put a speed-up at t=0.
+- The thumbnail (`firstFrame`, `titleCard`) and the starter screen come from
+  body.mp4's first frame, which the stage excludes (`gt(t,0)`), so a range
+  opening the clip leaves them clean, as the preview's thumbnail shows.
 - `/api/window`, `segments`, the trimming phase, the long journey, lofi,
   the cutter, the reader.
 
@@ -245,3 +247,42 @@ the outro are later passes over `body.mp4`, so neither ever sees an effect.
 `SPEED_S`, `DEFAULT_SPEED`, `MAX_SPEEDS`, `VHS_SHIFT`, the line count and
 roll rate, `WHOOSH_GAIN`, badge size and inset. All constants; none needs a
 UI.
+
+## As built
+
+- The badge size and the VHS constants (`BADGE`, `BADGE_INSET`, `VHS_ROLL`,
+  `VHS_GAP`, `VHS_BAND`, `VHS_GAIN`) live in `src/defaults.ts`, shared by
+  client and server rather than copied.
+- The stage is `ExportOpts.speed: SpeedFx` (windows, a badges map and the
+  whoosh), built once by `speedFilter` with one gated `enable=`, not a
+  per-window `Fx` list. `ConcatPart.speed` carries the same into the stitch.
+- The whoosh is trimmed to each window and faded out over `min(0.3s, window)`.
+  Its input loops (`-stream_loop -1`, revised 2026-10-04), so a band longer
+  than the asset repeats it rather than falling silent after one play.
+- The preview draws the lines and the badge but not the red/blue colour
+  split. Its `drawVhs` starts one gap early so a band's tail over the top
+  rows is drawn, matching the export.
+- The framing bar's kept badge shows when cuts or speeds exist.
+- `exportClip` throws when a speed stage meets `start !== 0` (windows are
+  output seconds of a stitched input), and `doExport` clamps cuts to
+  `[clipStart, clipEnd]` like speeds.
+- The Testing section's route-level 400 tests and "no-speed graph string
+  pin" were not written: the plan ruled route tests out, and only
+  `speedFilter(windows: []) === ""` is pinned.
+- Known gaps: `playbackRate` is not reset on leaving framing (self-heals on
+  the next `timeupdate`); the whoosh in a real export was checked only by the
+  real-ffmpeg test with a synthetic tone, not by ear.
+
+### Revised 2026-10-04 at the user's request
+
+- The VHS lines are removed (`VHS_ROLL/GAP/BAND/GAIN` deleted from
+  `src/defaults.ts`; `drawVhs` and the stage's `geq`/`blend` legs gone), and
+  the pill badge with them. The badge is now outlined white `▶▶ xN` text
+  (the title's stroke-and-shadow recipe) right-aligned in the same BADGE box.
+- In their place: motion blur in the stitch — `tmix=frames=min(speed, 8)`
+  before `setpts` on a sped leg — and, in the preview, a half-alpha motion
+  trail approximating it.
+- The red/blue colour split is kept (`rgbashift`, still export-only), with
+  the badge overlays, whoosh, `gt(t,0)` gate and `start === 0` guard as they
+  were. Earlier sections describing the lines, `VHS_SHIFT` (now
+  `SPLIT_SHIFT`) and the planar-RGB blend are superseded by this note.

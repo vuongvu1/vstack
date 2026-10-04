@@ -584,6 +584,14 @@ describe("segments", () => {
     save();
     expect(readRaw("vid00000007")).not.toHaveProperty("showThumb");
   });
+
+  it("never persists speeds", () => {
+    // Window-scoped, like cuts.
+    setState({ videoId: "vid00000009", duration: 600, segments: [{ start: 1, end: 2 }],
+      speeds: [{ start: 1, end: 2, speed: 4 }] });
+    save();
+    expect(readRaw("vid00000009")).not.toHaveProperty("speeds");
+  });
 });
 
 describe("save / restore — custom boxes", () => {
@@ -747,6 +755,7 @@ describe("keptLength", () => {
         clipStart: 0,
         clipEnd: 0,
         cuts: [],
+        speeds: [],
       }),
     ).toBe(25);
   });
@@ -761,6 +770,7 @@ describe("keptLength", () => {
         clipStart: 3,
         clipEnd: 15,
         cuts: [],
+        speeds: [],
       }),
     ).toBe(12);
   });
@@ -775,6 +785,7 @@ describe("keptLength", () => {
         clipStart: 10,
         clipEnd: 40,
         cuts: [],
+        speeds: [],
       }),
     ).toBe(30);
   });
@@ -787,6 +798,7 @@ describe("keptLength", () => {
         clipStart: 10,
         clipEnd: 40,
         cuts: [{ start: 15, end: 20 }, { start: 30, end: 32 }],
+        speeds: [],
       }),
     ).toBe(23);
   });
@@ -799,8 +811,23 @@ describe("keptLength", () => {
         clipStart: 9,
         clipEnd: 4,
         cuts: [],
+        speeds: [],
       }),
     ).toBe(0);
+  });
+
+  it("counts a sped range at its speed", () => {
+    // 12s kept, 4 of them at x4: 8 + 1 = 9.
+    expect(
+      keptLength({
+        phase: "framing",
+        segments: [],
+        clipStart: 3,
+        clipEnd: 15,
+        cuts: [],
+        speeds: [{ start: 5, end: 9, speed: 4 }],
+      }),
+    ).toBe(9);
   });
 });
 

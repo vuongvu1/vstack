@@ -1,8 +1,11 @@
 import { CORNER_RADIUS, GUTTER, ringOf, windowOf } from "./frame.ts";
+import { BADGE, BADGE_INSET } from "./defaults.ts";
+import { drawBadge } from "./speed.ts";
 import { drawTitle } from "./starter.ts";
 import { THUMB } from "./thumb.ts";
 import type { Rect, Size } from "./geometry.ts";
 import type { CustomBox } from "./custom.ts";
+import type { Speed } from "./segments.ts";
 
 /** The starter screen's look, mirrored from `server/starter.ts`'s
  *  SCREEN_FILTER so the framing phase can show the thumbnail without paying
@@ -90,6 +93,7 @@ export function startPreview(
   boxes: () => Rect[],
   customs: () => CustomBox[],
   still: () => string | null,
+  speedNow: () => Speed | null,
 ): () => void {
   canvas.width = frame.w;
   canvas.height = frame.h;
@@ -104,6 +108,10 @@ export function startPreview(
   // the thumbnail allocates neither.
   let soft: CanvasRenderingContext2D | null = null;
   let band: CanvasRenderingContext2D | null = null;
+  // The speed look's previous composite, and whether it is from the frame
+  // just before this one (false on entering a band, so no stale trail).
+  let trail: CanvasRenderingContext2D | null = null;
+  let trailLive = false;
   let mask: CanvasGradient | null = null;
   const wide = frame.w > frame.h;
   const bandH = wide ? WIDE_BAND_H : BAND_H;
@@ -167,6 +175,30 @@ export function startPreview(
         ctx.fill();
         ctx.restore();
       });
+
+      // The speed-up look, over the finished frame and its gutters — where
+      // the export's stage sits. Not on the thumbnail: that frame is the
+      // starter screen, and the export's stage excludes t=0 for that reason.
+      const sp = still() ? null : speedNow();
+      if (sp === null) trailLive = false;
+      if (sp !== null) {
+        // ponytail: a motion trail, approximating the export's tmix — the last
+        // composite at half alpha over this one, then this one kept for next
+        // time. The export averages the frames the speed-up skips; this
+        // averages two adjacent rendered ones. Drawn before the badge, which
+        // must stay crisp and out of the trail.
+        if (trailLive && trail) {
+          ctx.save();
+          ctx.globalAlpha = 0.5;
+          ctx.drawImage(trail.canvas, 0, 0);
+          ctx.restore();
+        }
+        trail ??= offscreen(frame);
+        trail.globalCompositeOperation = "copy";
+        trail.drawImage(canvas, 0, 0);
+        trailLive = true;
+        drawBadge(ctx, sp, frame.w - BADGE_INSET - BADGE.w, BADGE_INSET);
+      }
 
       // The starter screen, painted over the finished composite in the same
       // order the export builds it: treated background, then the title. This
