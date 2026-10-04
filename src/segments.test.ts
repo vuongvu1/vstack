@@ -1,13 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_SEGMENTS,
+  MAX_SPEEDS,
   editMark,
+  isSpeed,
   isValidSegments,
+  isValidSpeeds,
   keepRanges,
+  legsDuration,
   normalize,
+  normalizeSpeeds,
+  planLegs,
+  speedWindows,
   totalDuration,
 } from "./segments.ts";
-import type { Segment } from "./segments.ts";
+import type { Leg, Segment, Speed, SpeedRange } from "./segments.ts";
 
 const D = 600;
 
@@ -254,5 +261,176 @@ describe("editMark", () => {
 
   it("does not carry anything when the end is aimed at", () => {
     expect(editMark(part, "end", 140, D, true)).toEqual({ start: 100, end: 140 });
+  });
+});
+
+describe("planLegs", () => {
+  it("is keepRanges with every leg at speed 1 when there are no speeds", () => {
+    // The identity that keeps every cut test describing live behaviour.
+    const cuts = [{ start: 12, end: 14 }, { start: 20, end: 21 }];
+    expect(planLegs(10, 30, cuts, [])).toEqual(
+      keepRanges(10, 30, cuts).map((k) => ({ ...k, speed: 1 })),
+    );
+  });
+
+  it("splits a keep around a speed range inside it", () => {
+    expect(planLegs(0, 10, [], [{ start: 2, end: 5, speed: 4 }])).toEqual([
+      { start: 0, end: 2, speed: 1 },
+      { start: 2, end: 5, speed: 4 },
+      { start: 5, end: 10, speed: 1 },
+    ]);
+  });
+
+  it("lets a cut win where it overlaps a speed range", () => {
+    expect(planLegs(0, 10, [{ start: 3, end: 4 }], [{ start: 2, end: 6, speed: 2 }])).toEqual([
+      { start: 0, end: 2, speed: 1 },
+      { start: 2, end: 3, speed: 2 },
+      { start: 4, end: 6, speed: 2 },
+      { start: 6, end: 10, speed: 1 },
+    ]);
+  });
+
+  it("drops a speed range a cut swallows whole", () => {
+    // Review focus 1: no leg carries x8, so no x8 badge may be asked for.
+    expect(planLegs(0, 10, [{ start: 2, end: 6 }], [{ start: 3, end: 5, speed: 8 }])).toEqual([
+      { start: 0, end: 2, speed: 1 },
+      { start: 6, end: 10, speed: 1 },
+    ]);
+  });
+
+  it("joins touching speed ranges of equal speed into one leg", () => {
+    expect(
+      planLegs(0, 10, [], [
+        { start: 2, end: 4, speed: 4 },
+        { start: 4, end: 6, speed: 4 },
+      ]),
+    ).toEqual([
+      { start: 0, end: 2, speed: 1 },
+      { start: 2, end: 6, speed: 4 },
+      { start: 6, end: 10, speed: 1 },
+    ]);
+  });
+
+  it("keeps touching ranges of different speeds as separate legs", () => {
+    expect(
+      planLegs(0, 10, [], [
+        { start: 2, end: 4, speed: 2 },
+        { start: 4, end: 6, speed: 8 },
+      ]),
+    ).toEqual([
+      { start: 0, end: 2, speed: 1 },
+      { start: 2, end: 4, speed: 2 },
+      { start: 4, end: 6, speed: 8 },
+      { start: 6, end: 10, speed: 1 },
+    ]);
+  });
+
+  it("clips a speed range that starts before the outer bounds", () => {
+    expect(planLegs(2, 8, [], [{ start: 0, end: 4, speed: 4 }])).toEqual([
+      { start: 2, end: 4, speed: 4 },
+      { start: 4, end: 8, speed: 1 },
+    ]);
+  });
+});
+
+describe("normalizeSpeeds", () => {
+  it("sorts and merges overlaps, keeping the earlier range's speed", () => {
+    expect(
+      normalizeSpeeds([
+        { start: 4, end: 8, speed: 2 },
+        { start: 1, end: 5, speed: 16 },
+      ], 0, 100),
+    ).toEqual([{ start: 1, end: 8, speed: 16 }]);
+  });
+
+  it("does not merge ranges that only touch", () => {
+    expect(
+      normalizeSpeeds([
+        { start: 1, end: 2, speed: 2 },
+        { start: 2, end: 3, speed: 4 },
+      ], 0, 100),
+    ).toEqual([
+      { start: 1, end: 2, speed: 2 },
+      { start: 2, end: 3, speed: 4 },
+    ]);
+  });
+
+  it("drops empties and illegal speeds", () => {
+    expect(
+      normalizeSpeeds([
+        { start: 1, end: 1, speed: 4 },
+        { start: 2, end: 3, speed: 3 as Speed },
+        { start: Number.NaN, end: 3, speed: 4 },
+      ], 0, 100),
+    ).toEqual([]);
+  });
+
+  it("clamps to the bounds it is given", () => {
+    // Review focus 2: the outer handles moved inward past a range.
+    expect(normalizeSpeeds([{ start: 0, end: 10, speed: 4 }], 2, 6)).toEqual([
+      { start: 2, end: 6, speed: 4 },
+    ]);
+    expect(normalizeSpeeds([{ start: 0, end: 1, speed: 4 }], 2, 6)).toEqual([]);
+  });
+});
+
+describe("isValidSpeeds", () => {
+  it("accepts an empty list and whatever normalizeSpeeds emits", () => {
+    expect(isValidSpeeds([], 0, 10)).toBe(true);
+    const norm = normalizeSpeeds([
+      { start: 6, end: 9, speed: 16 },
+      { start: 1, end: 3, speed: 2 },
+    ], 0, 10);
+    expect(isValidSpeeds(norm, 0, 10)).toBe(true);
+  });
+
+  it("rejects everything illegal", () => {
+    const ok = { start: 1, end: 2, speed: 4 };
+    expect(isValidSpeeds(null, 0, 10)).toBe(false);
+    expect(isValidSpeeds("x", 0, 10)).toBe(false);
+    expect(isValidSpeeds([null], 0, 10)).toBe(false);
+    expect(isValidSpeeds([[1, 2]], 0, 10)).toBe(false);
+    expect(isValidSpeeds(Array.from({ length: MAX_SPEEDS + 1 }, (_, i) => ({ start: i, end: i + 0.5, speed: 2 })), 0, 10)).toBe(false);
+    expect(isValidSpeeds([{ ...ok, speed: 3 }], 0, 10)).toBe(false);
+    expect(isValidSpeeds([{ ...ok, start: -1 }], 0, 10)).toBe(false);
+    expect(isValidSpeeds([{ ...ok, end: 11 }], 0, 10)).toBe(false);
+    expect(isValidSpeeds([{ ...ok, end: 1 }], 0, 10)).toBe(false);
+    expect(isValidSpeeds([{ ...ok, start: Number.NaN }], 0, 10)).toBe(false);
+    expect(isValidSpeeds([{ start: 3, end: 4, speed: 2 }, ok], 0, 10)).toBe(false);
+    expect(isValidSpeeds([{ start: 1, end: 3, speed: 2 }, { start: 2, end: 4, speed: 2 }], 0, 10)).toBe(false);
+  });
+});
+
+describe("legsDuration", () => {
+  it("divides each leg by its speed", () => {
+    expect(legsDuration([{ start: 0, end: 2, speed: 1 }, { start: 2, end: 6, speed: 4 }])).toBe(3);
+  });
+});
+
+describe("speedWindows", () => {
+  it("places each sped leg in OUTPUT time", () => {
+    expect(
+      speedWindows([
+        { start: 0, end: 2, speed: 1 },
+        { start: 2, end: 6, speed: 4 },
+        { start: 6, end: 7, speed: 1 },
+        { start: 8, end: 10, speed: 2 },
+      ]),
+    ).toEqual([
+      { at: 2, until: 3, speed: 4 },
+      { at: 4, until: 5, speed: 2 },
+    ]);
+  });
+
+  it("keeps touching legs of different speeds as two windows", () => {
+    expect(
+      speedWindows([
+        { start: 2, end: 4, speed: 2 },
+        { start: 4, end: 8, speed: 8 },
+      ]),
+    ).toEqual([
+      { at: 0, until: 1, speed: 2 },
+      { at: 1, until: 1.5, speed: 8 },
+    ]);
   });
 });

@@ -1063,3 +1063,33 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
   color: #fff;
   cursor: pointer;
 }
+
+/* Speed-up ranges: the drop recipe in violet — red is cut and error, grass
+   is keep, blue is the playhead. Drawn under the drops (DOM order), because
+   a cut beats a speed-up in the render too. */
+.wave-speed {
+  position: absolute;
+  inset-block: 0;
+  background: var(--violet-a5);
+  pointer-events: none;
+}
+
+.wave-handle.is-speed,
+.wave-x.is-speed {
+  background: var(--violet-9);
+}
+
+/* The rate picker, pinned to the band's top-left over the waveform. Sized off
+   the strip like `.wave-x`, not the control recipe. */
+.wave-speed-pick {
+  position: absolute;
+  top: 2px;
+  height: 18px;
+  padding: 0 2px;
+  font-size: 11px;
+  border: 0;
+  border-radius: var(--radius-1);
+  background: var(--violet-9);
+  color: #fff;
+  cursor: pointer;
+}

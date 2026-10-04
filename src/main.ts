@@ -45,8 +45,19 @@ import { BUCKETS_PER_SEC, clampPlacement, fill, orderByPrefix } from "./lofi.ts"
 import { mountPlayer, renderStrip } from "./player.ts";
 import type { YtPlayer } from "./player.ts";
 import { startPreview } from "./preview.ts";
-import { MAX_SEGMENTS, editMark, isValidSegments, normalize } from "./segments.ts";
-import type { Segment } from "./segments.ts";
+import { renderBadge, speedAt } from "./speed.ts";
+import {
+  MAX_SEGMENTS,
+  MAX_SPEEDS,
+  SPEEDS,
+  editMark,
+  isSpeed,
+  isValidSegments,
+  normalize,
+  normalizeSpeeds,
+  planLegs,
+} from "./segments.ts";
+import type { Segment, Speed } from "./segments.ts";
 import { renderTitleArt, titleFits } from "./starter.ts";
 import { renderThumb, renderWide } from "./thumb.ts";
 import type { AppState, UploadTrack } from "./state.ts";
@@ -226,6 +237,7 @@ async function load(url: string): Promise<void> {
         clipEnd: win.clipEnd,
         // A fresh window, so any framing cuts belong to the previous one.
         cuts: [],
+        speeds: [],
         clipDigest: win.digest,
         source,
         layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
@@ -804,6 +816,7 @@ async function openWindow(): Promise<void> {
       clipStart: w.clipStart,
       clipEnd: w.clipEnd,
       cuts: [],
+      speeds: [],
       clipDigest: w.digest,
       source,
       layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
@@ -908,6 +921,7 @@ function openClip(c: api.CachedClip): void {
     clipStart: cut?.start ?? c.clipStart,
     clipEnd: cut?.end ?? c.clipEnd,
     cuts: [],
+    speeds: [],
     clipDigest: c.digest,
     source,
     layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
@@ -980,6 +994,14 @@ const MIN_CLIP_S = 1;
  *  the way `MAX_SEGMENTS` and `MAX_CUSTOM` do — not a measured limit. */
 const MAX_CUTS = 4;
 const CUT_S = 2;
+/** A fresh speed-up band: four seconds at x4 — long enough to grab both
+ *  handles, and the middle of the four rates. */
+const SPEED_S = 4;
+const DEFAULT_SPEED: Speed = 4;
+/** Whether the strip muted the video for a speed range, so leaving the range
+ *  unmutes only what this code muted and never a mute the user chose.
+ *  Module-scoped because the bar is rebuilt every render. */
+let speedMuted = false;
 
 /** Whether Play covers the marked cut only, rather than the whole fetched
  *  window. Module-scoped like `wavePeaks` below and for the same reason —
@@ -1259,7 +1281,21 @@ function ensureFraming(): void {
     save();
   }
 
-  stopPreview = startPreview(canvasEl, videoEl, layout.frame, cells, currentBoxes, currentCustoms, currentStill);
+  // Narrowed here: a closure loses the flow narrowing on the module-scoped let.
+  const clip = videoEl;
+  stopPreview = startPreview(
+    canvasEl,
+    clip,
+    layout.frame,
+    cells,
+    currentBoxes,
+    currentCustoms,
+    currentStill,
+    () => {
+      const cur = getState();
+      return speedAt(cur.speeds, cur.cuts, cur.windowStart + clip.currentTime);
+    },
+  );
 
   const cellCount = cells.length;
   sourceEditor?.stop();
@@ -1428,6 +1464,20 @@ async function doExport(): Promise<void> {
   // is spoken), so it is a missing title, not a missing caption.
   const starterTitle = s.starterTitle.trim();
   if (starterTitle === "") return;
+  // Clamped to the marked clip: the outer handles may have been dragged
+  // inward past a band since it was drawn, and the server refuses a range
+  // outside start/end.
+  const speeds = normalizeSpeeds(s.speeds, s.clipStart, s.clipEnd);
+  // Cuts likewise: dragging the outer handle past one would otherwise make
+  // /api/export answer 400 "cuts must be within start/end".
+  const cuts = s.cuts
+    .map((c) => ({ start: Math.max(c.start, s.clipStart), end: Math.min(c.end, s.clipEnd) }))
+    .filter((c) => c.end > c.start);
+  // Badges for exactly the speeds that survive the cuts — the server derives
+  // the same set from the same planLegs and refuses any other.
+  const used = [
+    ...new Set(planLegs(s.clipStart, s.clipEnd, cuts, speeds).flatMap((l) => (l.speed === 1 ? [] : [l.speed]))),
+  ];
   await guard("Rendering… (a 30s clip takes ~5–10s)", async () => {
     const out = await api.exportClip({
       videoId: s.videoId,
@@ -1439,7 +1489,11 @@ async function doExport(): Promise<void> {
       end: s.clipEnd,
       // The red regions on the framing strip. Clip time too, and already
       // normalised — every write goes through `normalize`.
-      cuts: s.cuts,
+      cuts,
+      speeds,
+      badgePngs: Object.fromEntries(
+        await Promise.all(used.map(async (sp) => [String(sp), await renderBadge(sp)] as const)),
+      ),
       digest: s.clipDigest,
       starterTitle,
       titlePng: await renderTitleArt(starterTitle, layout.frame),
@@ -2065,6 +2119,32 @@ function renderFraming(): Node[] {
   const head = el("div", { className: "strip-head" });
   wave.append(canvas, cutL, cutR, handleL, handleR, head);
 
+  // The violet speed-up ranges: the drop recipe again, plus a rate picker.
+  // Same snapshot rule as the drops — the count only changes via setState.
+  // Built first so a cut's band draws on top of a speed-up's (DOM order).
+  const fasts = s.speeds.map((r, i) => {
+    const band = el("div", { className: "wave-speed", title: `Plays at x${r.speed}` });
+    const dl = el("div", { className: "wave-handle is-speed", title: "Drag to move this speed-up's start" });
+    const dr = el("div", { className: "wave-handle is-speed", title: "Drag to move this speed-up's end" });
+    const kill = el("button", { className: "wave-x is-speed", textContent: "×", title: "Play this part at normal speed" });
+    kill.onclick = (e) => {
+      e.stopPropagation();
+      setState({ speeds: getState().speeds.filter((_, j) => j !== i) });
+    };
+    const pick = el("select", { className: "wave-speed-pick", title: "Speed" });
+    for (const sp of SPEEDS) {
+      pick.append(el("option", { value: String(sp), textContent: `x${sp}`, selected: sp === r.speed }));
+    }
+    pick.onclick = (e) => e.stopPropagation();
+    pick.onchange = () => {
+      const sp = Number(pick.value);
+      if (!isSpeed(sp)) return;
+      setState({ speeds: getState().speeds.map((x, j) => (j === i ? { ...x, speed: sp } : x)) });
+    };
+    wave.append(band, dl, dr, kill, pick);
+    return { band, dl, dr, kill, pick };
+  });
+
   // The dropped middle parts, red. One band, two handles and a × per cut,
   // built off this render's snapshot because the *count* only ever changes
   // through `setState` — a drag moves an existing cut's bounds through
@@ -2106,6 +2186,16 @@ function renderFraming(): Node[] {
       d.dr.style.left = pctOf(cut.end);
       d.kill.style.left = pctOf((cut.start + cut.end) / 2);
     });
+    fasts.forEach((f, i) => {
+      const r = cur.speeds[i];
+      if (r === undefined) return;
+      f.band.style.left = pctOf(r.start);
+      f.band.style.width = `${(100 * (r.end - r.start)) / span}%`;
+      f.dl.style.left = pctOf(r.start);
+      f.dr.style.left = pctOf(r.end);
+      f.kill.style.left = pctOf((r.start + r.end) / 2);
+      f.pick.style.left = pctOf(r.start);
+    });
   };
   place();
 
@@ -2142,6 +2232,22 @@ function renderFraming(): Node[] {
         (c) => v.currentTime >= c.start - s.windowStart && v.currentTime < c.end - s.windowStart,
       );
       if (hole !== undefined) v.currentTime = Math.min(span, hole.end - s.windowStart);
+      // Play a speed range at its rate, muted — what the export does. Read
+      // after the cut skip, and through `speedAt`, so a cut inside a speed
+      // range is still skipped rather than sped. ~4Hz means up to a quarter
+      // second of real time at the wrong rate either side of a range: at x16
+      // that is four seconds of footage. ponytail: a rAF watcher if that
+      // ever reads as the export disagreeing.
+      const live = getState();
+      const sp = speedAt(live.speeds, live.cuts, s.windowStart + v.currentTime);
+      v.playbackRate = sp ?? 1;
+      if (sp !== null && !v.muted) {
+        v.muted = true;
+        speedMuted = true;
+      } else if (sp === null && speedMuted) {
+        v.muted = false;
+        speedMuted = false;
+      }
     };
     // The element may already be playing by the time a re-render builds
     // these: neither event fires again.
@@ -2250,6 +2356,41 @@ function renderFraming(): Node[] {
     // seeks the video to wherever the drag finished.
     d.dl.onclick = d.dr.onclick = (e) => e.stopPropagation();
   });
+  /** One speed band's edge — `dragDrop` exactly, on `speeds`. Overlaps merge
+   *  on pointer-up via `normalizeSpeeds`, earlier range's speed winning. */
+  const dragSpeed = (i: number, which: "start" | "end") => (down: PointerEvent) => {
+    down.preventDefault();
+    down.stopPropagation();
+    const box = wave.getBoundingClientRect();
+    const target = down.target as HTMLElement;
+    target.setPointerCapture(down.pointerId);
+    const move = (e: PointerEvent) => {
+      const cur = getState();
+      const r = cur.speeds[i];
+      if (r === undefined) return;
+      const raw = s.windowStart + (span * (e.clientX - box.left)) / Math.max(1, box.width);
+      const t = Math.min(cur.clipEnd, Math.max(cur.clipStart, raw));
+      const moved =
+        which === "start"
+          ? { ...r, start: Math.min(t, r.end - MIN_CLIP_S) }
+          : { ...r, end: Math.max(t, r.start + MIN_CLIP_S) };
+      setQuiet({ speeds: cur.speeds.map((x, j) => (j === i ? moved : x)) });
+      place();
+    };
+    const up = () => {
+      target.releasePointerCapture(down.pointerId);
+      target.onpointermove = null;
+      target.onpointerup = null;
+      setState({ speeds: normalizeSpeeds(getState().speeds, s.windowStart, s.windowEnd) });
+    };
+    target.onpointermove = move;
+    target.onpointerup = up;
+  };
+  fasts.forEach((f, i) => {
+    f.dl.onpointerdown = dragSpeed(i, "start");
+    f.dr.onpointerdown = dragSpeed(i, "end");
+    f.dl.onclick = f.dr.onclick = (e) => e.stopPropagation();
+  });
   // Without this a click that ends on a handle bubbles to the strip and
   // seeks the video to wherever the drag finished.
   handleL.onclick = handleR.onclick = (e) => e.stopPropagation();
@@ -2275,6 +2416,25 @@ function renderFraming(): Node[] {
     const start = Math.min(Math.max(cur.clipStart, at), Math.max(cur.clipStart, cur.clipEnd - CUT_S));
     setState({
       cuts: normalize([...cur.cuts, { start, end: Math.min(start + CUT_S, cur.clipEnd) }], cur.windowEnd),
+    });
+  };
+
+  const addSpeed = el("button", {
+    textContent: "+ Speed",
+    title: "Speed up the part of the clip under the playhead",
+    disabled: Boolean(s.busy) || s.speeds.length >= MAX_SPEEDS,
+  });
+  addSpeed.onclick = () => {
+    // Live state, never `s` — the `+ Cut` trap.
+    const cur = getState();
+    const at = videoEl === null ? cur.clipStart : cur.windowStart + videoEl.currentTime;
+    const start = Math.min(Math.max(cur.clipStart, at), Math.max(cur.clipStart, cur.clipEnd - SPEED_S));
+    setState({
+      speeds: normalizeSpeeds(
+        [...cur.speeds, { start, end: Math.min(start + SPEED_S, cur.clipEnd), speed: DEFAULT_SPEED }],
+        cur.windowStart,
+        cur.windowEnd,
+      ),
     });
   };
 
@@ -2451,7 +2611,7 @@ function renderFraming(): Node[] {
           textContent:
             s.segments.length === 1
               ? `${clock(s.clipStart)} → ${clock(s.clipEnd)}` +
-                (s.cuts.length === 0 ? "" : ` · ${clock(keptLength(s))} kept`)
+                (s.cuts.length === 0 && s.speeds.length === 0 ? "" : ` · ${clock(keptLength(s))} kept`)
               : `${s.segments.length} parts · ${clock(keptLength(s))}`,
         }),
         el("span", {
@@ -2466,7 +2626,7 @@ function renderFraming(): Node[] {
           : el("span"),
       ),
     ),
-    el("div", { className: "bar-row" }, transport, wave, addCut),
+    el("div", { className: "bar-row" }, transport, wave, addCut, addSpeed),
     el(
       "div",
       { className: "bar-row" },

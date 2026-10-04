@@ -1,6 +1,6 @@
 import type { Rect } from "./geometry.ts";
 import type { CustomBox } from "./custom.ts";
-import type { Segment } from "./segments.ts";
+import type { Segment, SpeedRange } from "./segments.ts";
 import { UPLOAD_MAX_BYTES } from "./defaults.ts";
 
 export type ProbeResult = {
@@ -273,6 +273,8 @@ export async function exportClip(body: {
    *  system, sorted and disjoint. Empty for an uncut export, which is the
    *  request every caller sent before this field existed. */
   cuts: Segment[];
+  /** Violet speed-up ranges, clip time, normalised. Empty for none. */
+  speeds: SpeedRange[];
   /** A stitch's segment digest, `""` for an ordinary clip. The server
    *  rebuilds the cache path from window bounds plus this — it is 8 hex
    *  characters, never a path. */
@@ -298,6 +300,9 @@ export async function exportClip(body: {
   /** Which preset reads the title. Validated server-side against the engine's
    *  own table — it reaches a subprocess as argv. Omitted on a wide layout. */
   voice?: string;
+  /** One badge PNG (BADGE-sized, bare base64) per speed `planLegs` leaves
+   *  in use, keyed "2" / "4" / "8" / "16". */
+  badgePngs: Record<string, string>;
   /** The render this one replaces, deleted server-side once the new file is
    *  in place — so a re-export after a mark or title edit leaves one final
    *  version rather than two. `""` on the first export of a session. */
