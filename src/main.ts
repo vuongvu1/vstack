@@ -3258,19 +3258,8 @@ function renderPreview(): Node[] {
   // Sits beside Studio rather than inside it: getting the link onto the
   // clipboard and following it are two different intents, and the only
   // other way to get it is to open the video and copy the address bar.
-  const copy = el("button", { textContent: "Copy link" });
-  // The label is the whole feedback channel — a clipboard write is invisible
-  // otherwise, and a callout for something this small reads as an error.
-  const flash = (text: string) => {
-    copy.textContent = text;
-    setTimeout(() => (copy.textContent = "Copy link"), 1200);
-  };
-  copy.onclick = () => {
-    void navigator.clipboard
-      .writeText(editUrl)
-      .then(() => flash("Copied"))
-      .catch(() => flash("Copy failed"));
-  };
+  const copy = copyButton("Copy link", editUrl);
+  const copyReel = copyButton("Copy reel link", s.fbUrl);
 
   // Replaces Publish once the upload lands: the next step is on YouTube, and
   // uploading the same file twice is never what was meant.
@@ -3314,11 +3303,29 @@ function renderPreview(): Node[] {
         { className: "bar-end" },
         finder,
         back,
-        ...(reelable ? (reeled ? [suite] : [reel]) : []),
+        ...(reelable ? (reeled ? [copyReel, suite] : [reel]) : []),
         ...(published ? [copy, studio] : [publish]),
       ),
     ),
   ];
+}
+
+/** A button that puts `url` on the clipboard. The label is the whole
+ *  feedback channel — a clipboard write is invisible otherwise, and a callout
+ *  for something this small reads as an error. */
+function copyButton(label: string, url: string): HTMLButtonElement {
+  const button = el("button", { textContent: label });
+  const flash = (text: string) => {
+    button.textContent = text;
+    setTimeout(() => (button.textContent = label), 1200);
+  };
+  button.onclick = () => {
+    void navigator.clipboard
+      .writeText(url)
+      .then(() => flash("Copied"))
+      .catch(() => flash("Copy failed"));
+  };
+  return button;
 }
 
 /** Everything already in the media cache, for the idle screen's dropdown.
