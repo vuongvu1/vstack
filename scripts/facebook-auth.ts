@@ -36,7 +36,13 @@ if (!existsSync(CLIENT_PATH)) {
   console.error(`vstack: no Meta app. Put { "appId": "…", "appSecret": "…" } at\n  ${CLIENT_PATH}`);
   process.exit(1);
 }
-const client = JSON.parse(readFileSync(CLIENT_PATH, "utf8")) as { appId?: string; appSecret?: string };
+let client: { appId?: string; appSecret?: string };
+try {
+  client = JSON.parse(readFileSync(CLIENT_PATH, "utf8")) as typeof client;
+} catch {
+  console.error(`vstack: ${CLIENT_PATH} is not valid JSON. Expected { "appId": "…", "appSecret": "…" }`);
+  process.exit(1);
+}
 if (!client.appId || !client.appSecret) {
   console.error(`vstack: ${CLIENT_PATH} needs both appId and appSecret.`);
   process.exit(1);

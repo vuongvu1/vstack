@@ -5,3 +5,7 @@ media/
 
 .superpowers/
 .playwright-mcp/
+
+# Credentials live in ~/.vstack/, never here (Vite serves the project root).
+facebook-*.json
+youtube-*.json
