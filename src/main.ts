@@ -1905,28 +1905,27 @@ async function doPublish(): Promise<void> {
 }
 
 /** The Facebook sibling of `doPublish`: same title gate, same poll shape,
- *  its own progress route. Independent of YouTube — either, both, any order. */
-async function doPublishReel(): Promise<void> {
+ *  its own progress route. A tall short goes as a Reel draft, anything
+ *  horizontal as an unpublished Page video. Independent of YouTube — either,
+ *  both, any order. */
+async function doPublishFacebook(kind: "reel" | "video"): Promise<void> {
   const s = getState();
   const title = s.ytTitle.trim();
   if (title === "" || s.outName === "") return;
-  await guard("Reel… 0%", async () => {
+  await guard("Facebook… 0%", async () => {
     const poll = window.setInterval(() => {
       void api
         .reelProgress()
         .then(({ sent, total }) => {
           if (total > 0 && getState().busy !== "") {
-            setState({ busy: `Reel… ${Math.round((sent / total) * 100)}%` });
+            setState({ busy: `Facebook… ${Math.round((sent / total) * 100)}%` });
           }
         })
         .catch(() => undefined);
     }, 500);
     try {
-      const { videoId, url } = await api.publishReel({
-        name: s.outName,
-        title,
-        description: s.ytDescription,
-      });
+      const upload = kind === "reel" ? api.publishReel : api.publishFbVideo;
+      const { videoId, url } = await upload({ name: s.outName, title, description: s.ytDescription });
       setState({ fbVideoId: videoId, fbUrl: url });
       bell();
     } finally {
@@ -3215,19 +3214,24 @@ function renderPreview(): Node[] {
   // Handed to the panel, which owns the title this is gated on.
   publishBtn = publish;
 
-  // Tall shorts only: a Reel must be 9:16, and wide cuts, long-form and lofi
-  // renders are all 16:9. Over-90s is the server's 400, answered before any
-  // upload. ponytail: gate on the preview <video>'s duration if that round
-  // trip ever annoys.
-  const reelable = s.mode === "short" && !isWide(resolveLayout(s.layoutId));
+  // A tall short goes as a Reel (9:16, the server refuses past 90s before
+  // any upload; ponytail: gate on the preview <video>'s duration if that
+  // round trip ever annoys). A wide cut or a long-form stack goes as an
+  // unpublished Page video. Lofi gets neither: its renders run to hours and
+  // gigabytes, past anything worth pushing through one upload.
+  const fbKind: "reel" | "video" | null =
+    s.mode === "lofi" ? null : s.mode === "short" && !isWide(resolveLayout(s.layoutId)) ? "reel" : "video";
   const reeled = s.fbVideoId !== "";
   const reel = el("button", {
-    textContent: "Reel (draft)",
-    title: "Upload to the Facebook Page as a Reel draft, to schedule in Business Suite",
+    textContent: fbKind === "reel" ? "Reel (draft)" : "Facebook (unpublished)",
+    title:
+      fbKind === "reel"
+        ? "Upload to the Facebook Page as a Reel draft, to schedule in Business Suite"
+        : "Upload to the Facebook Page as an unpublished video, to schedule in Business Suite",
     disabled: s.ytTitle.trim() === "" || Boolean(s.busy),
   });
-  reel.onclick = () => void doPublishReel();
-  reelBtn = reelable && !reeled ? reel : null;
+  reel.onclick = () => void (fbKind && doPublishFacebook(fbKind));
+  reelBtn = fbKind !== null && !reeled ? reel : null;
   const suite = el("a", {
     className: "btn-link",
     href: s.fbUrl,
@@ -3253,7 +3257,7 @@ function renderPreview(): Node[] {
   // clipboard and following it are two different intents, and the only
   // other way to get it is to open the video and copy the address bar.
   const copy = copyButton("Copy link", editUrl);
-  const copyReel = copyButton("Copy reel link", s.fbUrl);
+  const copyReel = copyButton(fbKind === "reel" ? "Copy reel link" : "Copy FB link", s.fbUrl);
 
   // Replaces Publish once the upload lands: the next step is on YouTube, and
   // uploading the same file twice is never what was meant.
@@ -3277,7 +3281,12 @@ function renderPreview(): Node[] {
       published
         ? el("span", { className: "badge badge-info", textContent: "uploaded — private" })
         : el("span"),
-      reeled ? el("span", { className: "badge badge-info", textContent: "reel draft" }) : el("span"),
+      reeled
+        ? el("span", {
+            className: "badge badge-info",
+            textContent: fbKind === "reel" ? "reel draft" : "fb unpublished",
+          })
+        : el("span"),
       // Only worth saying when it did NOT take: a set thumbnail is the
       // expected outcome and needs no badge, but a skipped one is something
       // to fix by hand in Studio, and silence would hide it.
@@ -3297,7 +3306,7 @@ function renderPreview(): Node[] {
         { className: "bar-end" },
         finder,
         back,
-        ...(reelable ? (reeled ? [copyReel, suite] : [reel]) : []),
+        ...(fbKind !== null ? (reeled ? [copyReel, suite] : [reel]) : []),
         ...(published ? [copy, studio] : [publish]),
       ),
     ),

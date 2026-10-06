@@ -101,7 +101,9 @@ skips the starter screen and the voice, keeps the outro (letterboxed by
 nothing and adds a second publish target beside YouTube: a tall short goes
 to a Facebook PAGE as a Reel DRAFT (`/api/publish-reel`), captioned with the
 YouTube title + description minus `#Shorts`, refused over 90s before any
-byte is sent, plus
+byte is sent — and, per its 2026-10-06 addendum, a wide cut or a long-form
+stack goes to the same Page as an UNPUBLISHED video (`/api/publish-fb-video`),
+lofi to neither, plus
 `docs/specs/2026-10-03-vstack-speed-ranges-design.md`, which supersedes
 nothing and adds violet speed-up ranges to the framing strip (x2-x16, sound
 kept and `atempo`d, motion blur, colour split, badge) — `speeds` + `badgePngs` on top of `/api/export`'s
@@ -215,14 +217,15 @@ server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
 scripts/youtube-auth.ts  `pnpm youtube-auth` — the one-off OAuth dance
 server/facebook.ts buildCaption, reelLengthError, readPageToken,
                    checkFacebook, uploadReel (start → rupload → finish as
-                   DRAFT), reelProgress — imports nothing from youtube.ts
+                   DRAFT), uploadPageVideo (Resumable Upload API →
+                   /{page}/videos published=false), reelProgress (both) — imports nothing from youtube.ts
 scripts/facebook-auth.ts  `pnpm facebook-auth` — short token → long-lived →
                    never-expiring Page token in ~/.vstack/facebook-token.json
 server/ytdlp.ts    videoIdFrom, probe, fetchWindow, parseClipName, listClips
 server/chat.ts     ChatMsg/Moment, BIN/WIN/LAG/TOP/MIN_GAP/SKIP_HEAD,
                    fetchChat (chat replay -> media/<id>/chat.json),
                    parseChat, peaks (the scorer)
-server/index.ts    21 routes (20 POST + GET /out/<name>), serveOut range
+server/index.ts    22 routes (21 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core; TALL/WIDE
 src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
@@ -248,7 +251,7 @@ src/thumb.ts       THUMB, renderThumb (any picture → 1280x720 JPEG, stretched)
                    WIDE_IMAGE, renderWide (any picture → 1920x1080 JPEG,
                    cover-cropped — the lofi journey's background)
 src/state.ts       AppState, setState/setQuiet, save/restore
-src/api.ts         19 fetch wrappers
+src/api.ts         20 fetch wrappers
 src/format.ts      mmss / clock / slugify (shared client + server), sampleOf
                    (the reader's Try sample: first paragraph, cut to fit)
 src/player.ts      YT IFrame API wrapper + trim strip

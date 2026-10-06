@@ -390,6 +390,17 @@ export async function publishReel(body: {
   return (await post("/api/publish-reel", body)).json() as Promise<{ videoId: string; url: string }>;
 }
 
+/** Uploads a finished horizontal render to the Facebook Page as an
+ *  UNPUBLISHED video. Title and description go across as they are. */
+export async function publishFbVideo(body: {
+  name: string;
+  title: string;
+  description: string;
+}): Promise<{ videoId: string; url: string }> {
+  return (await post("/api/publish-fb-video", body)).json() as Promise<{ videoId: string; url: string }>;
+}
+
+/** Progress of whichever Facebook upload is running — Reel or Page video. */
 export async function reelProgress(): Promise<{ sent: number; total: number }> {
   return (await post("/api/publish-reel/progress", {})).json() as Promise<{
     sent: number;

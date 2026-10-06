@@ -96,7 +96,14 @@ import {
   setThumbnail,
   uploadVideo,
 } from "./youtube.ts";
-import { buildCaption, checkFacebook, reelLengthError, reelProgress, uploadReel } from "./facebook.ts";
+import {
+  buildCaption,
+  checkFacebook,
+  reelLengthError,
+  reelProgress,
+  uploadPageVideo,
+  uploadReel,
+} from "./facebook.ts";
 import { fetchWindow, listClips, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
@@ -1497,7 +1504,31 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return send(res, 200, reel);
   }
 
+  // Shared with /api/publish-fb-video: one Facebook upload slot, one counter.
   if (req.url === "/api/publish-reel/progress") return send(res, 200, reelProgress());
+
+  // The horizontal sibling of /api/publish-reel — a wide cut or a long-form
+  // stack, as an UNPUBLISHED Page video the user schedules in Business Suite.
+  // Same gate. The picked or title-card .thumb.jpg becomes the cover when
+  // the render has one.
+  if (req.url === "/api/publish-fb-video") {
+    const body = await json<Record<string, unknown>>(req);
+    if (!isOutName(body.name)) return send(res, 400, { error: "Bad output name." });
+    const path = outPath(body.name);
+    if (!existsSync(path)) return send(res, 404, { error: `${body.name} is not in out/.` });
+    const title = str(body.title, "title").trim();
+    if (title === "") return send(res, 400, { error: "title must not be blank." });
+    const thumb = thumbPath(path);
+    const video = await uploadPageVideo({
+      path,
+      size: statSync(path).size,
+      title,
+      description: str(body.description, "description").trim(),
+      thumb: existsSync(thumb) ? thumb : null,
+    });
+    console.warn(`vstack: uploaded ${body.name} as unpublished Page video ${video.videoId}`);
+    return send(res, 200, video);
+  }
 
   // A distinct URL rather than a flag: `server/index.ts` routes on exact
   // `req.url` equality, so `/api/lofi?progress=1` would miss the `/api/lofi`

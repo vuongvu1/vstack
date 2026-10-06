@@ -168,3 +168,30 @@ side.
 - **Long-form / lofi to Facebook as a regular Page video** — a different
   endpoint (`/{page-id}/videos`). Add when wanted.
 - **Personal profiles** — impossible via the API.
+
+## Addendum 2026-10-06 — horizontal renders as unpublished Page videos
+
+A wide cut (short journey on a `WIDE` layout) and a long-form stack get a
+**"Facebook (unpublished)"** button where a tall short gets "Reel (draft)".
+Lofi gets neither — its renders run to hours and gigabytes. This replaces the
+"Long-form / lofi to Facebook" line under Skipped for the long journey only.
+
+- **Flow: Meta's Resumable Upload API**, the one its current docs recommend
+  for Page videos: `POST /{app-id}/uploads` opens a session → one
+  `node:https` POST of the whole file to `/{upload:<id>}` (`file_offset: 0`)
+  returns a file handle → `POST /{page-id}/videos` (multipart) with `title`,
+  `description`, `published=false`, `fbuploader_video_file_chunk=<handle>`
+  and `thumb` when `<name>.thumb.jpg` exists. The Page token opens the
+  session (verified 2026-10-06), so no user token is stored. The app id is
+  read from `facebook-client.json`.
+- **Unpublished, not scheduled.** The user schedules in Business Suite.
+  `scheduled_publish_time` (10 min – 6 months) is the upgrade path.
+- **No size or duration check.** Meta's docs state none.
+- **No resume.** `GET` on the session returns `file_offset` if a multi-GB
+  upload ever needs it (`ponytail:`).
+- `/api/publish-fb-video` takes `{ name, title, description }` behind the
+  same `isOutName` + `existsSync` gate; progress shares
+  `/api/publish-reel/progress` (one Facebook upload slot). Client state reuses
+  `fbVideoId`/`fbUrl` — a render is either a Reel or a Page video, never both.
+- Unverified until the first real upload: that a `published=false` video
+  appears in Business Suite for scheduling.
