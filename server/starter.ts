@@ -30,11 +30,6 @@ export const CUE_PATH = asset("before-video-start-sound.mp3");
  *  client/server line rather than duplicated. */
 export const TITLE_SOUND_PATH = asset("start-title-sound.mp3");
 
-/** The speed-up range's whoosh, played from the start of every sped window
- *  of a framing export. AAC inside a .mp3 name, like the crackle — ffmpeg
- *  sniffs past it. ~8.8s, trimmed to each window by the export. */
-export const WHOOSH_PATH = asset("speedup-whoosh.mp3");
-
 /** The outro, concatenated after the clip. A finished 1080x1920 video with
  *  its own audio, not a still — so it needs no filter beyond the frame-rate
  *  and SAR normalisation `concat` demands of every leg.
@@ -194,7 +189,7 @@ export function starterDuration(voiceSeconds: number): number {
  *  This is also what fills the preset cache `knownVoices` serves, which is
  *  why it runs before any route does. */
 export async function checkStarter(): Promise<void> {
-  for (const path of [MUSIC_PATH, CUE_PATH, TITLE_SOUND_PATH, END_PATH, WHOOSH_PATH]) {
+  for (const path of [MUSIC_PATH, CUE_PATH, TITLE_SOUND_PATH, END_PATH]) {
     if (!existsSync(path)) {
       console.error(`vstack: bundled asset missing at ${path}.`);
       process.exit(1);

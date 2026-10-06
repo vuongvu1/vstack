@@ -56,6 +56,7 @@ import {
   normalize,
   normalizeSpeeds,
   planLegs,
+  speedGain,
 } from "./segments.ts";
 import type { Segment, Speed } from "./segments.ts";
 import { renderTitleArt, titleFits } from "./starter.ts";
@@ -998,10 +999,6 @@ const CUT_S = 2;
  *  handles, and the middle of the four rates. */
 const SPEED_S = 4;
 const DEFAULT_SPEED: Speed = 4;
-/** Whether the strip muted the video for a speed range, so leaving the range
- *  unmutes only what this code muted and never a mute the user chose.
- *  Module-scoped because the bar is rebuilt every render. */
-let speedMuted = false;
 
 /** Whether Play covers the marked cut only, rather than the whole fetched
  *  window. Module-scoped like `wavePeaks` below and for the same reason —
@@ -2232,7 +2229,8 @@ function renderFraming(): Node[] {
         (c) => v.currentTime >= c.start - s.windowStart && v.currentTime < c.end - s.windowStart,
       );
       if (hole !== undefined) v.currentTime = Math.min(span, hole.end - s.windowStart);
-      // Play a speed range at its rate, muted — what the export does. Read
+      // Play a speed range at its rate, sound and all — what the export does
+      // (`playbackRate` keeps the pitch, as the export's `atempo` does). Read
       // after the cut skip, and through `speedAt`, so a cut inside a speed
       // range is still skipped rather than sped. ~4Hz means up to a quarter
       // second of real time at the wrong rate either side of a range: at x16
@@ -2241,13 +2239,9 @@ function renderFraming(): Node[] {
       const live = getState();
       const sp = speedAt(live.speeds, live.cuts, s.windowStart + v.currentTime);
       v.playbackRate = sp ?? 1;
-      if (sp !== null && !v.muted) {
-        v.muted = true;
-        speedMuted = true;
-      } else if (sp === null && speedMuted) {
-        v.muted = false;
-        speedMuted = false;
-      }
+      // The export's gain too. Safe to own: the framing <video> has no
+      // native controls, so there is no user volume to clobber.
+      v.volume = speedGain(sp ?? 1);
     };
     // The element may already be playing by the time a re-render builds
     // these: neither event fires again.

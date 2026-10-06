@@ -156,6 +156,15 @@ export type Leg = { start: number; end: number; speed: 1 | Speed };
 /** Bounds the export's stitch graph the way `MAX_CUTS` does — not measured. */
 export const MAX_SPEEDS = 4;
 
+/** How loud a leg's own sound plays at `speed`. Up to x4 speech is still
+ *  words; at x8 and x16 it is a warble, so it drops to a bed under the
+ *  picture rather than going silent. One rule for the export's stitch and
+ *  the framing `<video>`'s `volume`. ~-10.5 dB. */
+export const FAST_GAIN = 0.3;
+export function speedGain(speed: number): number {
+  return speed >= 8 ? FAST_GAIN : 1;
+}
+
 export function isSpeed(n: unknown): n is Speed {
   return SPEEDS.includes(n as Speed);
 }

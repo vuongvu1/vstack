@@ -103,8 +103,8 @@ to a Facebook PAGE as a Reel DRAFT (`/api/publish-reel`), captioned with the
 YouTube title + description minus `#Shorts`, refused over 90s before any
 byte is sent, plus
 `docs/specs/2026-10-03-vstack-speed-ranges-design.md`, which supersedes
-nothing and adds violet speed-up ranges to the framing strip (x2-x16, muted,
-whoosh, motion blur, colour split, badge) — `speeds` + `badgePngs` on top of `/api/export`'s
+nothing and adds violet speed-up ranges to the framing strip (x2-x16, sound
+kept and `atempo`d, motion blur, colour split, badge) — `speeds` + `badgePngs` on top of `/api/export`'s
 body.
 
 No spec covers the speech engine: every one of them
@@ -120,7 +120,7 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
-pnpm test     # vitest, 601 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 603 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -129,9 +129,9 @@ pnpm facebook-auth <token>  # one-off Page token for Reels (see scripts/facebook
 ```
 
 Needs `ffmpeg`, `ffprobe` and `yt-dlp` on PATH, the speech venv from
-`pnpm tts-setup`, and all eight bundled assets in `server/assets/`. The server checks
+`pnpm tts-setup`, and all seven bundled assets in `server/assets/`. The server checks
 all of it at boot and exits with an install hint if any is missing —
-`checkStarter` owns the short journey's five (the whoosh included), `checkLongform` the long
+`checkStarter` owns the short journey's four, `checkLongform` the long
 journey's one, and `checkLofi` the lofi journey's two. The cutter adds
 nothing to that list: it bundles no asset, and its one external requirement
 is `libmp3lame`, which is present in this machine's Homebrew ffmpeg
@@ -188,7 +188,7 @@ server/script.ts   scriptMp3 (the script reader's one pass — `speak` over the
                    whole script, then one mp3 encode)
 server/cut.ts      MP3_QUALITY, cutMp3 (the cutter's one ffmpeg pass, run
                    once per range)
-server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH/WHOOSH_PATH, VOICE,
+server/starter.ts  MUSIC_PATH/CUE_PATH/TITLE_SOUND_PATH/END_PATH, VOICE,
                    starterDuration, checkStarter, installedVoices,
                    knownVoices, synthesize, speak, prependStarter (the title
                    card *and* the outro, pass 2 of the export),
@@ -208,10 +208,7 @@ server/assets/     starter-music.mp3 (the bed), before-video-start-sound.mp3
                    inside a .mp3 name, which ffmpeg sniffs past),
                    lofi-video-logo.png (the mark that spins in the lofi
                    journey's top-right corner — also lofi.ts's, 360x360
-                   RGBA, supplied by the user),
-                   speedup-whoosh.mp3 (the swoosh over each speed range's
-                   start — ~8.8s, AAC inside a .mp3 name, supplied by the
-                   user, boot-checked by checkStarter as WHOOSH_PATH)
+                   RGBA, supplied by the user)
 server/youtube.ts  CONFIG_DIR/TOKEN_PATH, readClient, checkYouTube,
                    buildSnippet, accessToken, uploadVideo, publishProgress,
                    setThumbnail
@@ -230,7 +227,8 @@ server/index.ts    21 routes (20 POST + GET /out/<name>), serveOut range
 src/geometry.ts    pure rect math — THE tested core; TALL/WIDE
 src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
                    totalDuration, keepRanges, editMark, planLegs/
-                   normalizeSpeeds/isValidSpeeds/legsDuration/speedWindows
+                   normalizeSpeeds/isValidSpeeds/legsDuration/speedWindows,
+                   speedGain/FAST_GAIN
 src/speed.ts       speedAt, drawBadge, renderBadge (the x-N badge as a
                    transparent PNG, outlined text), the preview's motion-trail approximation lives in preview.ts
 src/lofi.ts        Speech/Placement, BUCKETS_PER_SEC/MIN_GAP/SKIP_HEAD/
@@ -746,9 +744,9 @@ The framing `<video>` **skips** a cut (`ontimeupdate` seeks to its end), and
 `keptLength` subtracts them. Both are load-bearing rather than polish: they
 are what keeps the next invariant's promise while framing gains holes.
 
-**`planLegs` is the one rule a speed range is spent with, and it reduces to `keepRanges` at no speeds.** A speed range is a violet band on the framing strip, x2 to x16, laid over the clip the way a cut is. Where the two overlap, the cut wins: the speed is clipped to what survives, so a band never plays footage the export drops. Two bands that overlap merge and the EARLIER one's speed wins, for the reason `normalize` keeps the earlier `start`. `planLegs(start, end, cuts, speeds)` returns the legs the render is built from, each a kept range with its speed; the client's kept badge, its set of badge PNGs (one per distinct speed in use) and the server's legs, badge-key check and fx windows all come from that one function. Two copies of the subtraction is how a badge comes to name a duration, or a speed, the file does not have. With no speeds it returns exactly `keepRanges`' ranges at speed 1, which is what keeps every export written before the field existed byte-identical; `src/segments.test.ts` mutation-tests that identity. Two known gaps, stated rather than fixed: the framing `<video>` sets `playbackRate = speed` inside a band, muted through a `speedMuted` flag that undoes only its own mute, on a ~4 Hz `timeupdate` (`ponytail:`-marked), so the rate and the mute can lag a band's edge by a quarter second, and leaving framing does not reset the rate until the next `timeupdate` (it self-heals). And the whoosh in a real export was verified by the real-ffmpeg test against a synthetic tone, not by ear.
+**`planLegs` is the one rule a speed range is spent with, and it reduces to `keepRanges` at no speeds.** A speed range is a violet band on the framing strip, x2 to x16, laid over the clip the way a cut is. Where the two overlap, the cut wins: the speed is clipped to what survives, so a band never plays footage the export drops. Two bands that overlap merge and the EARLIER one's speed wins, for the reason `normalize` keeps the earlier `start`. `planLegs(start, end, cuts, speeds)` returns the legs the render is built from, each a kept range with its speed; the client's kept badge, its set of badge PNGs (one per distinct speed in use) and the server's legs, badge-key check and fx windows all come from that one function. Two copies of the subtraction is how a badge comes to name a duration, or a speed, the file does not have. With no speeds it returns exactly `keepRanges`' ranges at speed 1, which is what keeps every export written before the field existed byte-identical; `src/segments.test.ts` mutation-tests that identity. Two known gaps, stated rather than fixed: the framing `<video>` sets `playbackRate = speed` inside a band on a ~4 Hz `timeupdate` (`ponytail:`-marked), so the rate can lag a band's edge by a quarter second, and leaving framing does not reset the rate until the next `timeupdate` (it self-heals). A band keeps its sound, sped: `concatClips` runs a sounded sped leg through `atempo=<speed>` (pitch kept, 0.5-100 so x16 fits), the same thing the browser's `playbackRate` does by default. At x8 and x16 speech is a warble rather than words, so `speedGain` (in `src/segments.ts`, one rule for both sides) drops those legs to `FAST_GAIN` (0.3, ~-10.5 dB): `volume=` after `atempo` in the stitch, `v.volume` on the framing `<video>` — safe to own because that element has no native controls. It was muted under a bundled whoosh first; the user removed the whoosh and asked for the original sound.
 
-**The speed stage is gated, not built per window, and the motion blur lives in the stitch.** `speedFilter(fx, frame, base)` is a red/blue split (`rgbashift`, which only accepts RGB so ffmpeg converts around it by itself, then `format=yuv420p`) plus the badge overlays and the whoosh. The VHS lines it once carried, and the planar-RGB `blend` rule that came with them, are gone — nothing in this stage blends any more. The stage is built ONCE, with a single `enable=` sum over every window's `between(t,a,b)`, rather than a copy of the chain per window: N windows cost one pass of the filters, not N. The x-N badges arrive as extra inputs declared AFTER the mask and BEFORE `-ss` (ffmpeg attaches an option to the next `-i`, the lesson the mask carries), and are `overlay`ed inside their window; `ExportOpts.speed` carries windows, the badge map and the whoosh together. The whoosh input is `-stream_loop -1`, so a band longer than the ~8.8s asset keeps sounding (it repeats end to end), and is mixed `amix normalize=0 duration=first`, trimmed to each window and faded out over `min(0.3s, window)`, so it cannot outlast a band or change the programme's length. Every video `enable=` is gated `gt(t,0)*(…)` because the starter screen and the thumbnails are body.mp4's FIRST FRAME and must stay clean even when a range opens the clip (the preview's thumbnail is clean too); `exportClip` also refuses a speed stage on a `start !== 0` input, since windows are output seconds of a stitched clip.
+**The speed stage is gated, not built per window, and the motion blur lives in the stitch.** `speedFilter(fx, frame, base)` is a red/blue split (`rgbashift`, which only accepts RGB so ffmpeg converts around it by itself, then `format=yuv420p`) plus the badge overlays, and it touches no audio — the export maps `0:a?` with or without it. The VHS lines it once carried, and the planar-RGB `blend` rule that came with them, are gone — nothing in this stage blends any more. The stage is built ONCE, with a single `enable=` sum over every window's `between(t,a,b)`, rather than a copy of the chain per window: N windows cost one pass of the filters, not N. The x-N badges arrive as extra inputs declared AFTER the mask and BEFORE `-ss` (ffmpeg attaches an option to the next `-i`, the lesson the mask carries), and are `overlay`ed inside their window; `ExportOpts.speed` carries windows and the badge map. Every video `enable=` is gated `gt(t,0)*(…)` because the starter screen and the thumbnails are body.mp4's FIRST FRAME and must stay clean even when a range opens the clip (the preview's thumbnail is clean too); `exportClip` also refuses a speed stage on a `start !== 0` input, since windows are output seconds of a stitched clip.
 
 The motion blur is NOT in this stage: `concatClips` puts `tmix=frames=min(speed, BLUR_FRAMES_MAX)` (cap 8) between `trim` and `setpts` on a sped leg, so each output frame averages the source frames the speed-up would otherwise skip, and `fps` after `setpts` keeps one of those blended frames. It has to sit BEFORE `setpts`; after it, `tmix` would average neighbours already thinned out. Speed-1 legs carry no `tmix` and are byte-identical to before. `server/ffmpeg.test.ts` pins it on a black/white-alternating fixture: the x1 half reads pure, the x4 half mid-grey (without `tmix` the survivors share a parity and read pure). The preview's trail (the last composite at half alpha under the new one while a speed is active, before the badge) is an approximation of that, marked `ponytail:`; it draws the badge and the trail but not the colour split.
 

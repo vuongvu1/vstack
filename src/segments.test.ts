@@ -11,6 +11,7 @@ import {
   normalize,
   normalizeSpeeds,
   planLegs,
+  speedGain,
   speedWindows,
   totalDuration,
 } from "./segments.ts";
@@ -434,3 +435,16 @@ describe("speedWindows", () => {
     ]);
   });
 });
+
+describe("speedGain", () => {
+  it("keeps full sound at x1, x2 and x4", () => {
+    for (const sp of [1, 2, 4]) expect(speedGain(sp)).toBe(1);
+  });
+  it("turns x8 and x16 down — fast speech is a warble, not words", () => {
+    for (const sp of [8, 16]) {
+      expect(speedGain(sp)).toBeGreaterThan(0);
+      expect(speedGain(sp)).toBeLessThan(0.5);
+    }
+  });
+});
+

@@ -286,3 +286,17 @@ UI.
   the badge overlays, whoosh, `gt(t,0)` gate and `start === 0` guard as they
   were. Earlier sections describing the lines, `VHS_SHIFT` (now
   `SPLIT_SHIFT`) and the planar-RGB blend are superseded by this note.
+
+## Revised 2026-10-06: the original sound, no whoosh
+
+The user disliked the whoosh. It is gone — asset, `WHOOSH_PATH`, boot check,
+and the stage's audio graph — and a speed range now keeps the clip's own
+sound, sped: `concatClips` puts `atempo=<speed>` on a sounded sped leg (pitch
+kept; `atempo` takes 0.5-100, so x16 fits in one filter), and the framing
+`<video>` plays the band unmuted at `playbackRate`, which keeps pitch too.
+Everything above about muting and the whoosh is superseded by this.
+
+At x8 and x16 the sped sound is a warble, so `speedGain` drops those legs to
+`FAST_GAIN` (0.3, ~-10.5 dB) in both the stitch (`volume=` after `atempo`) and
+the framing `<video>` (`volume`). x2 and x4 keep full level.
+

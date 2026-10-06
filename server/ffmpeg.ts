@@ -13,7 +13,7 @@ import type { Layout } from "../src/layout.ts";
 import { mmss, slugify } from "../src/format.ts";
 import { MAX_CUSTOM, MIN_OUT_SIDE, isValidCustom } from "../src/custom.ts";
 import type { CustomBox } from "../src/custom.ts";
-import { SPEEDS } from "../src/segments.ts";
+import { SPEEDS, speedGain } from "../src/segments.ts";
 import type { Segment, Speed } from "../src/segments.ts";
 import { BADGE_INSET } from "../src/defaults.ts";
 import { toolError } from "./errors.ts";
@@ -375,24 +375,19 @@ export async function probeAudio(path: string): Promise<{ seconds: number }> {
 }
 
 /** The speed stage's own inputs and timing. Windows are OUTPUT seconds
- *  (`speedWindows`); badges map each speed used to its PNG; whoosh is the
- *  sound played from each window's start. */
+ *  (`speedWindows`); badges map each speed used to its PNG. */
 export type SpeedFx = {
   windows: { at: number; until: number; speed: Speed }[];
   badges: Partial<Record<Speed, string>>;
-  whoosh: string;
 };
 
 /** Red/blue split, px. Export-only: the preview does not draw it. */
 const SPLIT_SHIFT = 6;
-/** The whoosh's own level, and how long it fades out at its window's end —
- *  the asset is ~9s and a window can be a twentieth of a second. */
-const WHOOSH_GAIN = 1;
-const WHOOSH_FADE = 0.3;
 
 /** Graph pieces appended after `buildFilter`'s `[v]`. Inputs: badges at
- *  `base, base+1, …` in `SPEEDS` order for each speed used, then the whoosh.
- *  Produces `[vo]` and `[ao]`; "" when there are no windows.
+ *  `base, base+1, …` in `SPEEDS` order for each speed used.
+ *  Produces `[vo]`; "" when there are no windows. Audio is untouched here:
+ *  a sped leg's own sound is `atempo`d in `concatClips`.
  *
  *  Every effect is gated with `enable=` over the windows rather than built
  *  per window: one stage, however many windows. The stage is the red/blue
@@ -416,25 +411,6 @@ export function speedFilter(fx: SpeedFx, frame: Size, base: number): string {
     );
   });
   parts.push(`[fx${used.length}]null[vo]`);
-
-  const whooshIndex = base + used.length;
-  const n = fx.windows.length;
-  parts.push(`[${whooshIndex}:a]asplit=${n}${fx.windows.map((_, j) => `[w${j}]`).join("")}`);
-  fx.windows.forEach((w, j) => {
-    const len = w.until - w.at;
-    const fade = Math.min(WHOOSH_FADE, len);
-    const ms = Math.round(w.at * 1000);
-    parts.push(
-      `[w${j}]atrim=0:${len},afade=t=out:st=${len - fade}:d=${fade},` +
-        `volume=${WHOOSH_GAIN},adelay=delays=${ms}:all=1[wd${j}]`,
-    );
-  });
-  // normalize=0 or the programme halves; duration=first or a whoosh could
-  // outrun the clip — the transition swell's two lessons.
-  parts.push(
-    `[0:a]${fx.windows.map((_, j) => `[wd${j}]`).join("")}` +
-      `amix=inputs=${n + 1}:normalize=0:duration=first[ao]`,
-  );
   return parts.join(";");
 }
 
@@ -452,9 +428,8 @@ export type ExportOpts = {
    *  than resolved here so `mask.ts` — which needs `MEDIA_DIR` from this
    *  module — can sit above it and the server layering stays acyclic. */
   mask: string;
-  /** The speed-up stage. Only ever set on a stitched input, which always
-   *  carries an audio stream (`concatClips` stands silence in), so `[0:a]`
-   *  exists for the whoosh mix. Absent: the graph is exactly as before. */
+  /** The speed-up stage. Only ever set on a stitched input. Absent: the
+   *  graph is exactly as before. */
   speed?: SpeedFx;
   out: string;
 };
@@ -616,11 +591,9 @@ export async function exportClip(opts: ExportOpts): Promise<string> {
         // -ss, or -ss would attach to this one as an input option instead of
         // staying an output option on the clip.
         "-loop", "1", "-i", opts.mask,
-        // Badges and the whoosh after the mask, so input 1 does not move, and
-        // before -ss for the mask's own reason. The whoosh loops so a window
-        // longer than the asset keeps sounding; each leg's atrim bounds it.
+        // Badges after the mask, so input 1 does not move, and before -ss
+        // for the mask's own reason.
         ...badgeInputs,
-        ...(fx ? ["-stream_loop", "-1", "-i", fx.whoosh] : []),
         // -ss AFTER -i is frame-accurate. Before -i it snaps to a keyframe
         // and drifts up to ~2s; decoding the pad is what buys the accuracy.
         "-ss", String(opts.start),
@@ -629,7 +602,7 @@ export async function exportClip(opts: ExportOpts): Promise<string> {
         "-filter_complex", fx ? `${graph};${speedFilter(fx, opts.layout.frame, 2)}` : graph,
         "-map", fx ? "[vo]" : "[v]",
         // The ? makes audio optional so a silent source still exports.
-        "-map", fx ? "[ao]" : "0:a?",
+        "-map", "0:a?",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k",
@@ -652,10 +625,10 @@ export type ConcatPart = {
   path: string;
   start: number;
   end: number;
-  /** Playback rate for this leg; absent means 1. A sped leg keeps its
-   *  picture, sped up, and gives up its sound for silence — the speed-up
-   *  design mutes a fast range rather than chipmunk it. `/api/window` never
-   *  passes this, so its stitch is unchanged. */
+  /** Playback rate for this leg; absent means 1. A sped leg keeps both its
+   *  picture and its sound, sped up — `atempo` keeps the pitch, as the
+   *  framing `<video>`'s `playbackRate` does. `/api/window` never passes
+   *  this, so its stitch is unchanged. */
   speed?: number;
 };
 
@@ -693,9 +666,7 @@ export async function concatClips(parts: ConcatPart[], out: string): Promise<str
   const shape = probed[0];
   if (shape === undefined) throw new Error("concatClips could not probe its first part.");
 
-  // A sped leg takes its sound from the silence stand-in too, so it counts
-  // as silent here. The stand-in's index does not move either way.
-  const silentAt = (i: number) => probed[i]?.hasAudio !== true || (parts[i]?.speed ?? 1) > 1;
+  const silentAt = (i: number) => probed[i]?.hasAudio !== true;
   const anySilent = parts.some((_, i) => silentAt(i));
   // Appended last, and only when needed, so a stitch of sounded parts has
   // exactly the inputs it did before this branch existed.
@@ -724,14 +695,19 @@ export async function concatClips(parts: ConcatPart[], out: string): Promise<str
         `scale=${shape.width}:${shape.height},setsar=1,fps=${shape.fps},` +
         `format=yuv420p[v${i}]`,
     );
-    // A silent or sped part's leg is cut out of the shared anullsrc input
-    // instead, trimmed to this leg's OUTPUT length so the streams stay in step.
+    // A silent part's leg is cut out of the shared anullsrc input instead,
+    // trimmed to this leg's OUTPUT length so the streams stay in step. A
+    // sounded sped leg is `atempo`d to the same length (0.5-100, so x16 fits)
+    // and turned down at the speeds `speedGain` calls a warble.
     const silent = silentAt(i);
     const audioSrc = silent ? `${silenceIndex}:a` : `${i}:a`;
     const from = silent ? 0 : part.start;
     const to = silent ? (part.end - part.start) / speed : part.end;
+    const gain = speedGain(speed);
+    const sped =
+      !silent && speed !== 1 ? `atempo=${speed},${gain < 1 ? `volume=${gain},` : ""}` : "";
     legs.push(
-      `[${audioSrc}]atrim=${from}:${to},asetpts=PTS-STARTPTS,` +
+      `[${audioSrc}]atrim=${from}:${to},asetpts=PTS-STARTPTS,${sped}` +
         `aresample=${CONCAT_RATE},` +
         `aformat=sample_fmts=fltp:channel_layouts=stereo[a${i}]`,
     );

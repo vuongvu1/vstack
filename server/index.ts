@@ -83,7 +83,6 @@ import {
 import {
   END_PATH,
   VOICE,
-  WHOOSH_PATH,
   checkStarter,
   knownVoices,
   prependStarter,
@@ -807,7 +806,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         // cached from then on, keyed on the layout id, GUTTER, CORNER_RADIUS
         // and a digest of the pieces' output rects.
         mask: await ensureMask(layout, customs.map((c) => c.out)),
-        speed: windows.length > 0 ? { windows, badges, whoosh: WHOOSH_PATH } : undefined,
+        speed: windows.length > 0 ? { windows, badges } : undefined,
         out: body,
       });
       if (wide) {
