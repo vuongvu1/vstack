@@ -77,7 +77,8 @@ Sim: https://www.youtube.com/@simchan_hojo`;
  *
  *  "shorts" is gone and "tổng hợp" takes its place: a compilation is what
  *  someone searching for this would actually type. */
-export const LONG_TAGS_DEFAULT = "vtuber, vtubervn, vtuber vietnam, tổng hợp, compilation";
+export const LONG_TAGS_DEFAULT =
+  "vtuber, vtubervn, vtuber vietnam, tổng hợp, compilation";
 
 /** The starter title, capped for YouTube.
  *
@@ -166,7 +167,7 @@ export const MAX_TRACKS = 70;
  *  the timestamp the day someone wants the exact moment. */
 export function defaultDescription(videoId: string): string {
   if (videoId.trim() === "") return DESCRIPTION_TEMPLATE;
-  return `${DESCRIPTION_TAGS}\n\nNguồn: https://youtu.be/${videoId}\n\n${DESCRIPTION_BODY}`;
+  return `${DESCRIPTION_TAGS}\n\nStream: https://youtu.be/${videoId}\n\n${DESCRIPTION_BODY}`;
 }
 
 /** How long the bundled `end_video.mp4` outro runs, in seconds.

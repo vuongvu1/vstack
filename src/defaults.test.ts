@@ -20,7 +20,9 @@ describe("defaultTitle", () => {
   // room for — but the 100-char cap is still YouTube's and still hard.
   it("never exceeds YouTube's cap, at any input length", () => {
     for (const n of [0, 1, 50, 99, 100, 101, 200]) {
-      expect(defaultTitle("a".repeat(n)).length).toBeLessThanOrEqual(YT_TITLE_MAX);
+      expect(defaultTitle("a".repeat(n)).length).toBeLessThanOrEqual(
+        YT_TITLE_MAX,
+      );
     }
   });
 
@@ -56,7 +58,9 @@ describe("DESCRIPTION_TEMPLATE", () => {
   it("carries the three channel links", () => {
     expect(DESCRIPTION_TEMPLATE).toContain("https://www.youtube.com/@habine03");
     expect(DESCRIPTION_TEMPLATE).toContain("https://www.youtube.com/@SiiniYT");
-    expect(DESCRIPTION_TEMPLATE).toContain("https://www.youtube.com/@simchan_hojo");
+    expect(DESCRIPTION_TEMPLATE).toContain(
+      "https://www.youtube.com/@simchan_hojo",
+    );
   });
 });
 
@@ -100,7 +104,9 @@ describe("the long-form defaults", () => {
   // literal "#vtuber" as a tag. Same rule the short list already follows.
   it("is comma-separated rather than hashtagged", () => {
     expect(LONG_TAGS_DEFAULT).not.toContain("#");
-    expect(LONG_TAGS_DEFAULT.split(",").every((t) => t.trim() !== "")).toBe(true);
+    expect(LONG_TAGS_DEFAULT.split(",").every((t) => t.trim() !== "")).toBe(
+      true,
+    );
   });
 
   // YouTube rejects an upload whose concatenated tags run past roughly 500
@@ -108,13 +114,14 @@ describe("the long-form defaults", () => {
   it("stays well inside YouTube's tag budget", () => {
     expect(LONG_TAGS_DEFAULT.length).toBeLessThan(400);
   });
-
 });
 
 describe("WIDE_TAGS_DEFAULT / tagsFor", () => {
   it("is the short's tags with shorts removed, nothing else changed", () => {
     expect(WIDE_TAGS_DEFAULT).toBe("vtuber, vtubervn, vtuber vietnam, viral");
-    expect(WIDE_TAGS_DEFAULT.split(", ")).toEqual(TAGS_DEFAULT.split(", ").filter((t) => t !== "shorts"));
+    expect(WIDE_TAGS_DEFAULT.split(", ")).toEqual(
+      TAGS_DEFAULT.split(", ").filter((t) => t !== "shorts"),
+    );
   });
 
   it("fills a blank field with the orientation's own default", () => {
@@ -137,12 +144,15 @@ describe("WIDE_TAGS_DEFAULT / tagsFor", () => {
 describe("defaultDescription", () => {
   it("credits the source video between the tags and the channel links", () => {
     expect(defaultDescription("dQw4w9WgXcQ")).toBe(
-      DESCRIPTION_TEMPLATE.replace("\n\nHabi", "\n\nNguồn: https://youtu.be/dQw4w9WgXcQ\n\nHabi"),
+      DESCRIPTION_TEMPLATE.replace(
+        "\n\nHabi",
+        "\n\nStream: https://youtu.be/dQw4w9WgXcQ\n\nHabi",
+      ),
     );
   });
 
   // The cached-clip path and every record written before this existed must
-  // read exactly as they did — a bare "Nguồn: https://youtu.be/" line is
+  // read exactly as they did — a bare "Stream: https://youtu.be/" line is
   // worse than no line at all.
   it("falls back to the bare template for a blank id", () => {
     expect(defaultDescription("")).toBe(DESCRIPTION_TEMPLATE);
