@@ -23,6 +23,7 @@ import {
   MAX_TRACKS,
   OUTRO_SECONDS,
   SCRIPT_MAX,
+  STARTER_MIN_S,
   TITLE_MAX,
   UPLOAD_MAX_BYTES,
   YT_TITLE_MAX,
@@ -2606,6 +2607,19 @@ function renderFraming(): Node[] {
               ? `${clock(s.clipStart)} → ${clock(s.clipEnd)}` +
                 (s.cuts.length === 0 && s.speeds.length === 0 ? "" : ` · ${clock(keptLength(s))} kept`)
               : `${s.segments.length} parts · ${clock(keptLength(s))}`,
+        }),
+        // The finished file's length: the kept body plus the outro, plus the
+        // starter screen on a tall export. The starter grows with how long
+        // the voice takes to read the title, which only the server learns —
+        // so a tall total is a floor (`≥`), a wide one is exact.
+        el("span", {
+          className: "badge",
+          title: wide
+            ? `Kept clip + ${OUTRO_SECONDS}s outro`
+            : `Kept clip + starter screen (at least ${STARTER_MIN_S}s, longer for a long title) + ${OUTRO_SECONDS}s outro`,
+          textContent: wide
+            ? `total ${clock(keptLength(s) + OUTRO_SECONDS)}`
+            : `total ≥ ${clock(keptLength(s) + STARTER_MIN_S + OUTRO_SECONDS)}`,
         }),
         el("span", {
           className: "badge",

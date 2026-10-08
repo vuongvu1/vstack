@@ -190,6 +190,11 @@ export function defaultDescription(videoId: string): string {
  *  Re-measure if the asset is ever replaced. */
 export const OUTRO_SECONDS = 5.04;
 
+/** The starter screen's floor: a one-word title reads in ~0.5s, which is too
+ *  fast to register as a screen at all. Shared so the framing bar's total
+ *  length and `starterDuration` cannot disagree about the floor. */
+export const STARTER_MIN_S = 1.6;
+
 /** The script reader's cap, in characters after trimming. Shared so the
  *  panel's counter and `/api/read`'s check cannot disagree.
  *

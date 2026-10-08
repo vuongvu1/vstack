@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { STARTER_MIN_S } from "../src/defaults.ts";
 import { toolError } from "./errors.ts";
 
 const run = promisify(execFile);
@@ -79,9 +80,6 @@ export const VOICE = process.env.VSTACK_VOICE ?? "Thùy Dung";
  *  `LEAD_IN` is the beat of music before the title is spoken. */
 const LEAD_IN = 0.35;
 const TAIL = 0.45;
-/** A one-word title reads in ~0.5s, which is too fast to register as a
- *  screen at all. */
-const MIN_DURATION = 1.6;
 const BLUR_SIGMA = 30;
 /** A black scrim under the title, as a brightness multiplier: 0.65 is the
  *  same as compositing black at 35% over the blurred frame.
@@ -179,7 +177,7 @@ const MUSIC_FADE = 0.35;
 const RATE = 48_000;
 
 export function starterDuration(voiceSeconds: number): number {
-  return Math.max(MIN_DURATION, LEAD_IN + voiceSeconds + TAIL);
+  return Math.max(STARTER_MIN_S, LEAD_IN + voiceSeconds + TAIL);
 }
 
 /** Boot check: the voice engine and the sting. Both are hard requirements of
