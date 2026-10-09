@@ -35,20 +35,27 @@ export const REEL_MIN = 3;
 export const REEL_MAX = 90;
 
 const SHORTS = /(^|\s)#shorts(?=\s|$)/gi;
+// The description template's Ko-fi line is for YouTube only; with it goes the
+// `------` rule that would otherwise end the post on nothing.
+const KOFI = /^.*ko-fi\.com.*$/gim;
+const TRAILING_RULE = /\n\s*-{3,}\s*$/;
 
 function clean(text: string): string {
   return text
     .replace(SHORTS, "$1")
+    .replace(KOFI, "")
     .split("\n")
     .map((line) => line.trimEnd())
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
+    .trim()
+    .replace(TRAILING_RULE, "")
     .trim();
 }
 
 /** Reels has one text field. It gets the YouTube title and description, minus
- *  `#Shorts` — a YouTube classifier that means nothing on Facebook. Every other
- *  hashtag stays exactly as written. */
+ *  `#Shorts` — a YouTube classifier that means nothing on Facebook — and minus
+ *  the Ko-fi line. Every other hashtag stays exactly as written. */
 export function buildCaption(title: string, description: string): string {
   return [clean(title), clean(description)].filter((part) => part !== "").join("\n\n");
 }

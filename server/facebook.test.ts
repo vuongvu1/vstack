@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildCaption, reelLengthError } from "./facebook.ts";
+import { DESCRIPTION_TEMPLATE } from "../src/defaults.ts";
 
 describe("buildCaption", () => {
   it("joins title and description with a blank line", () => {
@@ -25,6 +26,12 @@ describe("buildCaption", () => {
 
   it("is empty when there is nothing but the tag", () => {
     expect(buildCaption("#Shorts", "")).toBe("");
+  });
+  it("drops the Ko-fi line and the rule above it", () => {
+    const out = buildCaption("T", DESCRIPTION_TEMPLATE);
+    expect(out).not.toMatch(/ko-fi|coffee/i);
+    expect(out).not.toMatch(/-{3,}\s*$/);
+    expect(out).toContain("https://www.youtube.com/@simchan_hojo");
   });
 });
 

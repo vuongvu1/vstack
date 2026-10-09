@@ -1523,7 +1523,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       path,
       size: statSync(path).size,
       title,
-      description: str(body.description, "description").trim(),
+      description: buildCaption("", str(body.description, "description")),
       thumb: existsSync(thumb) ? thumb : null,
     });
     console.warn(`vstack: uploaded ${body.name} as unpublished Page video ${video.videoId}`);
