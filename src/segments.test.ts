@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_CUTS,
   MAX_SEGMENTS,
   MAX_SPEEDS,
   editMark,
@@ -111,6 +112,15 @@ describe("isValidSegments", () => {
     }));
     expect(isValidSegments(many.slice(0, MAX_SEGMENTS), D)).toBe(true);
     expect(isValidSegments(many, D)).toBe(false);
+  });
+
+  it("takes a caller's cap — the export's cuts are bounded by MAX_CUTS", () => {
+    const many = Array.from({ length: MAX_CUTS + 1 }, (_v, i) => ({
+      start: i * 2,
+      end: i * 2 + 1,
+    }));
+    expect(isValidSegments(many.slice(0, MAX_CUTS), 1000, MAX_CUTS)).toBe(true);
+    expect(isValidSegments(many, 1000, MAX_CUTS)).toBe(false);
   });
 
   it("rejects an unsorted list", () => {
@@ -391,7 +401,9 @@ describe("isValidSpeeds", () => {
     expect(isValidSpeeds("x", 0, 10)).toBe(false);
     expect(isValidSpeeds([null], 0, 10)).toBe(false);
     expect(isValidSpeeds([[1, 2]], 0, 10)).toBe(false);
-    expect(isValidSpeeds(Array.from({ length: MAX_SPEEDS + 1 }, (_, i) => ({ start: i, end: i + 0.5, speed: 2 })), 0, 10)).toBe(false);
+    const many = Array.from({ length: MAX_SPEEDS + 1 }, (_, i) => ({ start: i, end: i + 0.5, speed: 2 as const }));
+    expect(isValidSpeeds(many.slice(0, MAX_SPEEDS), 0, 100)).toBe(true);
+    expect(isValidSpeeds(many, 0, 100)).toBe(false);
     expect(isValidSpeeds([{ ...ok, speed: 3 }], 0, 10)).toBe(false);
     expect(isValidSpeeds([{ ...ok, start: -1 }], 0, 10)).toBe(false);
     expect(isValidSpeeds([{ ...ok, end: 11 }], 0, 10)).toBe(false);

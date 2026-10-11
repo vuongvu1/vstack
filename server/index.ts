@@ -29,6 +29,7 @@ import {
   UPLOAD_MAX_BYTES,
 } from "../src/defaults.ts";
 import {
+  MAX_CUTS,
   MAX_SEGMENTS,
   isValidSegments,
   isValidSpeeds,
@@ -646,7 +647,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // non-overlap — the same one `/api/window` runs on the segments — and
     // the range check below is what keeps a drop inside the cut it edits.
     const cutsRaw = raw.cuts ?? [];
-    if (!Array.isArray(cutsRaw) || (cutsRaw.length > 0 && !isValidSegments(cutsRaw, windowEnd))) {
+    if (!Array.isArray(cutsRaw) || (cutsRaw.length > 0 && !isValidSegments(cutsRaw, windowEnd, MAX_CUTS))) {
       return send(res, 400, { error: "Bad cuts." });
     }
     const cuts = cutsRaw as Segment[];

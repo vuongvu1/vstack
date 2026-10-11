@@ -58,9 +58,13 @@ export function normalize(segs: Segment[], duration: number): Segment[] {
  *  request-body field and on a `JSON.parse` result, and a `Segment[]`
  *  annotation at either site would be a compile-time claim about a value
  *  that arrives from outside the program. */
-export function isValidSegments(segs: unknown, duration: number): segs is Segment[] {
+export function isValidSegments(
+  segs: unknown,
+  duration: number,
+  max: number = MAX_SEGMENTS,
+): segs is Segment[] {
   if (!Array.isArray(segs)) return false;
-  if (segs.length === 0 || segs.length > MAX_SEGMENTS) return false;
+  if (segs.length === 0 || segs.length > max) return false;
   let prevEnd = Number.NEGATIVE_INFINITY;
   for (const seg of segs) {
     if (seg === null || typeof seg !== "object" || Array.isArray(seg)) return false;
@@ -153,8 +157,11 @@ export type SpeedRange = { start: number; end: number; speed: Speed };
 /** One piece of the export, in order: a kept range and the rate it plays at. */
 export type Leg = { start: number; end: number; speed: 1 | Speed };
 
-/** Bounds the export's stitch graph the way `MAX_CUTS` does — not measured. */
-export const MAX_SPEEDS = 4;
+/** How many holes and speed-up bands the framing strip takes. Each adds a
+ *  leg or two to the export's stitch graph, which grows linearly, so these
+ *  only bound untrusted input on `/api/export` — not a measured limit. */
+export const MAX_CUTS = 20;
+export const MAX_SPEEDS = 20;
 
 /** How loud a leg's own sound plays at `speed`. Up to x4 speech is still
  *  words; at x8 and x16 it is a warble, so it drops to a bed under the

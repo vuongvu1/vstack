@@ -49,6 +49,7 @@ import { startPreview } from "./preview.ts";
 import { renderBadge, speedAt } from "./speed.ts";
 import {
   MAX_SEGMENTS,
+  MAX_CUTS,
   MAX_SPEEDS,
   SPEEDS,
   editMark,
@@ -1058,10 +1059,7 @@ const WAVE_GAIN = 3;
  *  making. */
 const MIN_CLIP_S = 1;
 
-/** How many holes the framing strip will take, and how long a fresh one is.
- *  The cap bounds the export's concat graph and the untrusted-input surface
- *  the way `MAX_SEGMENTS` and `MAX_CUSTOM` do — not a measured limit. */
-const MAX_CUTS = 4;
+/** How long a fresh framing cut is. */
 const CUT_S = 2;
 /** A fresh speed-up band: four seconds at x4 — long enough to grab both
  *  handles, and the middle of the four rates. */
