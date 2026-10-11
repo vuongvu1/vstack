@@ -30,7 +30,7 @@ import {
   defaultTitle,
   tagsFor,
 } from "./defaults.ts";
-import { clock, parseTimestamp, sampleOf } from "./format.ts";
+import { clock, parseTimestamp, sampleOf, slugify } from "./format.ts";
 import {
   DEFAULT_LAYOUT,
   DEFAULT_LAYOUT_ID,
@@ -62,9 +62,11 @@ import {
 import type { Segment, Speed } from "./segments.ts";
 import { renderTitleArt, titleFits } from "./starter.ts";
 import { renderThumb, renderWide } from "./thumb.ts";
-import type { AppState, UploadTrack } from "./state.ts";
+import type { AppState, ClipEdits, UploadTrack } from "./state.ts";
 import {
+  exportProject,
   getState,
+  importProject,
   keptLength,
   restore,
   save,
@@ -934,6 +936,71 @@ function openClip(c: api.CachedClip): void {
     phase: "framing",
   });
   if (persistSegments) save();
+}
+
+/** Downloads the session as `<slug>.vstack.json` — the per-video record
+ *  plus the window edits `save()` leaves out. No route: a Blob is enough. */
+function downloadProject(): void {
+  const s = getState();
+  const blob = new Blob([JSON.stringify(exportProject(), null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  el("a", { href: url, download: `${slugify(s.starterTitle) || s.videoId}.vstack.json` }).click();
+  // A tick later, not at once: some browsers start the download after the
+  // click handler returns, by which time a revoked URL fetches nothing.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Resumes a project file. `importProject` writes its record over the
+ *  video's localStorage entry, so both ways in below restore it through
+ *  `restore()` as usual. The cached clip is preferred — no network, and the
+ *  only case the window edits can come back — else the URL path, which
+ *  lands in trimming with the saved segments (or framing, under
+ *  SKIP_TRIM_UNDER). */
+async function openProject(file: File): Promise<void> {
+  let p: ReturnType<typeof importProject>;
+  try {
+    p = importProject(await file.text());
+  } catch (err) {
+    setState({ error: err instanceof Error ? err.message : String(err) });
+    return;
+  }
+  // Refetched here: `clipList` is otherwise only read once at boot.
+  clipList = await api.clips().catch(() => clipList);
+  const c = p.clip;
+  const cached =
+    c &&
+    clipList.find(
+      (x) =>
+        x.videoId === p.videoId &&
+        x.windowStart === c.windowStart &&
+        x.windowEnd === c.windowEnd &&
+        x.digest === c.digest,
+    );
+  if (cached) openClip(cached);
+  else await load(`https://youtu.be/${p.videoId}`);
+  if (c) applyClipEdits(c);
+}
+
+/** Puts back a project's trim, cuts and speeds — only onto the very window
+ *  they were made against, since all three are that window's coordinates.
+ *  Same normalisers and caps the strip's own controls use. */
+function applyClipEdits(c: ClipEdits): void {
+  const s = getState();
+  if (
+    s.phase !== "framing" ||
+    s.windowStart !== c.windowStart ||
+    s.windowEnd !== c.windowEnd ||
+    s.clipDigest !== c.digest
+  ) {
+    return;
+  }
+  const clipStart = Math.max(s.windowStart, c.clipStart);
+  const clipEnd = Math.min(s.windowEnd, c.clipEnd);
+  setState({
+    ...(clipEnd - clipStart >= MIN_CLIP_S ? { clipStart, clipEnd } : {}),
+    cuts: normalize(c.cuts, s.windowEnd).slice(0, MAX_CUTS),
+    speeds: normalizeSpeeds(c.speeds, s.windowStart, s.windowEnd).slice(0, MAX_SPEEDS),
+  });
 }
 
 // The <video> and <canvas> for the framing phase, built once and appended
@@ -2552,6 +2619,14 @@ function renderFraming(): Node[] {
   });
   thumb.onclick = () => toggleThumb();
 
+  const saveProject = el("button", {
+    className: "btn-gray",
+    textContent: "💾 Save",
+    title: "Save this session to a .vstack.json file, to resume later from Open project",
+    disabled: Boolean(s.busy),
+  });
+  saveProject.onclick = () => downloadProject();
+
   title.oninput = () => {
     setQuiet({ starterTitle: title.value });
     download.disabled = !exportable(title.value);
@@ -2643,7 +2718,7 @@ function renderFraming(): Node[] {
       thumb,
       // Re-fetch first: it is the odd one out, a utility rather than a step,
       // so it sits furthest from the action that ends the phase.
-      el("div", { className: "bar-end" }, refetch, back, download),
+      el("div", { className: "bar-end" }, saveProject, refetch, back, download),
     ),
   ];
 }
@@ -4735,7 +4810,21 @@ function renderIdle(s: AppState): Node[] {
   // neither `preview` nor `/api/publish`.
   reader.onclick = () => setState({ phase: "reading", error: "" });
 
-  const rows: Node[] = [el("div", { className: "bar-row" }, input, go)];
+  // A hidden picker behind a button, so it reads like the rest of the row.
+  const projectFile = el("input", { type: "file", accept: ".json,application/json", hidden: true });
+  projectFile.onchange = () => {
+    const file = projectFile.files?.[0];
+    if (file) void openProject(file);
+  };
+  const openProj = el("button", {
+    className: "btn-gray",
+    textContent: "📂 Open project",
+    title: "Resume a session saved with 💾 Save",
+    disabled: busy,
+  });
+  openProj.onclick = () => projectFile.click();
+
+  const rows: Node[] = [el("div", { className: "bar-row" }, input, go, openProj, projectFile)];
   if (clipList.length > 0) {
     rows.push(el("div", { className: "bar-row" }, renderClipPicker(s)));
   }

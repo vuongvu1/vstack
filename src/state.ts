@@ -351,7 +351,7 @@ export function subscribe(fn: () => void): void {
   listeners.add(fn);
 }
 
-type Saved = {
+export type Saved = {
   segments: Segment[];
   starterTitle: string;
   voiceTitle: string;
@@ -422,6 +422,12 @@ function readSaved(videoId: string): Saved | null {
   } catch {
     return null;
   }
+  return normalizeSaved(parsed);
+}
+
+/** `readSaved`'s shape check and migrations, split out so a project file's
+ *  `record` goes through exactly the same door as localStorage does. */
+function normalizeSaved(parsed: unknown): Saved | null {
   // JSON.parse accepts bare primitives too — the literal string "null"
   // parses successfully to `null` without throwing, as does "42" or a
   // quoted string, so the shape must be checked before reading fields off
@@ -610,4 +616,89 @@ export function keptLength(
   return s.phase === "framing"
     ? legsDuration(planLegs(s.clipStart, Math.max(s.clipStart, s.clipEnd), s.cuts, s.speeds))
     : totalDuration(s.segments);
+}
+
+/** A framing session's window-level edits — the fields `save()` leaves out
+ *  because they belong to one fetched window. A project file carries them
+ *  so a resumed session gets its trim, cuts and speeds back, but only
+ *  `main.ts` can tell whether the window they describe is the one now open. */
+export type ClipEdits = {
+  windowStart: number;
+  windowEnd: number;
+  digest: string;
+  clipStart: number;
+  clipEnd: number;
+  cuts: Segment[];
+  speeds: SpeedRange[];
+};
+
+/** A saved-to-disk short-journey session: the per-video record plus the
+ *  window edits. Points at the clip in `media/`; never contains it. */
+export type Project = { v: 1; videoId: string; record: Saved; clip: ClipEdits | null };
+
+const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
+const DIGEST = /^(?:[0-9a-f]{8})?$/;
+
+/** The current session as a project. Flushes `save()` first so the record
+ *  is whatever the screen shows, through the same gates. */
+export function exportProject(): Project {
+  save();
+  const record = readSaved(state.videoId);
+  if (!state.videoId || !record) throw new Error("Nothing to save yet.");
+  const clip: ClipEdits | null =
+    state.clipUrl === ""
+      ? null
+      : {
+          windowStart: state.windowStart,
+          windowEnd: state.windowEnd,
+          digest: state.clipDigest,
+          clipStart: state.clipStart,
+          clipEnd: state.clipEnd,
+          cuts: state.cuts,
+          speeds: state.speeds,
+        };
+  return { v: 1, videoId: state.videoId, record, clip };
+}
+
+const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
+
+function readClip(v: unknown): ClipEdits | null {
+  if (v === null || typeof v !== "object") return null;
+  const c = v as Partial<ClipEdits>;
+  if (!finite(c.windowStart) || !finite(c.windowEnd) || c.windowEnd <= c.windowStart) return null;
+  if (!finite(c.clipStart) || !finite(c.clipEnd) || c.clipEnd <= c.clipStart) return null;
+  if (typeof c.digest !== "string" || !DIGEST.test(c.digest)) return null;
+  return {
+    windowStart: c.windowStart,
+    windowEnd: c.windowEnd,
+    digest: c.digest,
+    clipStart: c.clipStart,
+    clipEnd: c.clipEnd,
+    // Shape only — main.ts normalises both against the window it opens.
+    cuts: Array.isArray(c.cuts) ? c.cuts : [],
+    speeds: Array.isArray(c.speeds) ? c.speeds : [],
+  };
+}
+
+/** Parses a project file and writes its record over the video's localStorage
+ *  entry, so the ordinary `restore()` path — with every check it already
+ *  runs — is what brings it back. Throws a user-facing message on a file
+ *  that is not a project. The file is untrusted: `videoId` is pinned to
+ *  YouTube's id shape because it becomes a localStorage key and a URL. */
+export function importProject(text: string): Project {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("Not a vstack project file (bad JSON).");
+  }
+  const p = (parsed ?? {}) as Partial<Project>;
+  if (typeof p !== "object" || p.v !== 1) throw new Error("Not a vstack project file.");
+  if (typeof p.videoId !== "string" || !VIDEO_ID.test(p.videoId)) {
+    throw new Error("Project file has no valid video id.");
+  }
+  const record = normalizeSaved(p.record);
+  if (!record) throw new Error("Project file has no saved edits.");
+  localStorage.setItem(key(p.videoId), JSON.stringify(record));
+  return { v: 1, videoId: p.videoId, record, clip: readClip(p.clip) };
 }

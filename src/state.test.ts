@@ -4,7 +4,9 @@ import { TALL } from "./geometry.ts";
 import { DEFAULT_LAYOUT_ID } from "./layout.ts";
 import { MAX_SEGMENTS } from "./segments.ts";
 import {
+  exportProject,
   getState,
+  importProject,
   keptLength,
   restore,
   save,
@@ -954,5 +956,89 @@ describe("savedScript / saveScript", () => {
     saveScript("a", "b");
     const keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i));
     expect(keys.sort()).toEqual(["vstack:script", "vstack:script-name"]);
+  });
+});
+
+describe("project file", () => {
+  const ID = "dQw4w9WgXcQ";
+  const boxes = [
+    { x: 0, y: 0, w: 180, h: 160 },
+    { x: 10, y: 10, w: 180, h: 160 },
+  ];
+
+  it("round-trips the record and the window edits through a cleared storage", () => {
+    setState({
+      videoId: ID,
+      phase: "framing",
+      segments: [{ start: 12, end: 60 }],
+      starterTitle: "Tiêu đề",
+      layoutId: "1-1",
+      boxes,
+      customs: [],
+      source: { w: 1920, h: 1080 },
+      clipUrl: "/media/x.mp4",
+      windowStart: 10,
+      windowEnd: 62,
+      clipDigest: "",
+      clipStart: 12,
+      clipEnd: 60,
+      cuts: [{ start: 20, end: 25 }],
+      speeds: [{ start: 30, end: 40, speed: 4 }],
+    });
+    const text = JSON.stringify(exportProject());
+    globalThis.localStorage = makeStorage();
+
+    const p = importProject(text);
+    expect(p.videoId).toBe(ID);
+    expect(p.clip).toEqual({
+      windowStart: 10,
+      windowEnd: 62,
+      digest: "",
+      clipStart: 12,
+      clipEnd: 60,
+      cuts: [{ start: 20, end: 25 }],
+      speeds: [{ start: 30, end: 40, speed: 4 }],
+    });
+    // Written back where restore() reads it, so the ordinary path takes over.
+    const r = restore(ID, { w: 1920, h: 1080 });
+    expect(r.segments).toEqual([{ start: 12, end: 60 }]);
+    expect(r.starterTitle).toBe("Tiêu đề");
+    expect(r.boxes).toEqual(boxes);
+  });
+
+  it("refuses bad JSON, a wrong version, a bad video id and a missing record", () => {
+    expect(() => importProject("{")).toThrow(/bad JSON/);
+    expect(() => importProject("null")).toThrow(/Not a vstack/);
+    expect(() => importProject(JSON.stringify({ v: 2, videoId: ID, record: {} }))).toThrow(/Not a vstack/);
+    for (const videoId of ["../../x", "short", 42, `${ID}x`]) {
+      expect(() => importProject(JSON.stringify({ v: 1, videoId, record: {} }))).toThrow(/video id/);
+    }
+    expect(() => importProject(JSON.stringify({ v: 1, videoId: ID, record: "x" }))).toThrow(/saved edits/);
+    expect(localStorage.length).toBe(0);
+  });
+
+  it("drops window edits that are malformed, keeping the record", () => {
+    const bad = [
+      { windowStart: 5, windowEnd: 5, digest: "", clipStart: 5, clipEnd: 6 },
+      { windowStart: 0, windowEnd: 9, digest: "../x", clipStart: 1, clipEnd: 2 },
+      { windowStart: 0, windowEnd: 9, digest: "", clipStart: "1", clipEnd: 2 },
+    ];
+    for (const clip of bad) {
+      const p = importProject(JSON.stringify({ v: 1, videoId: ID, record: {}, clip }));
+      expect(p.clip).toBeNull();
+    }
+  });
+
+  it("leaves an over-cap customs list for restore() to refuse", () => {
+    const custom = { crop: { x: 0, y: 0, w: 320, h: 320 }, out: { x: 0, y: 0, w: 320, h: 320 } };
+    const record = {
+      layoutId: "1-1",
+      boxes,
+      customs: Array.from({ length: MAX_CUSTOM + 1 }, () => custom),
+      sourceW: 1920,
+      sourceH: 1080,
+    };
+    importProject(JSON.stringify({ v: 1, videoId: ID, record }));
+    expect(restore(ID, { w: 1920, h: 1080 }).customs).toEqual([]);
   });
 });
