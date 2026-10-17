@@ -58,10 +58,11 @@ describe("buildSnippet", () => {
   // a failing assertion: an unaudited API project has every upload locked to
   // private anyway, and the API rejects an upload with no made-for-kids
   // declaration at all.
-  it("uploads private and declares not-made-for-kids", () => {
+  it("uploads private and declares not-made-for-kids and no AI content", () => {
     expect(buildSnippet(base).status).toEqual({
       privacyStatus: "private",
       selfDeclaredMadeForKids: false,
+      containsSyntheticMedia: false,
     });
   });
 

@@ -173,7 +173,11 @@ export type SnippetInput = {
 
 export type VideoResource = {
   snippet: { title: string; description: string; tags: string[]; categoryId: string };
-  status: { privacyStatus: string; selfDeclaredMadeForKids: boolean };
+  status: {
+    privacyStatus: string;
+    selfDeclaredMadeForKids: boolean;
+    containsSyntheticMedia: boolean;
+  };
 };
 
 const SHORTS = "#Shorts";
@@ -207,6 +211,10 @@ export function buildSnippet(input: SnippetInput): VideoResource {
       privacyStatus: "private",
       // Required by the API — an upload without it is rejected.
       selfDeclaredMadeForKids: false,
+      // Studio's "Altered content" question, answered No. Paid promotion
+      // needs nothing: `paidProductPlacementDetails` defaults to false and is
+      // not settable on insert anyway.
+      containsSyntheticMedia: false,
     },
   };
 }
