@@ -107,7 +107,16 @@ lofi to neither, plus
 `docs/specs/2026-10-03-vstack-speed-ranges-design.md`, which supersedes
 nothing and adds violet speed-up ranges to the framing strip (x2-x16, sound
 kept and `atempo`d, motion blur, colour split, badge) — `speeds` + `badgePngs` on top of `/api/export`'s
-body.
+body, plus `docs/specs/2026-10-18-vstack-video-cutter-design.md`, which
+supersedes nothing and adds a SEVENTH way out of `idle` and a fourth dead
+end: `idle` → `trimming` → `idle`, where `Video cutter →` opens the
+trimming phase under a module-scoped `videoCutter` flag (always, even under
+`SKIP_TRIM_UNDER`) and `Save N parts` sends the segments to
+`/api/clip-parts`, which writes each one as a frame-accurate ≤1080p
+`<slug>-<videoId>-<mmss>-<mmss>-raw.mp4` in `OUT_DIR` (`fetchOne` + a one-part
+`concatClips`). No new phase, and the `mode: "short"` `load()` claims is
+harmless because it never reaches `preview`. No `prev` sweep: the name is
+the range. `render()` clears the flag outside `trimming`.
 
 No spec covers the speech engine: every one of them
 describes macOS `say` and its `Linh` voice, which this codebase no longer
@@ -151,6 +160,7 @@ and the only remaining macOS dependency is `afplay` in `pnpm voices` and
 server/errors.ts   HttpError (status + message), toolError (stderr tail)
 server/ffmpeg.ts   SpeedFx/speedFilter (the speed stage), MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
                    outName/outPath, isOutName, cutName/isCutName,
+                   pieceName/isPieceName (the video cutter's -raw.mp4),
                    scriptName/isScriptName,
                    stillPath/thumbPath/
                    removeExport,
@@ -221,11 +231,11 @@ server/facebook.ts buildCaption, reelLengthError, readPageToken,
                    /{page}/videos published=false), reelProgress (both) — imports nothing from youtube.ts
 scripts/facebook-auth.ts  `pnpm facebook-auth` — short token → long-lived →
                    never-expiring Page token in ~/.vstack/facebook-token.json
-server/ytdlp.ts    videoIdFrom, probe, fetchWindow, parseClipName, listClips
+server/ytdlp.ts    videoIdFrom, probe, fetchOne, fetchWindow, parseClipName, listClips
 server/chat.ts     ChatMsg/Moment, BIN/WIN/LAG/TOP/MIN_GAP/SKIP_HEAD,
                    fetchChat (chat replay -> media/<id>/chat.json),
                    parseChat, peaks (the scorer)
-server/index.ts    22 routes (21 POST + GET /out/<name>), serveOut range
+server/index.ts    23 routes (22 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
 src/geometry.ts    pure rect math — THE tested core; TALL/WIDE
 src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
@@ -251,7 +261,7 @@ src/thumb.ts       THUMB, renderThumb (any picture → 1280x720 JPEG, stretched)
                    WIDE_IMAGE, renderWide (any picture → 1920x1080 JPEG,
                    cover-cropped — the lofi journey's background)
 src/state.ts       AppState, setState/setQuiet, save/restore
-src/api.ts         20 fetch wrappers
+src/api.ts         21 fetch wrappers
 src/format.ts      mmss / clock / slugify (shared client + server), sampleOf
                    (the reader's Try sample: first paragraph, cut to fit)
 src/player.ts      YT IFrame API wrapper + trim strip

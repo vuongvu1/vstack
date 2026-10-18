@@ -117,6 +117,23 @@ export function outPath(name: string): string {
   return join(OUT_DIR, name);
 }
 
+/** A video-cutter piece's filename — named by its video and range, so saving
+ *  the same range again overwrites it and no sweep is needed. The id is there
+ *  because the slug is not unique: it is cut to 60 chars and falls back to
+ *  "clip" for a title with no Latin letters, so two videos would otherwise
+ *  overwrite each other's pieces. `-raw` keeps the name disjoint from
+ *  `OUT_NAME`. `isPieceName` is anchored to exactly what this emits. */
+export function pieceName(title: string, videoId: string, start: number, end: number): string {
+  return `${slugify(title)}-${videoId}-${mmss(start)}-${mmss(end)}-raw.mp4`;
+}
+
+// The id part is `videoIdFrom`'s alphabet: no `.` or `/`, so no traversal.
+const PIECE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*-[A-Za-z0-9_-]{11}-\d{4,}-\d{4,}-raw\.mp4$/;
+
+export function isPieceName(name: unknown): name is string {
+  return typeof name === "string" && PIECE_NAME.test(name);
+}
+
 /** One cut mp3's filename — the base the user typed, slugified, plus the
  *  range's 1-based index.
  *

@@ -245,6 +245,16 @@ export async function fetchWindow(
     .json() as Promise<WindowResult>;
 }
 
+/** The video cutter: each segment saved as its own raw mp4 in `OUT_DIR`. */
+export async function clipParts(body: {
+  videoId: string;
+  title: string;
+  duration: number;
+  segments: Segment[];
+}): Promise<{ names: string[] }> {
+  return (await post("/api/clip-parts", body)).json() as Promise<{ names: string[] }>;
+}
+
 /** One clip already in `media/`. Same shape `fetchWindow` answers with plus
  *  the id, so opening a cached clip reaches framing through the same fields a
  *  fresh download does. */

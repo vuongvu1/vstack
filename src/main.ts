@@ -70,7 +70,7 @@ import {
   importProject,
   keptLength,
   restore,
-  save,
+  save as saveRecord,
   saveScript,
   saveVoice,
   savedScript,
@@ -208,11 +208,12 @@ async function guard(label: string, fn: () => Promise<void>): Promise<void> {
   }
 }
 
-async function load(url: string): Promise<void> {
+async function load(url: string, opts: { cutter?: boolean } = {}): Promise<void> {
   await guard("Reading video info…", async () => {
     const info = await api.probe(url);
 
-    if (info.duration < SKIP_TRIM_UNDER) {
+    // The video cutter always marks ranges, however short the video.
+    if (!opts.cutter && info.duration < SKIP_TRIM_UNDER) {
       // A short video skips the trim step entirely, but geometry still
       // must come from the real fetched clip, not probe's informational
       // numbers — probe can report a resolution the actual download never
@@ -260,6 +261,10 @@ async function load(url: string): Promise<void> {
     }
 
     const saved = restore(info.videoId, null);
+    // Set here, not at the top of load(): guard's own busy render is still in
+    // `idle`, and render() clears the flag in every phase but trimming.
+    videoCutter = opts.cutter ?? false;
+    pieceNames = [];
     setState({
       videoId: info.videoId,
       title: info.title,
@@ -422,6 +427,32 @@ const aimed = { start: new Set<number>(), end: new Set<number>() };
 // render() below does that, the same way it toggles boxesLayer/outBoxesLayer
 // by phase, since nothing calls back into renderTrimming to do it itself.
 let strip: { el: HTMLElement; stop(): void } | null = null;
+
+/** The video cutter rides the trimming phase: set, the bar saves each part
+ *  as a raw mp4 instead of advancing to framing. Module-scoped and
+ *  unpersisted like `cutFurniture`; render() clears it outside trimming so
+ *  no exit can leak it into a later short. `pieceNames` is the last save's
+ *  output, listed as reveal buttons. */
+let videoCutter = false;
+let pieceNames: string[] = [];
+
+/** Every `save()` in this file goes through here. The cutter's ranges are a
+ *  throwaway download list, and the per-video record holds the SHORT's marks
+ *  — persisting them would silently replace those marks for this video. */
+function save(): void {
+  if (!videoCutter) saveRecord();
+}
+
+async function saveParts(): Promise<void> {
+  await guard("Saving parts…", async () => {
+    const { videoId, title, duration, segments } = getState();
+    const { names } = await api.clipParts({ videoId, title, duration, segments });
+    pieceNames = names;
+    const first = names[0];
+    // Revealing is a courtesy, not worth an error banner over a saved set.
+    if (first !== undefined) void api.reveal(first).catch(() => {});
+  });
+}
 
 /** The paste-a-YouTube-timestamp affordance, shared by both marking phases.
  *  Applying only ever *seeks*: start and end still come from Set Start /
@@ -651,6 +682,12 @@ function renderTrimming(): Node[] {
     disabled: !ready || !isValidSegments(s.segments, s.duration),
   });
   go.onclick = () => void openWindow();
+  if (videoCutter) {
+    const n = s.segments.length;
+    go.textContent = `Save ${n} part${n === 1 ? "" : "s"}`;
+    go.title = "Save each part as its own mp4 in ~/Desktop/vstack";
+    go.onclick = () => void saveParts();
+  }
 
   // A five-second default rather than an empty range: every intermediate
   // state stays valid, so Continue never has to explain itself.
@@ -803,9 +840,34 @@ function renderTrimming(): Node[] {
       ...controls,
       ...stamp,
       reset,
-      el("div", { className: "bar-end" }, warn, go),
+      el("div", { className: "bar-end" }, ...(videoCutter ? [cutterBack()] : [warn]), go),
     ),
+    ...(videoCutter && pieceNames.length > 0 ? [pieceList(s.busy !== "")] : []),
   ];
+}
+
+function cutterBack(): HTMLElement {
+  const back = el("button", { className: "btn-gray", textContent: "← Back", disabled: getState().busy !== "" });
+  back.onclick = () => setState({ phase: "idle", error: "" });
+  return back;
+}
+
+/** The last save's files, each a Show-in-Finder button — the audio cutter's
+ *  `.cut-results` row, and handled the same way: not guard()ed, a success
+ *  clears `error` itself, a failure reaches the callout. */
+function pieceList(busy: boolean): HTMLElement {
+  const list = el("div", { className: "cut-results" });
+  for (const name of pieceNames) {
+    const show = el("button", { className: "btn-gray", textContent: name, disabled: busy });
+    show.onclick = () => {
+      void api
+        .reveal(name)
+        .then(() => setState({ error: "" }))
+        .catch((err: unknown) => setState({ error: err instanceof Error ? err.message : String(err) }));
+    };
+    list.append(show);
+  }
+  return el("div", { className: "bar-row" }, list);
 }
 
 async function openWindow(): Promise<void> {
@@ -4787,6 +4849,16 @@ function renderIdle(s: AppState): Node[] {
   // claim and nothing downstream that could read it.
   chat.onclick = () => setState({ phase: "moments", error: "" });
 
+  const pieces = el("button", {
+    className: "btn-gray",
+    textContent: "Video cutter →",
+    title: "Download marked ranges of a YouTube video as mp4 pieces",
+    disabled: busy,
+  });
+  // Reads the URL field like Load. No `mode` of its own: load()'s trimming
+  // branch claims "short", harmless since this never reaches `preview`.
+  pieces.onclick = () => void load(input.value, { cutter: true });
+
   const cutter = el("button", {
     className: "btn-gray",
     textContent: "Audio cutter →",
@@ -4826,7 +4898,7 @@ function renderIdle(s: AppState): Node[] {
   if (clipList.length > 0) {
     rows.push(el("div", { className: "bar-row" }, renderClipPicker(s)));
   }
-  rows.push(el("div", { className: "bar-row" }, long, lofi, chat, cutter, reader));
+  rows.push(el("div", { className: "bar-row" }, long, lofi, chat, pieces, cutter, reader));
   return rows;
 }
 
@@ -4861,6 +4933,10 @@ function render(): void {
   // forever. Stopped and cleared here, the same way boxesLayer/outBoxesLayer
   // are handled by phase below, rather than left to whatever the next visit
   // to trimming happens to do.
+  if (s.phase !== "trimming") {
+    videoCutter = false;
+    pieceNames = [];
+  }
   if (s.phase !== "trimming" && strip) {
     strip.stop();
     strip = null;

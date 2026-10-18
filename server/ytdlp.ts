@@ -256,7 +256,7 @@ export async function listClips(): Promise<CachedClip[]> {
  *
  *  Module-private: `fetchWindow` below is the only public entry point, and
  *  calls this once per segment. */
-async function fetchOne(
+export async function fetchOne(
   videoId: string,
   start: number,
   end: number,

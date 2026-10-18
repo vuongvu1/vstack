@@ -23,8 +23,10 @@ import {
   firstFrame,
   isCutName,
   isOutName,
+  isPieceName,
   isUploadId,
   outName,
+  pieceName,
   pngSize,
   probeAudio,
   probeFile,
@@ -254,6 +256,55 @@ describe("cutName — the traversal guard", () => {
   it("does not overlap isOutName in either direction", () => {
     expect(isCutName("an-com-0130-0205.mp4")).toBe(false);
     expect(isOutName("an-com-chua-1.mp3")).toBe(false);
+  });
+});
+
+describe("pieceName", () => {
+  it("names a raw piece by its video and range", () => {
+    expect(pieceName("Hôm nay trời đẹp quá", "3n8zlJGlhfw", 65, 130)).toBe(
+      "hom-nay-troi-dep-qua-3n8zlJGlhfw-0105-0210-raw.mp4",
+    );
+  });
+
+  it("produces a name isPieceName accepts", () => {
+    expect(isPieceName(pieceName("2024", "a_b-C9dE0fG", 0, 3600))).toBe(true);
+  });
+
+  // A slug is cut to 60 chars and falls back to "clip" for a title with no
+  // Latin letters, so two videos could otherwise overwrite each other's piece.
+  it("keeps two videos with the same title apart", () => {
+    expect(pieceName("ライブ", "aaaaaaaaaaa", 0, 30)).not.toBe(pieceName("ライブ", "bbbbbbbbbbb", 0, 30));
+  });
+});
+
+// The video cutter's guard on /api/reveal — same exhaustive treatment as
+// isOutName and isCutName.
+describe("pieceName — the traversal guard", () => {
+  it.each([
+    "../x-3n8zlJGlhfw-0000-0010-raw.mp4",
+    "a/b-3n8zlJGlhfw-0000-0010-raw.mp4",
+    "A-3n8zlJGlhfw-0000-0010-raw.mp4",
+    "-a-3n8zlJGlhfw-0000-0010-raw.mp4",
+    "a--b-3n8zlJGlhfw-0000-0010-raw.mp4",
+    "a-3n8zlJGlhfw-0000-0010.mp4",
+    "a-3n8zlJGlhfw-000-0010-raw.mp4",
+    "a-3n8zlJGlhfw-0000-0010-raw.mp3",
+    "a-3n8zlJGlhfw-0000-0010-raw.mp4.part",
+    "a-3n8zlJG.hfw-0000-0010-raw.mp4",
+    "a-3n8zlJGlhf-0000-0010-raw.mp4",
+    "a-0000-0010-raw.mp4",
+  ])("rejects %s", (n) => expect(isPieceName(n)).toBe(false));
+
+  it("rejects non-strings", () => {
+    for (const v of [null, undefined, 1, {}, []]) expect(isPieceName(v)).toBe(false);
+  });
+
+  // Fails if the patterns are ever merged: a piece must never reach
+  // /api/publish or /out/, and a short must never be taken for a piece.
+  it("is disjoint from isOutName and isCutName", () => {
+    expect(isOutName(pieceName("t", "3n8zlJGlhfw", 0, 10))).toBe(false);
+    expect(isCutName(pieceName("t", "3n8zlJGlhfw", 0, 10))).toBe(false);
+    expect(isPieceName(outName("t", 0, 10))).toBe(false);
   });
 });
 

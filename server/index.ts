@@ -52,10 +52,12 @@ import {
   firstFrame,
   isCutName,
   isOutName,
+  isPieceName,
   isScriptName,
   isUploadId,
   outName,
   outPath,
+  pieceName,
   probeAudio,
   pngSize,
   probeFile,
@@ -105,7 +107,7 @@ import {
   uploadPageVideo,
   uploadReel,
 } from "./facebook.ts";
-import { fetchWindow, listClips, probe, videoIdFrom } from "./ytdlp.ts";
+import { fetchOne, fetchWindow, listClips, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
 const PORT = 8787;
@@ -562,6 +564,61 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       });
     }
     return send(res, 200, await fetchWindow(videoId, segments, duration));
+  }
+
+  // The video cutter: each marked range as its own raw mp4 in OUT_DIR, for
+  // another editor. A dead end — nothing downstream reads these files.
+  if (req.url === "/api/clip-parts") {
+    const raw = await json<Record<string, unknown>>(req);
+    const videoId = videoIdFrom(str(raw.videoId, "videoId"));
+    const duration = num(raw.duration, "duration");
+    const title = readTitle(raw.title, "title");
+    if (!videoId) return send(res, 400, { error: "Bad video id." });
+    const segments = raw.segments;
+    if (!isValidSegments(segments, duration)) {
+      return send(res, 400, {
+        error:
+          `Segments must be 1 to ${MAX_SEGMENTS} non-overlapping ranges, ` +
+          `in order, inside [0, ${duration}].`,
+      });
+    }
+    // Names come from the range, so two parts inside one second would write
+    // the same file — refused before anything downloads.
+    const names = segments.map((seg) => pieceName(title, videoId, seg.start, seg.end));
+    if (new Set(names).size !== names.length) {
+      return send(res, 400, { error: "Two parts round to the same second; move one apart." });
+    }
+
+    await mkdir(OUT_DIR, { recursive: true });
+    // No `prev` sweep: a name is its range, so a re-save overwrites and a
+    // changed range is a different piece, never a stale copy of this one.
+    for (const [i, seg] of segments.entries()) {
+      const name = names[i];
+      if (name === undefined) continue;
+      const win = await fetchOne(videoId, seg.start, seg.end, duration);
+      const partial = outPath(name).replace(/\.mp4$/, `.${randomUUID()}.part.mp4`);
+      inFlight.add(partial);
+      try {
+        // One part re-encodes the trim, so the cut lands on the frame rather
+        // than on the keyframe `-c copy` would snap to.
+        await concatClips(
+          [
+            {
+              path: clipPath(videoId, win.windowStart, win.windowEnd),
+              start: seg.start - win.windowStart,
+              end: seg.end - win.windowStart,
+            },
+          ],
+          partial,
+        );
+        await rename(partial, outPath(name));
+      } finally {
+        inFlight.delete(partial);
+        await rm(partial, { force: true });
+      }
+    }
+    reportCache();
+    return send(res, 200, { names });
   }
 
   // The idle screen's second way in: everything already in `media/`, so a
@@ -1442,7 +1499,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // taught about .mp3: nothing in the cutter produces something to publish
     // or to stream back. The script reader is a third producer with a third
     // anchored pattern — see isScriptName — for the same reason.
-    if (!isOutName(body.name) && !isCutName(body.name) && !isScriptName(body.name)) {
+    if (
+      !isOutName(body.name) &&
+      !isCutName(body.name) &&
+      !isScriptName(body.name) &&
+      !isPieceName(body.name)
+    ) {
       return send(res, 400, { error: "Bad output name." });
     }
     const path = outPath(body.name);
