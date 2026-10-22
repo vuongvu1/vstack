@@ -339,6 +339,9 @@ export async function fetchOne(
           ],
           { maxBuffer: BIG },
         );
+        // yt-dlp can exit 0 after its ffmpeg died mid-write, leaving an mp4
+        // with no moov atom. Renamed in, that poisons the cache for good.
+        await probeFile(partial);
         await rename(partial, path);
         console.warn(
           `vstack: fetched ${videoId} ${windowStart}-${windowEnd} using ` +
