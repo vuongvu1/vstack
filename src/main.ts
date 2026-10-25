@@ -1284,7 +1284,9 @@ function drawWave(canvas: HTMLCanvasElement, span: number): void {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
   if (w === 0 || h === 0) return;
-  const dpr = window.devicePixelRatio || 1;
+  // Capped so a 16x-zoomed strip stays under the 32767px canvas ceiling,
+  // past which the browser silently draws nothing at all.
+  const dpr = Math.min(window.devicePixelRatio || 1, 32000 / w);
   canvas.width = Math.round(w * dpr);
   canvas.height = Math.round(h * dpr);
   const g = canvas.getContext("2d");
@@ -1313,6 +1315,105 @@ function drawWave(canvas: HTMLCanvasElement, span: number): void {
     // hole in the strip.
     g.fillRect(x, mid - amp, 1, Math.max(1, amp * 2));
   }
+}
+
+const ZOOMS = [1, 2, 4, 8, 16] as const;
+
+/** The zoom of whichever waveform strip is on screen — the framing strip and
+ *  the cutter's are never up at once, so one record serves both. Module-
+ *  scoped because the strips are rebuilt on every render: without it each
+ *  `setState` (a drag's pointer-up, a + Cut) would snap the view back to 1x
+ *  at the left edge. `key` names the clip or file; a new one resets to 1x.
+ *  `held` is the user having scrolled or grabbed the strip by hand, which
+ *  stops the follow until the next play or strip seek. */
+const stripZoom = { key: "", level: 0, left: 0, held: false, playing: false };
+
+/** Wraps a `.wave` in a sideways scroller and builds its − / slider / +
+ *  control. Zoom only widens the `.wave`: every handle, band and the
+ *  playhead are placed in % of it, and every drag and click measures it with
+ *  `getBoundingClientRect`, so none of that needed to learn about zoom — and
+ *  the existing ResizeObserver on `.wave` redraws the waveform at the new
+ *  width for free. `follow` is fed the playhead as a fraction of the strip. */
+function zoomStrip(
+  wave: HTMLElement,
+  key: string,
+  headFrac: () => number,
+): { strip: HTMLElement; controls: HTMLElement; follow(frac: number, playing: boolean): void } {
+  if (stripZoom.key !== key) Object.assign(stripZoom, { key, level: 0, left: 0, held: false });
+  const scroller = el("div", { className: "wave-scroll" }, wave);
+  const widen = () => {
+    wave.style.width = `${100 * (ZOOMS[stripZoom.level] ?? 1)}%`;
+  };
+  widen();
+  // After render() has attached the strip — a detached node has no width to
+  // scroll.
+  queueMicrotask(() => {
+    scroller.scrollLeft = stripZoom.left;
+  });
+  scroller.onscroll = () => {
+    stripZoom.left = scroller.scrollLeft;
+  };
+  const hold = () => {
+    stripZoom.held = true;
+  };
+  scroller.addEventListener("wheel", hold, { passive: true });
+  // Capture, because every handle stops its own pointerdown's propagation.
+  scroller.addEventListener("pointerdown", hold, { capture: true });
+  // A click that reaches the strip body is a seek — the handles stop theirs.
+  wave.addEventListener("click", () => {
+    stripZoom.held = false;
+  });
+
+  const minus = el("button", { className: "btn-gray zoom-step", textContent: "−", title: "Zoom out" });
+  const plus = el("button", { className: "btn-gray zoom-step", textContent: "+", title: "Zoom in" });
+  const slider = el("input", {
+    type: "range",
+    min: "0",
+    max: String(ZOOMS.length - 1),
+    step: "1",
+    value: String(stripZoom.level),
+    title: "Waveform zoom",
+  });
+  const sync = () => {
+    slider.value = String(stripZoom.level);
+    minus.disabled = stripZoom.level === 0;
+    plus.disabled = stripZoom.level === ZOOMS.length - 1;
+  };
+  /** Changes the level in place — no render — keeping the playhead's spot on
+   *  screen where it was. */
+  const zoomTo = (level: number) => {
+    const next = Math.max(0, Math.min(ZOOMS.length - 1, level));
+    if (next === stripZoom.level) return sync();
+    const frac = headFrac();
+    const onScreen = frac * wave.clientWidth - scroller.scrollLeft;
+    stripZoom.level = next;
+    widen();
+    scroller.scrollLeft = frac * wave.clientWidth - onScreen;
+    sync();
+  };
+  minus.onclick = () => zoomTo(stripZoom.level - 1);
+  plus.onclick = () => zoomTo(stripZoom.level + 1);
+  slider.oninput = () => zoomTo(Number(slider.value));
+  sync();
+
+  return {
+    strip: scroller,
+    controls: el("div", { className: "zoom" }, minus, slider, plus),
+    /** Pages the view along under playback: once the playhead leaves the
+     *  visible part, it is brought back in near the left edge. Paging rather
+     *  than keeping it centred, so the handles hold still long enough to
+     *  grab while the clip plays. */
+    follow(frac, playing) {
+      if (playing && !stripZoom.playing) stripZoom.held = false;
+      stripZoom.playing = playing;
+      if (!playing || stripZoom.held || stripZoom.level === 0) return;
+      const x = frac * wave.clientWidth;
+      const view = scroller.clientWidth;
+      if (x < scroller.scrollLeft || x > scroller.scrollLeft + view - 8) {
+        scroller.scrollLeft = x - view * 0.1;
+      }
+    },
+  };
 }
 
 /** The finished export, played from `/out/<name>`. Like the framing <video>
@@ -2242,6 +2343,7 @@ function renderFraming(): Node[] {
   const handleR = el("div", { className: "wave-handle", title: "Drag to move the cut's end" });
   const head = el("div", { className: "strip-head" });
   wave.append(canvas, cutL, cutR, handleL, handleR, head);
+  const zoom = zoomStrip(wave, s.clipUrl, () => (videoEl === null ? 0 : videoEl.currentTime / span));
 
   // The violet speed-up ranges: the drop recipe again, plus a rate picker.
   // Same snapshot rule as the drops — the count only changes via setState.
@@ -2337,6 +2439,7 @@ function renderFraming(): Node[] {
     // precisely because it has no such owner.
     v.ontimeupdate = () => {
       head.style.left = `${(100 * v.currentTime) / span}%`;
+      zoom.follow(v.currentTime / span, !v.paused);
       // The stop half of the cut-only toggle. ~4Hz can overshoot `clipEnd`
       // by up to a quarter second before the pause lands, which is cheaper
       // than a rAF loop and its two teardown sites for a difference nobody
@@ -2768,7 +2871,7 @@ function renderFraming(): Node[] {
           : el("span"),
       ),
     ),
-    el("div", { className: "bar-row" }, transport, wave, addCut, addSpeed),
+    el("div", { className: "bar-row" }, transport, zoom.strip, zoom.controls, addCut, addSpeed),
     el(
       "div",
       { className: "bar-row" },
@@ -4076,7 +4179,7 @@ function renderLofiBar(): Node[] {
 // stops it whenever `phase !== "cutting"` (the departure case). Nothing calls
 // back into renderCutting on the way out, so without the second one the loop
 // reads a hidden element for the rest of the session.
-let cutStrip: { el: HTMLElement; stop(): void } | null = null;
+let cutStrip: { el: HTMLElement; controls: HTMLElement; stop(): void } | null = null;
 
 // The object URL behind cutVideo. Revoked on leaving the phase — it is the
 // one piece of this phase's state that is not a plain value, which is why it
@@ -4222,7 +4325,7 @@ function buildCutStrip(
   span: number,
   ranges: Segment[],
   busy: boolean,
-): { el: HTMLElement; stop(): void } {
+): { el: HTMLElement; controls: HTMLElement; stop(): void } {
   const wave = el("div", { className: "wave" });
   const canvas = el("canvas");
   wave.append(canvas);
@@ -4338,14 +4441,18 @@ function buildCutStrip(
   };
   const resize = new ResizeObserver(() => drawWave(canvas, span));
   resize.observe(wave);
+  const file = getState().cutFile;
+  const zoom = zoomStrip(wave, file === null ? "" : `cut:${file.name}:${file.size}:${file.lastModified}`, () => cutVideo.currentTime / span);
   let raf = 0;
   const tick = () => {
     head.style.left = `${(100 * cutVideo.currentTime) / span}%`;
+    zoom.follow(cutVideo.currentTime / span, !cutVideo.paused);
     raf = requestAnimationFrame(tick);
   };
   raf = requestAnimationFrame(tick);
   return {
-    el: wave,
+    el: zoom.strip,
+    controls: zoom.controls,
     stop() {
       cancelAnimationFrame(raf);
       resize.disconnect();
@@ -4397,7 +4504,7 @@ function renderCutting(): Node[] {
   const span = s.cutSeconds;
   stopCutStrip();
   cutStrip = buildCutStrip(span, s.cutRanges, busy);
-  rows.push(el("div", { className: "bar-row" }, cutStrip.el));
+  rows.push(el("div", { className: "bar-row" }, cutStrip.el, cutStrip.controls));
 
   const addRange = el("button", {
     textContent: "+ Range",
