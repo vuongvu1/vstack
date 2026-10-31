@@ -359,6 +359,9 @@ export type StarterOpts = {
   voice: string;
   /** `speak`'s reported duration — the screen is sized around it. */
   voiceSeconds: number;
+  /** Seconds into `main` the screen's background is taken from. 0 (the
+   *  default) is the first frame, which also makes the cut continuous. */
+  at?: number;
   out: string;
 };
 
@@ -388,6 +391,8 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
     try {
       await run("ffmpeg", [
       "-v", "error",
+      // Input option, before `-i`: a frame-accurate seek into body.mp4.
+      "-ss", (opts.at ?? 0).toFixed(3),
       "-i", opts.main,
       "-frames:v", "1",
       "-filter_complex", SCREEN_FILTER,
@@ -503,10 +508,11 @@ export async function prependStarter(opts: StarterOpts): Promise<string> {
  *  with nothing cropped. `-q:v 3` for `thumbnails.set`'s 2 MB cap, the same
  *  as `firstFrame`. The caller writes this to `thumbPath`, which
  *  `applyThumbnail` already prefers, so publishing needs no change. */
-export async function titleCard(opts: { main: string; title: string; out: string }): Promise<string> {
+export async function titleCard(opts: { main: string; title: string; at?: number; out: string }): Promise<string> {
   try {
     await run("ffmpeg", [
       "-v", "error",
+      "-ss", (opts.at ?? 0).toFixed(3),
       "-i", opts.main,
       "-i", opts.title,
       "-frames:v", "1",

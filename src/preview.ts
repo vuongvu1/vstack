@@ -203,8 +203,8 @@ export function startPreview(
       // The starter screen, painted over the finished composite in the same
       // order the export builds it: treated background, then the title. This
       // frame IS the export's thumbnail — `prependStarter` lifts body.mp4's
-      // first frame and `firstFrame` crops this picture — so the caller seeks
-      // the video to `clipStart` before switching this on.
+      // frame at `thumbAt` and `firstFrame` crops this picture — so the
+      // caller seeks the video to `thumbAt` before switching this on.
       const art = still();
       if (art) {
         if (!soft || !band || !mask) {

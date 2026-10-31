@@ -252,6 +252,18 @@ export function legsDuration(legs: Leg[]): number {
   return legs.reduce((sum, l) => sum + (l.end - l.start) / l.speed, 0);
 }
 
+/** Where clip-timeline instant `t` lands in the OUTPUT — the starter
+ *  screen's picked frame. A `t` inside a cut snaps to the next kept leg's
+ *  first frame; before every leg is 0, after every leg the output's end. */
+export function outputAt(legs: Leg[], t: number): number {
+  let out = 0;
+  for (const l of legs) {
+    if (t < l.end) return out + Math.max(0, t - l.start) / l.speed;
+    out += (l.end - l.start) / l.speed;
+  }
+  return out;
+}
+
 /** Where each sped leg lands in the OUTPUT — what the export's effects are
  *  gated on. One window per sped leg; `planLegs` has already joined equal
  *  neighbours, so two windows that touch differ in speed. */

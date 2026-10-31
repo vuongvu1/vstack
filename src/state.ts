@@ -224,6 +224,10 @@ export type AppState = {
    *  read live by the preview loop, so there is no second copy of anything to
    *  keep in step with the field. */
   showThumb: boolean;
+  /** The frame the starter screen (and so the thumbnail) is built from,
+   *  clip timeline; null is the in-point. Moved by seeking while
+   *  `showThumb` is on. Not persisted, for the reason `cuts` are not. */
+  thumbAt: number | null;
   /** A stitch's segment digest, `""` for an ordinary clip. `/api/export`
    *  needs it to rebuild the cache path. Not persisted — it belongs to a
    *  fetched window, like `clipUrl`. */
@@ -306,6 +310,7 @@ const initial: AppState = {
   cuts: [],
   speeds: [],
   showThumb: false,
+  thumbAt: null,
   clipDigest: "",
   clipUrl: "",
   windowStart: 0,

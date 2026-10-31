@@ -244,6 +244,7 @@ async function load(url: string, opts: { cutter?: boolean } = {}): Promise<void>
         // A fresh window, so any framing cuts belong to the previous one.
         cuts: [],
         speeds: [],
+        thumbAt: null,
         clipDigest: win.digest,
         source,
         layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
@@ -884,6 +885,7 @@ async function openWindow(): Promise<void> {
       clipEnd: w.clipEnd,
       cuts: [],
       speeds: [],
+      thumbAt: null,
       clipDigest: w.digest,
       source,
       layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
@@ -989,6 +991,7 @@ function openClip(c: api.CachedClip): void {
     clipEnd: cut?.end ?? c.clipEnd,
     cuts: [],
     speeds: [],
+    thumbAt: null,
     clipDigest: c.digest,
     source,
     layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
@@ -1651,10 +1654,11 @@ function currentStill(): string | null {
 /** Toggles the framing canvas between the live composite and the export's
  *  thumbnail.
  *
- *  Seeking to the in-point is the load-bearing half. The export's thumbnail is
- *  `prependStarter`'s first frame of body.mp4, which is the composite at the
- *  in-point — so previewing the screen over whatever frame the playhead
- *  happened to be sitting on would show a picture YouTube never renders. */
+ *  Seeking to `thumbAt` is the load-bearing half: the export builds the
+ *  starter screen from that frame, so previewing it over any other would
+ *  show a picture YouTube never renders. While the toggle is on, seeking
+ *  moves `thumbAt` (see the framing bar's `ontimeupdate`), so what the
+ *  canvas shows is always the frame the export will use. */
 function toggleThumb(): void {
   const s = getState();
   if (s.showThumb) {
@@ -1668,7 +1672,7 @@ function toggleThumb(): void {
     // the file's own, so the in-point is `clipStart - windowStart` — the same
     // conversion `playCutOnly` makes above. They differ by PAD on an ordinary
     // window, which is seconds of footage the thumbnail does not come from.
-    videoEl.currentTime = s.clipStart - s.windowStart;
+    videoEl.currentTime = (s.thumbAt ?? s.clipStart) - s.windowStart;
   }
   setState({ showThumb: true });
 }
@@ -1717,6 +1721,8 @@ async function doExport(): Promise<void> {
       // normalised — every write goes through `normalize`.
       cuts,
       speeds,
+      // Dropped if a handle drag has since moved the cut past it.
+      ...(s.thumbAt !== null && s.thumbAt >= s.clipStart && s.thumbAt <= s.clipEnd ? { thumbAt: s.thumbAt } : {}),
       badgePngs: Object.fromEntries(
         await Promise.all(used.map(async (sp) => [String(sp), await renderBadge(sp)] as const)),
       ),
@@ -2472,6 +2478,13 @@ function renderFraming(): Node[] {
       // The export's gain too. Safe to own: the framing <video> has no
       // native controls, so there is no user volume to clobber.
       v.volume = speedGain(sp ?? 1);
+      // In thumbnail view the frame on screen IS the starter screen's
+      // background, so wherever the user seeks to is the pick. Inside the
+      // cut only — the export's legs map nothing else.
+      if (live.showThumb) {
+        const at = s.windowStart + v.currentTime;
+        if (at >= live.clipStart && at <= live.clipEnd) setQuiet({ thumbAt: at });
+      }
     };
     // The element may already be playing by the time a re-render builds
     // these: neither event fires again.

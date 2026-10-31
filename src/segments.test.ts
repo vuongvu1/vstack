@@ -14,6 +14,7 @@ import {
   planLegs,
   speedGain,
   speedWindows,
+  outputAt,
   totalDuration,
 } from "./segments.ts";
 import type { Leg, Segment, Speed, SpeedRange } from "./segments.ts";
@@ -460,3 +461,24 @@ describe("speedGain", () => {
   });
 });
 
+
+describe("outputAt", () => {
+  // 10-20 kept at x1, 20-30 cut, 30-40 at x4, 40-50 at x1.
+  const legs = planLegs(10, 50, [{ start: 20, end: 30 }], [{ start: 30, end: 40, speed: 4 }]);
+
+  it("is the identity offset at no cuts or speeds", () => {
+    expect(outputAt(planLegs(10, 50, [], []), 17)).toBe(7);
+  });
+  it("skips a cut and snaps an instant inside one to the next leg", () => {
+    expect(outputAt(legs, 25)).toBe(10);
+    expect(outputAt(legs, 30)).toBe(10);
+  });
+  it("divides time inside a sped leg by its speed", () => {
+    expect(outputAt(legs, 38)).toBe(12);
+    expect(outputAt(legs, 45)).toBe(17.5);
+  });
+  it("clamps before the first leg and past the last", () => {
+    expect(outputAt(legs, 0)).toBe(0);
+    expect(outputAt(legs, 99)).toBe(22.5);
+  });
+});

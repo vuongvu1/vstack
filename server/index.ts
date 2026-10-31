@@ -35,6 +35,7 @@ import {
   isValidSpeeds,
   legsDuration,
   planLegs,
+  outputAt,
   speedWindows,
 } from "../src/segments.ts";
 import type { Segment, Speed } from "../src/segments.ts";
@@ -389,10 +390,10 @@ async function saveStill(video: string): Promise<void> {
  *
  *  Best-effort, like `saveStill`: the video is the product. Without the card
  *  a publish falls back to `firstFrame(…, "wide")`, the plain composite. */
-async function saveTitleCard(body: string, title: string, video: string): Promise<void> {
+async function saveTitleCard(body: string, title: string, at: number, video: string): Promise<void> {
   const card = thumbPath(video);
   try {
-    await titleCard({ main: body, title, out: card });
+    await titleCard({ main: body, title, at, out: card });
   } catch (err) {
     console.warn(`vstack: could not save a title card beside ${video}:`, err);
     await rm(card, { force: true }).catch(() => undefined);
@@ -722,6 +723,16 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return send(res, 400, { error: "cuts must leave something to export." });
     }
     const stitched = cuts.length > 0 || speedsRaw.length > 0;
+    // The starter screen's background frame, clip timeline like start/end.
+    // Absent or null is the in-point, so an older body is unchanged. Mapped
+    // through the same legs the render is built from, then held a frame-ish
+    // short of the end so the seek always lands on a frame.
+    const thumbRaw = raw.thumbAt ?? null;
+    if (thumbRaw !== null && (typeof thumbRaw !== "number" || !(thumbRaw >= start && thumbRaw <= end))) {
+      return send(res, 400, { error: "thumbAt must be within start/end." });
+    }
+    const thumbAt =
+      thumbRaw === null ? 0 : Math.max(0, Math.min(outputAt(legs, thumbRaw), legsDuration(legs) - 0.1));
 
     // One badge PNG per speed that SURVIVES the cuts — a range a cut swallows
     // whole needs none. The client derives the set from the same planLegs,
@@ -879,7 +890,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         // then the outro letterboxed for the wide frame.
         await appendOutro({ main: body, outro: END_PATH, out: partial });
         await rename(partial, out);
-        await saveTitleCard(body, art, out);
+        await saveTitleCard(body, art, thumbAt, out);
         // Same title and marks exported tall before would have left its
         // vertical still under this exact name.
         await rm(stillPath(out), { force: true }).catch(() => undefined);
@@ -890,6 +901,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
           title: art,
           voice: voicePath,
           voiceSeconds: await speak(voiceTitle, dir, voicePath, voiceName),
+          at: thumbAt,
           out: partial,
         });
         await rename(partial, out);

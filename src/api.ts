@@ -285,6 +285,8 @@ export async function exportClip(body: {
   cuts: Segment[];
   /** Violet speed-up ranges, clip time, normalised. Empty for none. */
   speeds: SpeedRange[];
+  /** The starter screen's background frame, clip time; absent = in-point. */
+  thumbAt?: number;
   /** A stitch's segment digest, `""` for an ordinary clip. The server
    *  rebuilds the cache path from window bounds plus this — it is 8 hex
    *  characters, never a path. */
