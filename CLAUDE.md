@@ -131,6 +131,9 @@ pnpm server   # backend on 127.0.0.1:8787 under `node --watch` (runs .ts directl
               # no build). Restarts on any server file it imports — which is why
               # `src/main.ts` edits do not bounce it, but `src/geometry.ts` does.
 pnpm dev      # Vite on :5173, proxies /api -> :8787
+pnpm prod     # stable copy to USE while editing: backend :8788 (no --watch),
+              # Vite :5174 with HMR + file watching off. Own ports so dev's
+              # killOldServer leaves it alone. Restart it to pick up changes.
 pnpm test     # vitest, 603 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)

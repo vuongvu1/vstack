@@ -111,7 +111,9 @@ import {
 import { fetchOne, fetchWindow, listClips, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
-const PORT = 8787;
+// `pnpm prod` runs a second, unwatched copy beside dev on its own port, so
+// dev's killOldServer (which evicts whatever vstack holds ITS port) leaves it be.
+const PORT = Number(process.env.VSTACK_PORT) || 8787;
 
 const REQUIRED: ReadonlyArray<readonly [string, string, string]> = [
   ["yt-dlp", "--version", "brew install yt-dlp"],
