@@ -2320,6 +2320,10 @@ function renderFraming(): Node[] {
   const cutOnly = el("input", { type: "checkbox", checked: playCutOnly, disabled: !ready });
   cutOnly.onchange = () => {
     playCutOnly = cutOnly.checked;
+    if (playCutOnly && videoEl !== null) {
+      const st = getState();
+      videoEl.currentTime = st.clipStart - st.windowStart;
+    }
   };
   const transport = el(
     "div",

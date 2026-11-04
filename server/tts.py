@@ -25,7 +25,8 @@ import sys
 from importlib.util import find_spec
 from pathlib import Path
 
-USAGE = "usage: tts.py --list | <text-file> <voice> <out.wav> [<voice> <out.wav> ...]"
+TAKES = 3
+USAGE ="usage: tts.py --list | <text-file> <voice> <out.wav> [<voice> <out.wav> ...]"
 
 
 def preset_path() -> Path:
@@ -58,8 +59,15 @@ def do_speak(text_file: str, jobs: list[tuple[str, str]]) -> None:
     # int8 ONNX: the README's own recommendation on Apple Silicon, where the
     # torch-free CPU path beats the MPS build.
     tts = Vieneu(mode="v3turbo", backend="onnx", precision="int8")
+    # The model sometimes misses its stop token on a short text and says it
+    # again: measured "Cười xỉu" at 0.80s normally, 1.52-2.88s about one take
+    # in twenty, at every temperature tried (0.8, 0.4, 0.2). A repeat only
+    # ever lengthens a take, so the shortest of a few is the clean one.
+    # ponytail: titles only (TITLE_MAX is 200) — a long script pays its
+    # inference once, and its own chunks can still repeat.
+    takes = TAKES if len(text) <= 200 else 1
     for voice, out in jobs:
-        tts.save(tts.infer(text, voice=voice), out)
+        tts.save(min((tts.infer(text, voice=voice) for _ in range(takes)), key=len), out)
 
 
 if __name__ == "__main__":
