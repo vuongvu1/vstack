@@ -15,7 +15,9 @@ export function toolError(name: string, err: unknown): Error {
     return new Error(`${name} failed: unknown error`);
   }
   const e = err as { stderr?: string; message?: string };
-  const tail = (e.stderr ?? e.message ?? "")
+  // `||`, not `??`: execFile reports a silent failure (signal, maxBuffer,
+  // bad JSON) with `stderr: ""`, which `??` would print as nothing.
+  const tail = (e.stderr?.trim() || e.message || "unknown error")
     .trim()
     .split("\n")
     .slice(-5)
