@@ -73,7 +73,15 @@ export async function probe(videoId: string): Promise<ProbeResult> {
   try {
     ({ stdout } = await run(
       "yt-dlp",
-      ["--dump-json", "--no-warnings", "--no-playlist", watchUrl(videoId)],
+      // Only the fields read below: a long stream's full --dump-json
+      // (formats, fragments) has been measured past 64 MB.
+      [
+        "-O",
+        "%(.{duration,width,height,title,live_status,is_live})j",
+        "--no-warnings",
+        "--no-playlist",
+        watchUrl(videoId),
+      ],
       { maxBuffer: BIG },
     ));
     j = JSON.parse(stdout) as Record<string, unknown>;
