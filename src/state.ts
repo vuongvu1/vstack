@@ -267,6 +267,9 @@ export type AppState = {
   /** Whether the thumbnail took. Only meaningful once `ytVideoId` is set —
    *  before that it is just the initial `false`. */
   ytThumbnail: boolean;
+  /** Whether a Short landed in the Shorts playlist. Set by every publish,
+   *  read only while `ytVideoId` is set, so no reset is needed elsewhere. */
+  ytPlaylist: boolean;
   /** The Facebook Reel draft, once it lands — the `ytVideoId` of the other
    *  publish target, cleared everywhere that one is. */
   fbVideoId: string;
@@ -327,6 +330,7 @@ const initial: AppState = {
   ytTags: "",
   ytVideoId: "",
   ytThumbnail: false,
+  ytPlaylist: false,
   fbVideoId: "",
   fbUrl: "",
 };

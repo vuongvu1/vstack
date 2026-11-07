@@ -373,7 +373,7 @@ export async function publish(body: {
    *  than optional: the caller always knows which journey it is on, and a
    *  default would let a new call site get it wrong silently. */
   shorts: boolean;
-}): Promise<{ videoId: string; url: string; thumbnail: boolean }> {
+}): Promise<{ videoId: string; url: string; thumbnail: boolean; playlist: boolean }> {
   return (await post("/api/publish", body)).json() as Promise<{
     videoId: string;
     url: string;
@@ -381,6 +381,9 @@ export async function publish(body: {
      *  False is not a failed publish — the video is up either way; the
      *  usual cause is a channel that was never phone-verified. */
     thumbnail: boolean;
+    /** Whether a Short landed in `SHORTS_PLAYLIST`. Always false for a
+     *  non-Short, which never tries. Non-fatal like `thumbnail`. */
+    playlist: boolean;
   }>;
 }
 

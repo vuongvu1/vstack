@@ -98,6 +98,8 @@ import {
   checkYouTube,
   publishProgress,
   setThumbnail,
+  addToPlaylist,
+  SHORTS_PLAYLIST,
   uploadVideo,
 } from "./youtube.ts";
 import {
@@ -1552,10 +1554,22 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (video.snippet.title === "") return send(res, 400, { error: "title must not be blank." });
     const videoId = await uploadVideo({ path, size: statSync(path).size, video });
     console.warn(`vstack: uploaded ${body.name} as ${videoId} (private)`);
+    // Shorts only, keyed on the same flag that adds `#Shorts` — a long-form
+    // or wide cut is not a Short and does not belong in the Shorts playlist.
+    let playlist = false;
+    if (body.shorts !== false) {
+      try {
+        await addToPlaylist(videoId, SHORTS_PLAYLIST);
+        playlist = true;
+      } catch (err) {
+        console.warn(`vstack: playlist skipped for ${videoId}:`, err);
+      }
+    }
     return send(res, 200, {
       videoId,
       url: `https://studio.youtube.com/video/${videoId}/edit`,
       thumbnail: await applyThumbnail(path, videoId),
+      playlist,
     });
   }
 

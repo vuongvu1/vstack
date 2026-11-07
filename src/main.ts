@@ -2117,7 +2117,7 @@ async function doPublish(): Promise<void> {
         .catch(() => undefined);
     }, 500);
     try {
-      const { videoId, thumbnail } = await api.publish({
+      const { videoId, thumbnail, playlist } = await api.publish({
         name: s.outName,
         title,
         description: s.ytDescription,
@@ -2129,7 +2129,7 @@ async function doPublish(): Promise<void> {
         // wide.
         shorts: s.mode === "short" && !isWide(resolveLayout(s.layoutId)),
       });
-      setState({ ytVideoId: videoId, ytThumbnail: thumbnail });
+      setState({ ytVideoId: videoId, ytThumbnail: thumbnail, ytPlaylist: playlist });
       bell();
     } finally {
       // Must run before guard's own finally clears `busy`, or the next tick
@@ -3564,6 +3564,14 @@ function renderPreview(): Node[] {
             className: "badge badge-warn",
             title: "Custom thumbnails need a phone-verified channel",
             textContent: "thumbnail skipped",
+          })
+        : el("span"),
+      // Same posture: only a Short tries, so only a Short can be skipped.
+      published && s.mode === "short" && !isWide(resolveLayout(s.layoutId)) && !s.ytPlaylist
+        ? el("span", {
+            className: "badge badge-warn",
+            title: "Re-run pnpm youtube-auth to grant playlist access",
+            textContent: "playlist skipped",
           })
         : el("span"),
       // One row: the fields moved to the left panel, so what is left is the

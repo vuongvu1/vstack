@@ -25,7 +25,19 @@ export const CLIENT_PATH = join(CONFIG_DIR, "youtube-client.json");
 /** `{ refresh_token }`, written at mode 0600 by `pnpm youtube-auth`. */
 export const TOKEN_PATH = join(CONFIG_DIR, "youtube-token.json");
 
-export const SCOPE = "https://www.googleapis.com/auth/youtube.upload";
+// `youtube.force-ssl` is for `playlistItems.insert` alone — `youtube.upload`
+// covers videos.insert and thumbnails.set but no playlist write. A token
+// minted before it was added still uploads; only the playlist step 403s
+// (non-fatal) until `pnpm youtube-auth` is re-run.
+export const SCOPE = [
+  "https://www.googleapis.com/auth/youtube.upload",
+  "https://www.googleapis.com/auth/youtube.force-ssl",
+].join(" ");
+
+/** Every Short lands in this playlist (Studio: /playlist/<id>/edit).
+ *  ponytail: hardcoded, like `TAGS_DEFAULT`; a per-journey picker if a
+ *  second playlist ever appears. */
+export const SHORTS_PLAYLIST = "PLSY_xJ4Q1v9U";
 
 // `accessToken` throws this for two different causes — no OAuth client JSON
 // at all, or a client but no (or an expired) refresh token — because
@@ -391,4 +403,19 @@ export async function setThumbnail(videoId: string, jpeg: string): Promise<void>
   // line alone.
   const maxres = (JSON.parse(text) as ThumbnailSetResponse).items?.[0]?.maxres?.url;
   console.warn(`vstack: thumbnail stored — ${maxres ?? "but YouTube listed no sizes"}`);
+}
+
+/** Appends a video to a playlist. Throws on refusal; the caller treats that
+ *  as non-fatal, like `setThumbnail` — the video is already up, and the
+ *  usual cause is a token minted before `SCOPE` gained `youtube.force-ssl`. */
+export async function addToPlaylist(videoId: string, playlistId: string): Promise<void> {
+  const token = await accessToken();
+  const res = await fetch("https://www.googleapis.com/youtube/v3/playlistItems?part=snippet", {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      snippet: { playlistId, resourceId: { kind: "youtube#video", videoId } },
+    }),
+  });
+  if (!res.ok) throw new Error(`Playlist add rejected (${res.status}): ${await res.text()}`);
 }
