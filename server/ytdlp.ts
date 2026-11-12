@@ -117,6 +117,8 @@ export type WindowResult = {
 };
 
 const DASH = "bv*[height<=1080]+ba[ext=m4a]/bv*[height<=1080]+ba";
+/** Below this a fetched clip is refused rather than cached. */
+const MIN_HEIGHT = 1080;
 
 /** One rung of the download ladder: a format selector, and optionally the
  *  yt-dlp extractor client to ask for formats as. `client` omitted means
@@ -349,7 +351,16 @@ export async function fetchOne(
         );
         // yt-dlp can exit 0 after its ffmpeg died mid-write, leaving an mp4
         // with no moov atom. Renamed in, that poisons the cache for good.
-        await probeFile(partial);
+        const got = await probeFile(partial);
+        // A rung that "works" by handing back 360p (itag 18 on the last
+        // rung, after a transient 403 on the DASH ones) is a failure, not a
+        // fallback: crop rects are in source pixels, so it degrades every
+        // export silently. Next rung, or a loud error the user can retry.
+        // ponytail: hard floor — a source whose best is 720p now refuses;
+        // compare against probe()'s height if that ever matters.
+        if (got.height < MIN_HEIGHT) {
+          throw new Error(`only got ${got.width}x${got.height}, need ${MIN_HEIGHT}p`);
+        }
         await rename(partial, path);
         console.warn(
           `vstack: fetched ${videoId} ${windowStart}-${windowEnd} using ` +
