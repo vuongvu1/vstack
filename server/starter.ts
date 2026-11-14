@@ -70,7 +70,7 @@ const TTS = fileURLToPath(new URL("tts.py", import.meta.url));
  *  export — this constant is only the fallback. `VSTACK_VOICE` still
  *  overrides it, and `checkStarter` rejects a name the engine does not know
  *  at boot rather than at export time. */
-export const VOICE = process.env.VSTACK_VOICE ?? "Thùy Dung";
+export const VOICE = process.env.VSTACK_VOICE ?? "Ngọc Huyền";
 
 /** The screen's shape: music alone, then the voice, then the cue.
  *
