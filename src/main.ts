@@ -30,7 +30,7 @@ import {
   defaultTitle,
   tagsFor,
 } from "./defaults.ts";
-import { clock, parseTimestamp, sampleOf, slugify } from "./format.ts";
+import { clock, isLocalId, parseTimestamp, sampleOf, slugify } from "./format.ts";
 import {
   DEFAULT_LAYOUT,
   DEFAULT_LAYOUT_ID,
@@ -1002,6 +1002,21 @@ function openClip(c: api.CachedClip): void {
     phase: "framing",
   });
   if (persistSegments) save();
+}
+
+/** The idle screen's third way into the short journey: a local mp4 is
+ *  uploaded, moved into `media/` as a cached clip under a minted local id,
+ *  and opened exactly as the dropdown would open it. No trimming phase —
+ *  that is the YouTube iframe — so the waveform handles are the marks. */
+async function openLocal(file: File): Promise<void> {
+  await guard("Uploading video…", async () => {
+    const up = await api.upload(file);
+    const clip = await api.importClip(up.id);
+    clipList = [clip, ...clipList];
+    openClip(clip);
+    // openClip names it by the id; the file name is the better badge.
+    setState({ title: file.name.replace(/\.[^.]+$/, "") });
+  });
 }
 
 /** Downloads the session as `<slug>.vstack.json` — the per-video record
@@ -2898,7 +2913,14 @@ function renderFraming(): Node[] {
       thumb,
       // Re-fetch first: it is the odd one out, a utility rather than a step,
       // so it sits furthest from the action that ends the phase.
-      el("div", { className: "bar-end" }, saveProject, refetch, back, download),
+      // A local clip has no YouTube video behind it to trim or re-fetch.
+      el(
+        "div",
+        { className: "bar-end" },
+        saveProject,
+        ...(isLocalId(s.videoId) ? [] : [refetch, back]),
+        download,
+      ),
     ),
   ];
 }
@@ -5026,7 +5048,22 @@ function renderIdle(s: AppState): Node[] {
   });
   openProj.onclick = () => projectFile.click();
 
-  const rows: Node[] = [el("div", { className: "bar-row" }, input, go, openProj, projectFile)];
+  const localFile = el("input", { type: "file", accept: "video/*", hidden: true });
+  localFile.onchange = () => {
+    const file = localFile.files?.[0];
+    if (file) void openLocal(file);
+  };
+  const local = el("button", {
+    className: "btn-gray",
+    textContent: "📼 Local video",
+    title: "Frame a video file from this machine — straight to framing",
+    disabled: busy,
+  });
+  local.onclick = () => localFile.click();
+
+  const rows: Node[] = [
+    el("div", { className: "bar-row" }, input, go, local, localFile, openProj, projectFile),
+  ];
   if (clipList.length > 0) {
     rows.push(el("div", { className: "bar-row" }, renderClipPicker(s)));
   }

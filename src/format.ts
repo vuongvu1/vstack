@@ -81,3 +81,13 @@ export function sampleOf(script: string, max: number): string {
   if (space > 0) return para.slice(0, space).trimEnd();
   return head;
 }
+
+/** A local mp4 imported from the idle screen lives in `media/` under a
+ *  minted id with this prefix rather than a YouTube one, so the routes that
+ *  rebuild a clip path from `videoId` need no new case. Anything that would
+ *  hand the id to YouTube (the trimming iframe, a window re-fetch) checks
+ *  this first.
+ *  ponytail: a real YouTube id starting "local" would be misread as one —
+ *  1 in 64^5; a separate id namespace is the fix if that ever bites. */
+export const LOCAL_PREFIX = "local";
+export const isLocalId = (videoId: string): boolean => videoId.startsWith(LOCAL_PREFIX);

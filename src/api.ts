@@ -260,6 +260,12 @@ export async function clipParts(body: {
  *  fresh download does. */
 export type CachedClip = WindowResult & { videoId: string };
 
+/** Moves an uploaded mp4 into the clip cache under a minted local id and
+ *  answers it as a cached clip, ready for `openClip`. */
+export async function importClip(id: string): Promise<CachedClip> {
+  return (await post("/api/import", { id })).json() as Promise<CachedClip>;
+}
+
 /** Everything in the media cache, newest first — the idle screen's second way
  *  in. Nothing to send: the server scans its own cache directory. */
 export async function clips(): Promise<CachedClip[]> {

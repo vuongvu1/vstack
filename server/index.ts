@@ -39,12 +39,15 @@ import {
   speedWindows,
 } from "../src/segments.ts";
 import type { Segment, Speed } from "../src/segments.ts";
+import { LOCAL_PREFIX } from "../src/format.ts";
 import { HttpError } from "./errors.ts";
 import {
+  MEDIA_DIR,
   OUT_DIR,
   UPLOADS_DIR,
   assertBoxes,
   assertCustoms,
+  clipName,
   clipPath,
   concatClips,
   cutName,
@@ -631,6 +634,34 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // network. No request body at all — there is nothing here for a caller to
   // supply, so nothing to validate.
   if (req.url === "/api/clips") return send(res, 200, { clips: await listClips() });
+
+  // A local mp4, already sent through /api/upload, moved into the clip cache
+  // under a minted id — after which it IS a cached clip: `/api/clips` lists
+  // it, `/api/export` rebuilds its path from videoId + bounds like any
+  // other, and the client opens it with `openClip`. Moved, not copied: the
+  // upload is the server's own file and has no other reader.
+  if (req.url === "/api/import") {
+    const body = await json<Record<string, unknown>>(req);
+    if (!isUploadId(body.id) || !existsSync(uploadPath(body.id))) {
+      return send(res, 400, { error: "Unknown upload." });
+    }
+    const probed = await probeFile(uploadPath(body.id));
+    const videoId = LOCAL_PREFIX + randomUUID().replaceAll("-", "").slice(0, 11 - LOCAL_PREFIX.length);
+    const windowEnd = Math.ceil(probed.seconds);
+    await mkdir(join(MEDIA_DIR, videoId), { recursive: true });
+    await rename(uploadPath(body.id), clipPath(videoId, 0, windowEnd));
+    return send(res, 200, {
+      videoId,
+      clipUrl: `/media/${videoId}/${clipName(0, windowEnd)}`,
+      windowStart: 0,
+      windowEnd,
+      clipStart: 0,
+      clipEnd: probed.seconds,
+      width: probed.width,
+      height: probed.height,
+      digest: "",
+    });
+  }
 
   // The idle screen's third way in, and a dead end — it fetches no video,
   // writes no segments and reaches no other phase. Answers where a
