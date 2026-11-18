@@ -321,6 +321,7 @@ export async function fetchOne(
     // Diagnosing a real 403 meant re-running both selectors by hand on the
     // CLI purely to recover the error this loop had already seen.
     const failures: string[] = [];
+    let need: number | undefined;
     let fetched = false;
     for (const { format, client } of ATTEMPTS) {
       // Spelled out per rung rather than appended conditionally to a shared
@@ -356,10 +357,17 @@ export async function fetchOne(
         // rung, after a transient 403 on the DASH ones) is a failure, not a
         // fallback: crop rects are in source pixels, so it degrades every
         // export silently. Next rung, or a loud error the user can retry.
-        // ponytail: hard floor — a source whose best is 720p now refuses;
-        // compare against probe()'s height if that ever matters.
+        // The floor is the SOURCE's best, capped at 1080: a 720p-only
+        // video has nothing better to give. Probed lazily — only a short
+        // result pays the extra yt-dlp call — and once per fetch. A failed
+        // probe keeps the hard 1080 floor rather than accepting anything.
         if (got.height < MIN_HEIGHT) {
-          throw new Error(`only got ${got.width}x${got.height}, need ${MIN_HEIGHT}p`);
+          need ??= await probe(videoId)
+            .then((p) => Math.min(MIN_HEIGHT, p.height || MIN_HEIGHT))
+            .catch(() => MIN_HEIGHT);
+          if (got.height < need) {
+            throw new Error(`only got ${got.width}x${got.height}, need ${need}p`);
+          }
         }
         await rename(partial, path);
         console.warn(
