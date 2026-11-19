@@ -3784,21 +3784,23 @@ function renderMomentsPanel(): Node[] {
   // An <a> per row rather than a click handler: middle-click, cmd-click and
   // "copy link address" all come free, and checking a peak before copying the
   // list is the whole reason the rows are here rather than only in the
-  // clipboard.
-  return s.moments.map((m) =>
-    el(
-      "a",
-      {
-        className: "moment-row",
-        href: `https://youtu.be/${s.momentsFor}?t=${m.t}`,
-        target: "_blank",
-        rel: "noreferrer",
-      },
-      el("span", { className: "moment-time", textContent: clock(m.t) }),
-      el("span", { className: "moment-sample", textContent: m.sample }),
-      el("span", { className: "badge", textContent: `${m.count}` }),
-    ),
-  );
+  // clipboard. The Copy button sits BESIDE the <a>, not inside it: a button
+  // nested in a link is invalid HTML and its click would follow the link too.
+  return s.moments.map((m) => {
+    const url = `https://youtu.be/${s.momentsFor}?t=${m.t}`;
+    return el(
+      "div",
+      { className: "moment-line" },
+      el(
+        "a",
+        { className: "moment-row", href: url, target: "_blank", rel: "noreferrer" },
+        el("span", { className: "moment-time", textContent: clock(m.t) }),
+        el("span", { className: "moment-sample", textContent: m.sample }),
+        el("span", { className: "badge", textContent: `${m.count}` }),
+      ),
+      copyButton("Copy", url),
+    );
+  });
 }
 
 /** The left column during `lofi`: the three pickers and the speech list.

@@ -426,7 +426,16 @@ textarea:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue-8); borde
 .read-voice select { flex: 1; min-width: 0; }
 .field-count-over { color: var(--red-11); }
 
+.moment-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.moment-line > button { flex: none; }
+
 .moment-row {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
