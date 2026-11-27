@@ -16,9 +16,11 @@ import {
   assertBoxes,
   assertCustoms,
   buildFilter,
+  buildTimelines,
   clipName,
   concatClips,
   cutName,
+  distinctOffsets,
   exportClip,
   firstFrame,
   isCutName,
@@ -34,6 +36,7 @@ import {
   scriptName,
   isScriptName,
   segmentDigest,
+  sourceIndex,
   speedFilter,
   stillPath,
   thumbPath,
@@ -41,6 +44,8 @@ import {
   uploadPath,
 } from "./ffmpeg.ts";
 import { BADGE, BADGE_INSET } from "../src/defaults.ts";
+import { planLegs } from "../src/segments.ts";
+import type { LegSource } from "../src/segments.ts";
 import { ensureMask } from "./mask.ts";
 
 const run = promisify(execFile);
@@ -600,7 +605,91 @@ describe("assertCustoms", () => {
   });
 });
 
+describe("buildFilter twin sources", () => {
+  it("buildFilter with no sources is unchanged", () => {
+    const custom: CustomBox = {
+      out: { x: 300, y: 700, w: 480, h: 480 },
+      crop: { x: 0, y: 760, w: 300, h: 300 },
+    };
+    expect(
+      buildFilter(DEFAULT_LAYOUT, [TOP, BOTTOM], [custom], {
+        boxes: [0, 0],
+        customs: [0],
+        twinBase: 3,
+      }),
+    ).toBe(buildFilter(DEFAULT_LAYOUT, [TOP, BOTTOM], [custom]));
+  });
+
+  it("buildFilter feeds a box from its twin", () => {
+    const f = buildFilter(DEFAULT_LAYOUT, [TOP, BOTTOM], [], {
+      boxes: [0, 1],
+      customs: [],
+      twinBase: 2,
+    });
+    expect(f).toContain("[0:v]split=1[c0]");
+    expect(f).toContain("[2:v]split=1[c1]");
+    expect(f).toContain("xstack=inputs=2:layout=0_0|0_960[stack]");
+  });
+
+  it("buildFilter feeds a floating piece from a later twin", () => {
+    const custom: CustomBox = {
+      out: { x: 300, y: 700, w: 480, h: 480 },
+      crop: { x: 0, y: 760, w: 300, h: 300 },
+    };
+    const f = buildFilter(DEFAULT_LAYOUT, [TOP, BOTTOM], [custom], {
+      boxes: [1, 1],
+      customs: [2],
+      twinBase: 4,
+    });
+    expect(f).not.toContain("[0:v]");
+    expect(f).toContain("[4:v]split=2[c0][c1]");
+    expect(f).toContain("[5:v]split=1[k0]");
+    expect(f).toContain("[k0]crop=300:300:0:760,scale=480:480:flags=lanczos[t0]");
+  });
+
+  it("distinctOffsets dedupes", () => {
+    expect(distinctOffsets([3, 0], [3, -2])).toEqual([-2, 3]);
+    expect(distinctOffsets([0, 0], [])).toEqual([]);
+    expect(sourceIndex(3, [-2, 3])).toBe(2);
+    expect(sourceIndex(-2, [-2, 3])).toBe(1);
+    expect(sourceIndex(0, [-2, 3])).toBe(0);
+  });
+});
+
 describe("exportClip", () => {
+  it("a twin feeds its cell", async () => {
+    // Main all red, twin all blue, both cells cropping the SAME rect: only
+    // the source can make the two cells differ.
+    const red = join(dir, "twin-red.mp4");
+    const blue = join(dir, "twin-blue.mp4");
+    for (const [path, c] of [[red, "red"], [blue, "blue"]] as const) {
+      await run("ffmpeg", [
+        "-v", "error",
+        "-f", "lavfi", "-i", `color=c=${c}:s=1920x1080:d=2:r=10`,
+        "-pix_fmt", "yuv420p", "-y", path,
+      ]);
+    }
+    const out = join(dir, "out-twin.mp4");
+    await exportClip({
+      input: red,
+      start: 0,
+      duration: 1,
+      layout: DEFAULT_LAYOUT,
+      boxes: [TOP, TOP],
+      source: SOURCE,
+      mask,
+      twins: [blue],
+      sourceOf: { boxes: [0, 1], customs: [] },
+      out,
+    });
+    const top = await pixelAt(out, 0.4, 540, 480);
+    expect(top.r).toBeGreaterThan(150);
+    expect(top.b).toBeLessThan(80);
+    const bottom = await pixelAt(out, 0.4, 540, 1440);
+    expect(bottom.b).toBeGreaterThan(150);
+    expect(bottom.r).toBeLessThan(80);
+  });
+
   it("writes a 1920x1080 w-1 file: one cell, so no xstack", async () => {
     const one = byId("w-1");
     const out = join(dir, "out-w1.mp4");
@@ -1121,6 +1210,33 @@ describe("concatClips", () => {
     expect(late.g).toBeLessThan(80);
   });
 
+  it("concatClips honours a forced shape", async () => {
+    const small = join(dir, "forced-small.mp4");
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i", "color=c=red:s=320x180:d=2:r=30",
+      "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+      "-y", small,
+    ]);
+
+    const forcedOut = join(dir, "forced.mp4");
+    await concatClips([{ path: small, start: 0, end: 1 }], forcedOut, {
+      width: 640,
+      height: 360,
+      fps: "30/1",
+    });
+    const forced = await probeFile(forcedOut);
+    expect(forced.width).toBe(640);
+    expect(forced.height).toBe(360);
+
+    const plainOut = join(dir, "forced-plain.mp4");
+    await concatClips([{ path: small, start: 0, end: 1 }], plainOut);
+    const plain = await probeFile(plainOut);
+    expect(plain.width).toBe(320);
+    expect(plain.height).toBe(180);
+  });
+
   it("stitches a silent part by standing silence in for it", async () => {
     // `src` is the file-level silent fixture. A missing audio leg would make
     // the concat filter's leg count disagree with n= and fail outright, so
@@ -1523,4 +1639,112 @@ describe("exportClip speed stage", () => {
   it("emits no speed stage without windows", () => {
     expect(speedFilter({ windows: [], badges: {} }, TALL, 2)).toBe("");
   });
+});
+
+// Two 12s parts whose picture names its own second: luma 20 + 15 * floor(t),
+// so a sample says which second of which file it came from. Part 1 is
+// neutral grey and part 2 is pushed red through Cr, so a sample also says
+// WHICH part it came from — the anti-goal is part 2's footage turning up in a
+// twin before the seam.
+describe("buildTimelines", () => {
+  const W = 160;
+  const H = 90;
+  let one = "";
+  let two = "";
+  let tdir = "";
+
+  beforeAll(async () => {
+    tdir = await mkdtemp(join(tmpdir(), "vstack-tl-"));
+    const make = async (path: string, cr: number) =>
+      run("ffmpeg", [
+        "-v", "error",
+        "-f", "lavfi", "-i", `nullsrc=s=${W}x${H}:r=30:d=12`,
+        "-vf", `format=yuv420p,geq=lum='20+15*floor(T)':cb=128:cr=${cr}`,
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", path,
+      ]);
+    one = join(tdir, "one.mp4");
+    two = join(tdir, "two.mp4");
+    await make(one, 128);
+    await make(two, 200);
+  }, 60_000);
+
+  afterAll(async () => {
+    await rm(tdir, { recursive: true, force: true });
+  });
+
+  /** Which second (by luma) and which part (by Cr) the centre pixel at `t` is. */
+  async function sampleAt(path: string, t: number) {
+    const { stdout } = await run(
+      "ffmpeg",
+      ["-v", "error", "-ss", String(t), "-i", path, "-frames:v", "1",
+       "-f", "rawvideo", "-pix_fmt", "yuv444p", "-"],
+      { encoding: "buffer", maxBuffer: 16 << 20 },
+    );
+    const buf = stdout as unknown as Buffer;
+    const at = (H / 2) * W + W / 2;
+    const y = buf[at] ?? 0;
+    const cr = buf[2 * W * H + at] ?? 0;
+    return { second: Math.round((y - 20) / 15), part: cr > 164 ? 2 : 1 };
+  }
+
+  const shape = { width: W, height: H, fps: "30/1" };
+
+  it("buildTimelines shifts each part on its own", async () => {
+    // A two-segment stitch: clip [0,4] is part 1 from 5s, clip [4,8] is
+    // part 2 from 5s. The whole clip plays.
+    const sources: LegSource[] = [
+      { file: 0, clipStart: 0, clipEnd: 4, fileStart: 5, fileLength: 12 },
+      { file: 1, clipStart: 4, clipEnd: 8, fileStart: 5, fileLength: 12 },
+    ];
+    const { main, twins } = await buildTimelines({
+      legs: [{ start: 0, end: 8, speed: 1 }],
+      files: [one, two],
+      sources,
+      offsets: [2],
+      shape,
+      dir: tdir,
+    });
+    expect(twins).toEqual([join(tdir, "twin-2.mp4")]);
+    const twin = twins[0] ?? "";
+
+    // Half a second before the seam: part 1's OWN later footage, second
+    // 5 + 3.5 + 2 = 10.5, never part 2's.
+    expect(await sampleAt(twin, 3.5)).toEqual({ second: 10, part: 1 });
+    expect(await sampleAt(main, 3.5)).toEqual({ second: 8, part: 1 });
+    // Mid-second rather than on the second boundary the brief names (t=1),
+    // so a frame of seek slop cannot flip the answer.
+    const m = await sampleAt(main, 1.5);
+    const t = await sampleAt(twin, 1.5);
+    expect(m).toEqual({ second: 6, part: 1 });
+    expect(t.second).toBe(m.second + 2);
+    // Past the seam both read part 2, the twin two seconds on.
+    expect(await sampleAt(main, 5.5)).toEqual({ second: 6, part: 2 });
+    expect(await sampleAt(twin, 5.5)).toEqual({ second: 8, part: 2 });
+  }, 120_000);
+
+  it("buildTimelines keeps a twin's duration with cuts and speed-ups", async () => {
+    // Clip [0,7] is part 1 from 3s, [7,14] part 2 from 3s. The x2 band
+    // straddles the seam, so it becomes two sped pieces in two parts.
+    const sources: LegSource[] = [
+      { file: 0, clipStart: 0, clipEnd: 7, fileStart: 3, fileLength: 12 },
+      { file: 1, clipStart: 7, clipEnd: 14, fileStart: 3, fileLength: 12 },
+    ];
+    const legs = planLegs(0, 14, [{ start: 3, end: 4 }], [{ start: 6, end: 8, speed: 2 }]);
+    const { main, twins } = await buildTimelines({
+      legs,
+      files: [one, two],
+      sources,
+      offsets: [-2, 2],
+      shape,
+      dir: tdir,
+    });
+    expect(twins).toEqual([join(tdir, "twin--2.mp4"), join(tdir, "twin-2.mp4")]);
+    const m = await probeFile(main);
+    expect(m.width).toBe(W);
+    expect(m.height).toBe(H);
+    for (const twin of twins) {
+      const p = await probeFile(twin);
+      expect(Math.abs(p.seconds - m.seconds)).toBeLessThanOrEqual(1 / 30);
+    }
+  }, 120_000);
 });

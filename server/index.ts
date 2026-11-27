@@ -15,8 +15,9 @@ import { isAbsolute, join, resolve } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
+import { MAX_OFFSET, PAD } from "../src/geometry.ts";
 import type { Rect } from "../src/geometry.ts";
-import { isWide, layoutById } from "../src/layout.ts";
+import { cellsOf, isWide, layoutById } from "../src/layout.ts";
 import type { CustomBox } from "../src/custom.ts";
 import {
   BADGE,
@@ -38,7 +39,7 @@ import {
   outputAt,
   speedWindows,
 } from "../src/segments.ts";
-import type { Segment, Speed } from "../src/segments.ts";
+import type { LegSource, Segment, Speed } from "../src/segments.ts";
 import { LOCAL_PREFIX } from "../src/format.ts";
 import { HttpError } from "./errors.ts";
 import {
@@ -47,11 +48,13 @@ import {
   UPLOADS_DIR,
   assertBoxes,
   assertCustoms,
+  buildTimelines,
   clipName,
   clipPath,
   concatClips,
   cutName,
   cutStem,
+  distinctOffsets,
   exportClip,
   firstFrame,
   isCutName,
@@ -68,6 +71,8 @@ import {
   removeExport,
   reportCache,
   scriptName,
+  segmentDigest,
+  sourceIndex,
   stillPath,
   thumbPath,
   uploadPath,
@@ -113,7 +118,7 @@ import {
   uploadPageVideo,
   uploadReel,
 } from "./facebook.ts";
-import { fetchOne, fetchWindow, listClips, probe, videoIdFrom } from "./ytdlp.ts";
+import { fetchOne, fetchWindow, listClips, partPath, probe, videoIdFrom } from "./ytdlp.ts";
 
 const run = promisify(execFile);
 // `pnpm prod` runs a second, unwatched copy beside dev on its own port, so
@@ -725,7 +730,33 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // Same posture as boxes: shape here, legality below via assertCustoms.
     // Absent means none, so a body from a client that predates this feature
     // still exports.
-    const customs = (raw.customs ?? []) as CustomBox[];
+    const customsRaw = raw.customs ?? [];
+
+    // Per-box time offsets (chat sync): whole seconds within the pad every
+    // fetched part carries. A piece's rides inside its own custom and is
+    // stripped off here, so `assertCustoms` and the mask's digest see
+    // exactly the custom they always did. Absent means 0 throughout, which
+    // keeps every older body on the untouched path below.
+    const isOffset = (o: unknown): o is number =>
+      typeof o === "number" && Number.isInteger(o) && Math.abs(o) <= MAX_OFFSET;
+    const offsetsRaw = raw.offsets ?? [];
+    if (!Array.isArray(offsetsRaw) || !offsetsRaw.every(isOffset)) {
+      return send(res, 400, { error: "Bad offsets." });
+    }
+    const customOffsets: number[] = [];
+    let customs = customsRaw as CustomBox[];
+    if (Array.isArray(customsRaw)) {
+      for (const c of customsRaw as unknown[]) {
+        const o = typeof c === "object" && c !== null ? (c as { offset?: unknown }).offset ?? 0 : 0;
+        if (!isOffset(o)) return send(res, 400, { error: "Bad custom offset." });
+        customOffsets.push(o);
+      }
+      customs = (customsRaw as unknown[]).map((c) => {
+        if (typeof c !== "object" || c === null || !("offset" in c)) return c;
+        const { offset: _offset, ...rest } = c as Record<string, unknown>;
+        return rest;
+      }) as CustomBox[];
+    }
 
     if (!videoId) return send(res, 400, { error: "Bad video id." });
     if (!(end > start)) return send(res, 400, { error: "End must be after start." });
@@ -796,6 +827,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // instead of a file path.
     const layout = layoutById(layoutId);
     if (!layout) return send(res, 400, { error: `Unknown layout ${layoutId}.` });
+    if (offsetsRaw.length > cellsOf(layout).length) return send(res, 400, { error: "Bad offsets." });
+    const cellOffsets = cellsOf(layout).map((_, i) => (offsetsRaw[i] as number | undefined) ?? 0);
+    const distinct = distinctOffsets(cellOffsets, customOffsets);
+    const shifted = distinct.length > 0;
 
     // Orientation is the layout's frame — there is no second field to agree
     // with it. A wide export has no starter screen: nothing is spoken.
@@ -848,6 +883,48 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       throw new HttpError(400, err instanceof Error ? err.message : String(err));
     }
 
+    // With an offset on, the boxes compose from timelines rebuilt out of the
+    // source files themselves, so they need describing as files: which clip
+    // time lives where, and how much footage each file holds to shift into.
+    // Resolved before the temp dir exists so a stale stitch is a clean 4xx.
+    let files: string[] = [];
+    let sources: LegSource[] = [];
+    if (shifted && digest === "") {
+      // One range: clip time IS source time, and the cached clip is the part.
+      files = [input];
+      sources = [{ file: 0, clipStart: windowStart, clipEnd: windowEnd, fileStart: 0, fileLength: source.seconds }];
+    } else if (shifted) {
+      // A stitch keeps no pad at its seams, so the shift reads the parts it
+      // was built from. The client's segment list is only trusted because it
+      // hashes to the digest that named this very clip.
+      const segs = raw.segments;
+      if (!isValidSegments(segs, Number.POSITIVE_INFINITY) || segmentDigest(segs) !== digest) {
+        return send(res, 400, {
+          error: "Trim ranges don't match this clip — re-open it from Trim to use offsets.",
+        });
+      }
+      let clipAt = 0;
+      for (const [i, seg] of segs.entries()) {
+        const path = await partPath(videoId, seg);
+        if (path === null) {
+          return send(res, 404, {
+            error: `Part ${i + 1} of this clip is no longer cached; re-fetch it from Trim.`,
+          });
+        }
+        const len = seg.end - seg.start;
+        files.push(path);
+        sources.push({
+          file: i,
+          clipStart: clipAt,
+          clipEnd: clipAt + len,
+          // fetchOne's own windowStart, which partPath matched on.
+          fileStart: seg.start - Math.max(0, Math.floor(seg.start - PAD)),
+          fileLength: (await probeFile(path)).seconds,
+        });
+        clipAt += len;
+      }
+    }
+
     const dir = await mkdtemp(join(tmpdir(), "vstack-out-"));
     // Named after the starter title, not YouTube's: it is what the screen
     // says and reads aloud, so it is what the file is *about*.
@@ -885,7 +962,25 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       // Without either nothing is stitched and nothing is re-encoded: the
       // path below is byte-identical to the one every export took before
       // this field existed.
-      const composed = !stitched
+      //
+      // With any box offset, the stitch is forced and comes from
+      // `buildTimelines` instead: main and every twin out of the same source
+      // files by the same function, frame-aligned with each other. Same legs
+      // in the same order as the branch below, so main is the timeline the
+      // speed windows and `thumbAt` describe, and audio (input 0) is main's.
+      const timelines = shifted
+        ? await buildTimelines({
+            legs,
+            files,
+            sources,
+            offsets: distinct,
+            shape: { width: source.width, height: source.height, fps: source.fps },
+            dir,
+          })
+        : null;
+      const composed = timelines
+        ? timelines.main
+        : !stitched
         ? input
         : await concatClips(
             legs.map((l) => ({
@@ -907,7 +1002,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         input: composed,
         // The stitch starts at its own 0 and is already exactly the kept
         // length; an uncut clip is still seeked into.
-        start: stitched ? 0 : start - windowStart,
+        start: stitched || shifted ? 0 : start - windowStart,
         duration: legsDuration(legs),
         layout,
         boxes,
@@ -918,6 +1013,16 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         // and a digest of the pieces' output rects.
         mask: await ensureMask(layout, customs.map((c) => c.out)),
         speed: windows.length > 0 ? { windows, badges } : undefined,
+        // Absent without offsets, so that call is exactly what it was.
+        ...(timelines
+          ? {
+              twins: timelines.twins,
+              sourceOf: {
+                boxes: cellOffsets.map((o) => sourceIndex(o, distinct)),
+                customs: customOffsets.map((o) => sourceIndex(o, distinct)),
+              },
+            }
+          : {}),
         out: body,
       });
       if (wide) {

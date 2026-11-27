@@ -9,8 +9,12 @@ import type { Corner, Rect, Size } from "./geometry.ts";
  *
  *  Custom boxes are deliberately NOT extra cells: `Layout` is authored as
  *  rows so that a hand-written cell list cannot express a seam or an
- *  overlap, and a floating box is an overlap by construction. */
-export type CustomBox = { out: Rect; crop: Rect };
+ *  overlap, and a floating box is an overlap by construction.
+ *
+ *  `offset` is the piece's time offset in whole seconds (see `cleanOffset`);
+ *  optional so every record written before it existed still validates, and
+ *  `isValidCustom` deliberately ignores it. */
+export type CustomBox = { out: Rect; crop: Rect; offset?: number };
 
 /** Two. Each one costs a decode leg, an overlay, a mask window, a node on
  *  each of the two editor overlays and a colour in the box scale. */

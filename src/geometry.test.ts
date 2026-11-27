@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_OFFSET,
   MIN_BOX_SIDE,
+  cleanOffset,
   boxFromHeight,
   clampToBounds,
   displayScale,
@@ -283,5 +285,20 @@ describe("effectiveMinH via boxFromHeight — the fractional floor", () => {
     const b = boxFromHeight(1, HD, 2.25);
     expect(b.h).toBe(MIN_BOX_SIDE);
     expect(b.w).toBe(320);
+  });
+});
+
+describe("cleanOffset", () => {
+  it("keeps integers within +-MAX_OFFSET", () => {
+    expect(cleanOffset(3)).toBe(3);
+    expect(cleanOffset(-5)).toBe(-5);
+    expect(cleanOffset(MAX_OFFSET)).toBe(MAX_OFFSET);
+  });
+  it("zeroes everything else", () => {
+    expect(cleanOffset(6)).toBe(0);
+    expect(cleanOffset(1.5)).toBe(0);
+    expect(cleanOffset("3")).toBe(0);
+    expect(cleanOffset(null)).toBe(0);
+    expect(cleanOffset(Number.NaN)).toBe(0);
   });
 });

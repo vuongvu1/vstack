@@ -315,6 +315,14 @@ export async function exportClip(body: {
   /** Floating pieces over the layout, in z order — last on top. Always
    *  sent, empty when there are none. */
   customs: CustomBox[];
+  /** Per-cell time offsets, whole seconds within +-MAX_OFFSET, `cellsOf`
+   *  order. Sent only when some box (cell or piece) is shifted; absent means
+   *  every cell is at 0. A piece's own offset rides inside its custom. */
+  offsets?: number[];
+  /** A stitch's source-timeline trim ranges — required by the server when
+   *  `digest` is non-empty and any offset is non-zero, and checked against
+   *  that digest. Omitted otherwise. */
+  segments?: Segment[];
   /** Which preset reads the title. Validated server-side against the engine's
    *  own table — it reaches a subprocess as argv. Omitted on a wide layout. */
   voice?: string;

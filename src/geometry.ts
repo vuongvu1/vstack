@@ -31,6 +31,15 @@ export const SHORTS_MAX_S = 180;
  *  keyframe-sloppy stream-copy edges and lets the export seek accurately. */
 export const PAD = 5;
 
+/** Largest per-box time offset, seconds either way: the fetched window's own padding. */
+export const MAX_OFFSET = PAD;
+
+/** A stored per-box time offset: an integer within +-MAX_OFFSET, else 0.
+ *  Used on both sides of persistence, so a bad value costs only itself. */
+export function cleanOffset(v: unknown): number {
+  return typeof v === "number" && Number.isInteger(v) && Math.abs(v) <= MAX_OFFSET ? v : 0;
+}
+
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
 /** MIN_BOX_SIDE is the preferred floor on both axes, so for a cell narrower

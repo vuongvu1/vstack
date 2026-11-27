@@ -277,3 +277,89 @@ export function speedWindows(legs: Leg[]): { at: number; until: number; speed: S
   }
   return out;
 }
+
+/** Clip time [clipStart, clipEnd] lives in file `file` from fileStart; the file is fileLength s long. */
+export type LegSource = { file: number; clipStart: number; clipEnd: number; fileStart: number; fileLength: number };
+/** File-relative range in source `file`. */
+export type ShiftedLeg = { file: number; start: number; end: number; speed: 1 | Speed };
+
+/** Maps clip-timeline legs onto the source files, `offset` seconds later in
+ *  each file (negative = earlier). A leg crossing a seam between two sources
+ *  is split there. A piece that would run off a file's start or end slides
+ *  back inside instead of shrinking, so every piece keeps its length and the
+ *  total duration never changes. */
+export function shiftLegs(legs: Leg[], sources: LegSource[], offset: number): ShiftedLeg[] {
+  const out: ShiftedLeg[] = [];
+  for (const leg of legs) {
+    for (const src of sources) {
+      const a = Math.max(leg.start, src.clipStart);
+      const b = Math.min(leg.end, src.clipEnd);
+      if (b <= a) continue;
+      let start = src.fileStart + (a - src.clipStart) + offset;
+      let end = src.fileStart + (b - src.clipStart) + offset;
+      const lo = Math.max(0, -start);
+      start += lo;
+      end += lo;
+      const hi = Math.max(0, end - src.fileLength);
+      start -= hi;
+      end -= hi;
+      out.push({ file: src.file, start, end, speed: leg.speed });
+    }
+  }
+  return out;
+}
+
+/** How far a box may be time-shifted, `{ min <= 0 <= max }` in whole
+ *  seconds, given the footage the server actually has around the marks.
+ *
+ *  The server slides a shift that overruns its source file back inside it
+ *  as a whole block, so asking for more than this exports as LESS — a `+3`
+ *  that renders as 0 while the badge still says `+3s`. Bounding the control
+ *  by the real headroom is what keeps the label honest.
+ *
+ *  A single range (`digest === ""`) lives in the fetched window itself. A
+ *  stitch's shifted copies are rebuilt from its part files, each fetched
+ *  over `[floor(start - pad), ceil(end + pad)]` clamped to the video — the
+ *  arithmetic `fetchOne` and `partPath` in `server/ytdlp.ts` use, ended at
+ *  the video's real `duration` rather than its ceil — and the
+ *  tightest part bounds the whole clip, since one offset shifts every leg.
+ *  A `duration` shorter than the parts is the dropdown reopen's stand-in
+ *  (the clip's own windowEnd) and is treated as unknown, as `fetchOne`
+ *  does with a 0; a part a cached wider window serves can only have MORE
+ *  room than this, so the answer errs short. A stitch with fewer than two
+ *  stored parts cannot be described at all: `{ 0, 0 }`.
+ *
+ *  `pad` and `cap` are parameters because this module imports nothing. */
+export function offsetBounds(o: {
+  digest: string;
+  segments: Segment[];
+  clipStart: number;
+  clipEnd: number;
+  windowStart: number;
+  windowEnd: number;
+  duration: number;
+  pad: number;
+  cap: number;
+}): { min: number; max: number } {
+  let head: number;
+  let tail: number;
+  if (o.digest === "") {
+    head = o.clipStart - o.windowStart;
+    // The window is ceil'd but the file ends at the video's real end. A
+    // duration short of the marks is a stand-in (or unknown) and ignored.
+    const fileEnd = o.duration >= o.clipEnd ? Math.min(o.windowEnd, o.duration) : o.windowEnd;
+    tail = fileEnd - o.clipEnd;
+  } else {
+    if (o.segments.length < 2) return { min: 0, max: 0 };
+    const last = Math.max(...o.segments.map((s) => s.end));
+    // The real end, not `fetchOne`'s ceil: the file stops at `duration`.
+    const videoEnd = o.duration >= last ? o.duration : Number.POSITIVE_INFINITY;
+    head = Math.min(...o.segments.map((s) => s.start - Math.max(0, Math.floor(s.start - o.pad))));
+    tail = Math.min(...o.segments.map((s) => Math.min(Math.ceil(s.end + o.pad), videoEnd) - s.end));
+  }
+  // `0 -`, not unary minus: no -0 for a caller to compare against.
+  return {
+    min: 0 - Math.min(o.cap, Math.max(0, Math.floor(head))),
+    max: Math.min(o.cap, Math.max(0, Math.floor(tail))),
+  };
+}

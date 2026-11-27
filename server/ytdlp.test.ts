@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { parseClipName, videoIdFrom } from "./ytdlp.ts";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
+import { MEDIA_DIR } from "./ffmpeg.ts";
+import { parseClipName, partPath, videoIdFrom } from "./ytdlp.ts";
 
 // A real, 11-char YouTube id (also used as a fixture elsewhere in this
 // repo). Any 11-char [A-Za-z0-9_-] string exercises the same branches.
@@ -155,5 +158,40 @@ describe("parseClipName", () => {
     // `clipPath` later rebuilds a path from, so it stays strict.
     expect(parseClipName("../../etc/passwd")).toBeNull();
     expect(parseClipName("1-2.mp4/../../x")).toBeNull();
+  });
+});
+
+// MEDIA_DIR is a fixed constant, so the fixture lives under it in a
+// directory no real video id can collide with (`zz` + a random tail is 11
+// chars of the id alphabet, and is removed again below). Empty files: the
+// lookup reads names only.
+describe("partPath", () => {
+  const id = `zzpart${Math.random().toString(36).slice(2, 7).padEnd(5, "0")}`;
+  const vdir = join(MEDIA_DIR, id);
+
+  afterAll(async () => {
+    await rm(vdir, { recursive: true, force: true });
+  });
+
+  it("partPath finds the un-digested part", async () => {
+    await mkdir(vdir, { recursive: true });
+    await writeFile(join(vdir, "7-25.mp4"), "");
+    // A stitch with the same leading number: never a part.
+    await writeFile(join(vdir, "0-18-abcdef12.mp4"), "");
+    // A download partial: never a part either.
+    await writeFile(join(vdir, "7-26.0b1c.part.mp4"), "");
+
+    const found = await partPath(id, { start: 12, end: 20 });
+    expect(found).toBe(join(vdir, "7-25.mp4"));
+    // The part has to reach the segment's end.
+    expect(await partPath(id, { start: 12, end: 26 })).toBeNull();
+    expect(await partPath(id, { start: 40, end: 45 })).toBeNull();
+    // windowStart is floor(start - PAD), clamped at 0: a segment at 3s lives
+    // in a 0-… part, which the stitch's own 0-18-<digest> name is not.
+    expect(await partPath(id, { start: 3, end: 10 })).toBeNull();
+  });
+
+  it("partPath answers null for a video with no directory at all", async () => {
+    expect(await partPath("zzzzzzzzzzz", { start: 12, end: 20 })).toBeNull();
   });
 });

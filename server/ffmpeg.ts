@@ -13,8 +13,8 @@ import type { Layout } from "../src/layout.ts";
 import { mmss, slugify } from "../src/format.ts";
 import { MAX_CUSTOM, MIN_OUT_SIDE, isValidCustom } from "../src/custom.ts";
 import type { CustomBox } from "../src/custom.ts";
-import { SPEEDS, speedGain } from "../src/segments.ts";
-import type { Segment, Speed } from "../src/segments.ts";
+import { SPEEDS, shiftLegs, speedGain } from "../src/segments.ts";
+import type { Leg, LegSource, Segment, Speed } from "../src/segments.ts";
 import { BADGE_INSET } from "../src/defaults.ts";
 import { toolError } from "./errors.ts";
 
@@ -448,8 +448,30 @@ export type ExportOpts = {
   /** The speed-up stage. Only ever set on a stitched input. Absent: the
    *  graph is exactly as before. */
   speed?: SpeedFx;
+  /** Shifted copies of `input`, one per distinct non-zero offset in
+   *  ascending order (`distinctOffsets`), on the same timeline as `input`.
+   *  Declared as inputs after the badges. Absent: no extra inputs at all. */
+  twins?: string[];
+  /** Which input feeds each box: 0 is `input`, k >= 1 is `twins[k - 1]`.
+   *  Absent, or every entry 0: the graph is exactly as before. */
+  sourceOf?: { boxes: number[]; customs: number[] };
   out: string;
 };
+
+/** The offsets that need a twin: non-zero, unique, ascending. Twin k (1-based)
+ *  is `distinctOffsets(...)[k - 1]`. */
+export function distinctOffsets(cells: number[], customs: number[]): number[] {
+  return [...new Set([...cells, ...customs].filter((o) => o !== 0))].sort((a, b) => a - b);
+}
+
+/** 0 for an unshifted box, else the 1-based twin carrying `offset`. */
+export function sourceIndex(offset: number, distinct: number[]): number {
+  return offset === 0 ? 0 : distinct.indexOf(offset) + 1;
+}
+
+/** Per-box source for `buildFilter`: 0 for input 0, k >= 1 for twin k,
+ *  which is ffmpeg input `twinBase + k - 1`. */
+export type FilterSources = { boxes: number[]; customs: number[]; twinBase: number };
 
 /** One decode, split N ways, each leg cropped and scaled to its cell, then
  *  composed, then the frame mask overlaid on top.
@@ -467,7 +489,12 @@ export type ExportOpts = {
  *  pre-rendered mask is a single blend per frame. Crucially the overlay is
  *  *on top of* an edge-to-edge composite, so `crop=` and `scale=` never see
  *  the gutter and the stored boxes stay exact. */
-export function buildFilter(layout: Layout, boxes: Rect[], customs: CustomBox[] = []): string {
+export function buildFilter(
+  layout: Layout,
+  boxes: Rect[],
+  customs: CustomBox[] = [],
+  sources?: FilterSources,
+): string {
   const cells = cellsOf(layout);
   const legs = cells.map((cell, i) => {
     const r = boxes[i];
@@ -508,8 +535,24 @@ export function buildFilter(layout: Layout, boxes: Rect[], customs: CustomBox[] 
     return step;
   });
 
+  // One split per source actually used, each feeding its boxes' labels, so
+  // everything after the split is untouched. With every source 0 this is
+  // exactly the single `[0:v]split` line every export emitted before twins.
+  const labels = [
+    ...cells.map((_, i) => ({ label: `[c${i}]`, src: sources?.boxes[i] ?? 0 })),
+    ...customs.map((_, j) => ({ label: `[k${j}]`, src: sources?.customs[j] ?? 0 })),
+  ];
+  const used = [...new Set(labels.map((l) => l.src))].sort((a, b) => a - b);
+  const splits = used.every((k) => k === 0)
+    ? [`[0:v]split=${cells.length + customs.length}${inputs}${customInputs}`]
+    : used.map((k) => {
+        const mine = labels.filter((l) => l.src === k);
+        const input = k === 0 ? 0 : (sources?.twinBase ?? 0) + k - 1;
+        return `[${input}:v]split=${mine.length}${mine.map((l) => l.label).join("")}`;
+      });
+
   return [
-    `[0:v]split=${cells.length + customs.length}${inputs}${customInputs}`,
+    ...splits,
     ...legs,
     // xstack refuses inputs=1, so a one-cell layout passes its leg through.
     cells.length === 1
@@ -595,7 +638,31 @@ export async function exportClip(opts: ExportOpts): Promise<string> {
         return ["-loop", "1", "-i", path];
       })
     : [];
-  const graph = buildFilter(opts.layout, opts.boxes, opts.customs ?? []);
+  const twins = opts.twins ?? [];
+  const sourceOf = opts.sourceOf;
+  if (sourceOf) {
+    const all = [...sourceOf.boxes, ...sourceOf.customs];
+    if (
+      sourceOf.boxes.length !== opts.boxes.length ||
+      sourceOf.customs.length !== (opts.customs ?? []).length ||
+      all.some((k) => !Number.isInteger(k) || k < 0 || k > twins.length)
+    ) {
+      throw new Error(
+        `exportClip: sourceOf ${JSON.stringify(sourceOf)} does not fit ` +
+          `${opts.boxes.length} boxes, ${(opts.customs ?? []).length} customs and ${twins.length} twins.`,
+      );
+    }
+  }
+  // Twins after the badges, so the clip, the mask and every badge keep
+  // their indices (speedFilter's base stays 2).
+  const twinBase = 2 + badgeInputs.length / 4; // four argv words per badge
+  const twinInputs = twins.flatMap((path) => ["-i", path]);
+  const graph = buildFilter(
+    opts.layout,
+    opts.boxes,
+    opts.customs ?? [],
+    sourceOf ? { ...sourceOf, twinBase } : undefined,
+  );
   try {
     await run(
       "ffmpeg",
@@ -611,6 +678,10 @@ export async function exportClip(opts: ExportOpts): Promise<string> {
         // Badges after the mask, so input 1 does not move, and before -ss
         // for the mask's own reason.
         ...badgeInputs,
+        // Twins last, before -ss for the same reason. -ss and -t are OUTPUT
+        // options here, so they trim every input alike: a twin on the clip's
+        // own timeline stays frame-aligned whatever `start` is.
+        ...twinInputs,
         // -ss AFTER -i is frame-accurate. Before -i it snaps to a keyframe
         // and drifts up to ~2s; decoding the pad is what buys the accuracy.
         "-ss", String(opts.start),
@@ -675,12 +746,18 @@ const BLUR_FRAMES_MAX = 8;
  *  A part with no audio is given a leg cut out of a single `anullsrc` input,
  *  appended LAST so the real parts' input indices never move — the same
  *  positional rule `prependStarter`'s silence stand-in follows. */
-export async function concatClips(parts: ConcatPart[], out: string): Promise<string> {
+export async function concatClips(
+  parts: ConcatPart[],
+  out: string,
+  forced?: { width: number; height: number; fps: string },
+): Promise<string> {
   const first = parts[0];
   if (first === undefined) throw new Error("concatClips needs at least one part.");
 
   const probed = await Promise.all(parts.map((p) => probeFile(p.path)));
-  const shape = probed[0];
+  // `forced` pins the output shape (a shifted twin must match the main clip's
+  // size); absent, the first part decides, as it always did.
+  const shape = forced ?? probed[0];
   if (shape === undefined) throw new Error("concatClips could not probe its first part.");
 
   const silentAt = (i: number) => probed[i]?.hasAudio !== true;
@@ -753,6 +830,40 @@ export async function concatClips(parts: ConcatPart[], out: string): Promise<str
     throw toolError("ffmpeg", err);
   }
   return out;
+}
+
+/** The timelines an export with per-box offsets composes from: `main` at
+ *  offset 0 and one twin per entry of `offsets` (distinct, non-zero, in the
+ *  order `exportClip`'s `twins` wants them), at `dir/twin-<o>.mp4`.
+ *
+ *  `main` is built here, from the part files, rather than taken from the
+ *  cached stitch: the cache carries its own trim and `fps` rounding at every
+ *  seam, so a main from the cache and a twin from the parts could drift a
+ *  frame per seam. One function over the same sources makes them
+ *  frame-aligned by construction, and `shape` (the cached clip's probe) pins
+ *  every one to the pixel space the crop rects were drawn in.
+ *
+ *  `files[i]` is the path for `LegSource.file === i`. */
+export async function buildTimelines(opts: {
+  legs: Leg[];
+  files: string[];
+  sources: LegSource[];
+  offsets: number[];
+  shape: { width: number; height: number; fps: string };
+  dir: string;
+}): Promise<{ main: string; twins: string[] }> {
+  const stitch = async (offset: number, out: string) => {
+    const parts: ConcatPart[] = shiftLegs(opts.legs, opts.sources, offset).map((p) => {
+      const path = opts.files[p.file];
+      if (path === undefined) throw new Error(`buildTimelines: no file for source ${p.file}.`);
+      return { path, start: p.start, end: p.end, speed: p.speed };
+    });
+    return concatClips(parts, out, opts.shape);
+  };
+  const main = await stitch(0, join(opts.dir, "main.mp4"));
+  const twins: string[] = [];
+  for (const o of opts.offsets) twins.push(await stitch(o, join(opts.dir, `twin-${o}.mp4`)));
+  return { main, twins };
 }
 
 /** The first frame of a finished export, as a 1280x720 JPEG — which for a

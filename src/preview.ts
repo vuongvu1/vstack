@@ -64,6 +64,31 @@ function clipOutside(ctx: CanvasRenderingContext2D, out: Rect, frame: Size): voi
   ctx.clip("evenodd");
 }
 
+/** The `+3s` / `-2s` marker on a time-shifted box, in frame pixels, at
+ *  `(x, y)` — a box's top-left plus an inset that clears the rounded corner
+ *  the decoration later cuts. A label, not a picture of the shift:
+ *
+ *  ponytail: preview does not shift; upgrade = one hidden <video> per
+ *  distinct offset synced to currentTime + offset. */
+function drawOffsetBadge(ctx: CanvasRenderingContext2D, offset: number, x: number, y: number): void {
+  const text = `${offset > 0 ? "+" : ""}${offset}s`;
+  ctx.save();
+  ctx.font = "600 40px system-ui, sans-serif";
+  ctx.textBaseline = "middle";
+  const w = ctx.measureText(text).width + 32;
+  const h = 56;
+  ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, h / 2);
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.fillText(text, x + 16, y + h / 2);
+  ctx.restore();
+}
+
+/** Clears the rounded corner (CORNER_RADIUS) and, on a cell, its gutter. */
+const OFFSET_BADGE_INSET = CORNER_RADIUS + GUTTER;
+
 /** The whole composite: one decode, one draw per cell, then one per floating
  *  piece, then the white decoration. Boxes and pieces are read through
  *  getters each frame so a drag needs no re-subscription.
@@ -92,6 +117,8 @@ export function startPreview(
   cells: Rect[],
   boxes: () => Rect[],
   customs: () => CustomBox[],
+  /** Per-cell time offsets, parallel to `cells`; missing entries are 0. */
+  offsets: () => number[],
   still: () => string | null,
   speedNow: () => Speed | null,
 ): () => void {
@@ -120,6 +147,9 @@ export function startPreview(
   const tick = () => {
     if (video.readyState >= 2) {
       const bs = boxes();
+      // Not on the thumbnail: that frame is the starter screen, not a box.
+      const badges = still() === null;
+      const os = badges ? offsets() : [];
       cells.forEach((cell, i) => {
         const b = bs[i];
         // A cell with no box yet is skipped, not drawn from a zero rect:
@@ -129,6 +159,12 @@ export function startPreview(
         if (!b) return;
         ctx.drawImage(video, b.x, b.y, b.w, b.h, cell.x, cell.y, cell.w, cell.h);
       });
+      // After every cell and before the pieces, so a piece over a cell's
+      // corner covers its badge the way it covers the cell.
+      cells.forEach((cell, i) => {
+        const o = os[i] ?? 0;
+        if (o !== 0) drawOffsetBadge(ctx, o, cell.x + OFFSET_BADGE_INSET, cell.y + OFFSET_BADGE_INSET);
+      });
 
       // Floating pieces, drawn as plain rects in array order — last on top,
       // exactly as the overlay chain composes them. Their square corners are
@@ -136,6 +172,10 @@ export function startPreview(
       const cs = customs();
       for (const c of cs) {
         ctx.drawImage(video, c.crop.x, c.crop.y, c.crop.w, c.crop.h, c.out.x, c.out.y, c.out.w, c.out.h);
+        // Each piece's badge straight after the piece, so an upper piece
+        // covers a lower one's badge in z order.
+        const o = badges ? (c.offset ?? 0) : 0;
+        if (o !== 0) drawOffsetBadge(ctx, o, c.out.x + CORNER_RADIUS, c.out.y + CORNER_RADIUS);
       }
 
       ctx.fillStyle = "#fff";

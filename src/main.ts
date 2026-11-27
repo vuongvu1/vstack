@@ -11,7 +11,7 @@ import type { CustomBox } from "./custom.ts";
 import { mountEditor } from "./editor.ts";
 import type { EditorHandle } from "./editor.ts";
 import { GUTTER } from "./frame.ts";
-import { SHORTS_MAX_S, SKIP_TRIM_UNDER, moveBy, resizeFromCorner } from "./geometry.ts";
+import { MAX_OFFSET, PAD, SHORTS_MAX_S, SKIP_TRIM_UNDER, moveBy, resizeFromCorner } from "./geometry.ts";
 import type { Rect } from "./geometry.ts";
 import {
   defaultDescription,
@@ -57,6 +57,7 @@ import {
   isValidSegments,
   normalize,
   normalizeSpeeds,
+  offsetBounds,
   planLegs,
   speedGain,
 } from "./segments.ts";
@@ -249,6 +250,7 @@ async function load(url: string, opts: { cutter?: boolean } = {}): Promise<void>
         source,
         layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
         boxes: saved.boxes ?? [],
+        offsets: saved.offsets ?? [],
         customs: saved.customs ?? [],
         // Every exit from `idle` on the short journey claims the mode: the
         // two journeys' only shared phase is `preview`, so whichever way out
@@ -890,6 +892,7 @@ async function openWindow(): Promise<void> {
       source,
       layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
       boxes: saved.boxes ?? [],
+      offsets: saved.offsets ?? [],
       customs: saved.customs ?? [],
       phase: "framing",
     });
@@ -996,6 +999,7 @@ function openClip(c: api.CachedClip): void {
     source,
     layoutId: saved.layoutId ?? DEFAULT_LAYOUT_ID,
     boxes: saved.boxes ?? [],
+    offsets: saved.offsets ?? [],
     customs: saved.customs ?? [],
     error: "",
     mode: "short",
@@ -1521,7 +1525,7 @@ function ensureFraming(): void {
     // setQuiet, not setState: this runs during render, and notifying from
     // inside a render is re-entrant. The rAF preview loop below reads state
     // fresh every frame, so a quiet update still reaches the canvas.
-    setQuiet({ boxes: defaultBoxes(s.source, layout) });
+    setQuiet({ boxes: defaultBoxes(s.source, layout), offsets: [] });
     save();
   }
 
@@ -1534,6 +1538,7 @@ function ensureFraming(): void {
     cells,
     currentBoxes,
     currentCustoms,
+    () => getState().offsets,
     currentStill,
     () => {
       const cur = getState();
@@ -1542,6 +1547,9 @@ function ensureFraming(): void {
   );
 
   const cellCount = cells.length;
+  // A new clip (or a restored record) brings new marks, so stored offsets
+  // may exceed what this clip's footage allows. Quiet: this runs in render.
+  clampOffsets();
   sourceEditor?.stop();
   sourceEditor = mountEditor({
     host: sourceSlot,
@@ -1581,6 +1589,45 @@ function ensureFraming(): void {
       setQuiet({ customs: next });
     },
     onCommit: () => save(),
+    // Per-box time offsets. Read through getState(), never `s`: `s` is this
+    // mount's snapshot and every drag since has written through setQuiet —
+    // the `+ Box` lesson. Quiet for the drag path's reason too: a render
+    // would rebuild the bar under the click, and the editor updates its own
+    // label in place.
+    offset: {
+      get: (i) => {
+        const cur = getState();
+        return i < cellCount ? (cur.offsets[i] ?? 0) : (cur.customs[i - cellCount]?.offset ?? 0);
+      },
+      set: (i, v) => {
+        const cur = getState();
+        if (i < cellCount) {
+          const offsets = cells.map((_, k) => cur.offsets[k] ?? 0);
+          offsets[i] = v;
+          setQuiet({ offsets });
+        } else {
+          const next = [...cur.customs];
+          const c = next[i - cellCount];
+          if (!c) return;
+          // Key absent at 0, the shape `CustomBox` documents.
+          next[i - cellCount] = v === 0 ? { out: c.out, crop: c.crop } : { out: c.out, crop: c.crop, offset: v };
+          setQuiet({ customs: next });
+        }
+        save();
+      },
+      // The footage around the marks: the server slides an overrunning
+      // shift back as a block, so a `+3` past this would export as less.
+      bounds: currentOffsetBounds,
+      // A multi-part stitch reopened without its trim ranges (the idle
+      // dropdown on a fresh session) has nothing to rebuild the shifted
+      // timeline from. Approximate — the server's digest check is the guard.
+      // Evaluated per mount, which is enough: clipDigest and segments only
+      // move with the clip, and a clip change remounts this editor.
+      disabled:
+        s.clipDigest !== "" && s.segments.length < 2
+          ? "Offsets need this clip's trim ranges — re-open it from Trim."
+          : null,
+    },
   });
   boxesLayer = sourceSlot.querySelector<HTMLDivElement>(".boxes");
 
@@ -1616,7 +1663,9 @@ function ensureFraming(): void {
         const next = [...currentCustoms()];
         const cur = next[index];
         if (!cur) return;
-        next[index] = { out, crop: resnapCrop(cur.crop, getState().source, out) };
+        // Spread first: a piece's time offset rides on the same object and a
+        // resize must not drop it.
+        next[index] = { ...cur, out, crop: resnapCrop(cur.crop, getState().source, out) };
         setQuiet({ customs: next });
         sourceEditor?.place();
       },
@@ -1649,6 +1698,68 @@ function currentBoxes(): Rect[] {
  *  mismatches mid-switch. */
 function currentCustoms(): CustomBox[] {
   return getState().customs;
+}
+
+/** The live footage headroom for a time offset — `offsetBounds` over the
+ *  current state. The source overlay's control steps within it, and
+ *  `clampOffsets` pulls stored values back into it. */
+function currentOffsetBounds(): { min: number; max: number } {
+  const cur = getState();
+  return offsetBounds({
+    digest: cur.clipDigest,
+    segments: cur.segments,
+    clipStart: cur.clipStart,
+    clipEnd: cur.clipEnd,
+    windowStart: cur.windowStart,
+    windowEnd: cur.windowEnd,
+    duration: cur.duration,
+    pad: PAD,
+    cap: MAX_OFFSET,
+  });
+}
+
+/** Pulls every stored cell and piece offset back inside the footage that
+ *  exists around the marks, quietly, and returns one line per box it
+ *  changed. The one rule for every site where the bounds can shrink — a
+ *  mark handle's release and `doExport` — so the label, the canvas badge and
+ *  the request body never disagree. Without it a `+3` set before the end
+ *  mark was dragged to the window edge keeps its `+3s` badge while the
+ *  server slides the shift back to nothing.
+ *
+ *  Quiet because both callers notify right after; saves only on a change.
+ *  A stitch with no stored parts is left alone — its bounds are `{0,0}` for
+ *  want of information, not for want of footage, and the control's
+ *  disabled message already covers it. */
+function clampOffsets(): string[] {
+  const cur = getState();
+  if (cur.clipDigest !== "" && cur.segments.length < 2) return [];
+  const { min, max } = currentOffsetBounds();
+  const notes: string[] = [];
+  const clamp = (v: number, box: number): number => {
+    const next = Math.min(max, Math.max(min, v));
+    if (next !== v) {
+      const shown = next > 0 ? `+${next}` : String(next);
+      notes.push(
+        v > 0
+          ? `Box ${box} offset reduced to ${shown}s — only ${max}s fetched past the end mark.`
+          : `Box ${box} offset reduced to ${shown}s — only ${-min}s fetched before the start mark.`,
+      );
+    }
+    return next;
+  };
+  const cells = cellsOf(resolveLayout(cur.layoutId)).length;
+  const offsets = cur.offsets.map((o, i) => clamp(o, i + 1));
+  const customs = cur.customs.map((c, j) => {
+    const v = c.offset ?? 0;
+    const next = clamp(v, cells + j + 1);
+    if (next === v) return c;
+    return next === 0 ? { out: c.out, crop: c.crop } : { out: c.out, crop: c.crop, offset: next };
+  });
+  if (notes.length > 0) {
+    setQuiet({ offsets, customs });
+    save();
+  }
+  return notes;
 }
 
 /** The title the thumbnail is painting, or null when it is not showing.
@@ -1699,6 +1810,15 @@ function toggleThumb(): void {
  *  comment noting a mismatch between the two would be invisible; the server
  *  says it once now and this reads it. */
 async function doExport(): Promise<void> {
+  // Clamped before the body is built, so the label, the badge and what is
+  // sent all name the shift the footage can actually give. Reported on the
+  // status row's callout (the `error` field — the existing channel, no new
+  // UI) once the export lands, since `guard` clears `error` on entry.
+  const clampNotes = clampOffsets();
+  if (clampNotes.length > 0) {
+    setState({});
+    sourceEditor?.place();
+  }
   const s = getState();
   const layout = resolveLayout(s.layoutId);
   const boxes = s.boxes;
@@ -1723,6 +1843,7 @@ async function doExport(): Promise<void> {
   const used = [
     ...new Set(planLegs(s.clipStart, s.clipEnd, cuts, speeds).flatMap((l) => (l.speed === 1 ? [] : [l.speed]))),
   ];
+  const shifted = s.offsets.some((o) => o !== 0) || s.customs.some((c) => (c.offset ?? 0) !== 0);
   await guard("Rendering… (a 30s clip takes ~5–10s)", async () => {
     const out = await api.exportClip({
       videoId: s.videoId,
@@ -1753,7 +1874,15 @@ async function doExport(): Promise<void> {
       ...(wide ? {} : { voiceTitle: s.voiceTitle.trim(), voice: currentVoice(s) }),
       layoutId: layout.id,
       boxes,
+      // Each piece's `offset` rides along inside it.
       customs: s.customs,
+      // Per-box time offsets, sent only when one is on, so an unshifted
+      // export's body is exactly what it was before offsets existed. A
+      // stitch needs its source-timeline trim ranges as well: the shifted
+      // copies are rebuilt from the part files, and the server checks these
+      // against `digest`.
+      ...(shifted ? { offsets: s.offsets } : {}),
+      ...(shifted && s.clipDigest !== "" ? { segments: s.segments } : {}),
       // The render this one supersedes. In-memory only, so a reload between
       // two exports leaves the older file on the Desktop — deliberate: the
       // alternative is another persisted field whose only job is naming a
@@ -1765,6 +1894,8 @@ async function doExport(): Promise<void> {
       outName: out.name,
       outUrl: out.url,
       outSize: out.size,
+      // The offset clamp above, said once the render is in: one line per box.
+      error: clampNotes.join("\n"),
       // Both defaults are `||`-guarded so a re-export after a crop fix keeps
       // whatever was already typed — retyping the metadata is exactly the
       // work this phase exists to remove.
@@ -2198,6 +2329,7 @@ function renderOrientation(currentId: string, busy: boolean): Node {
       setState({
         layoutId: (toWide ? DEFAULT_WIDE_LAYOUT : DEFAULT_LAYOUT).id,
         boxes: [],
+        offsets: [],
         customs: [],
         showThumb: false,
       });
@@ -2261,7 +2393,7 @@ function renderLayoutPicker(currentId: string, busy: boolean): Node {
       // ponytail: a boxesByLayout map would preserve a framing per layout
       // and make flipping between them to compare non-destructive. Add it
       // if that gets annoying.
-      setState({ layoutId: layout.id, boxes: [] });
+      setState({ layoutId: layout.id, boxes: [], offsets: [] });
       save();
       // setState() above re-renders synchronously, and render() replaces
       // barSlot's children wholesale — which destroys the very button that
@@ -2561,7 +2693,13 @@ function renderFraming(): Node[] {
       // One notifying update at the end, so the kept-duration badge, the
       // over-length warning and Export's gate all catch up in a single
       // render rather than one per pointermove.
+      // A moved mark can shrink the footage a time offset may shift into;
+      // pull any stored offset back inside it so the box labels and the
+      // canvas badge stay true. Quiet, then the setState below renders and
+      // the overlay re-reads its labels.
+      clampOffsets();
       setState({ clipStart: cur.clipStart, clipEnd: cur.clipEnd });
+      sourceEditor?.place();
     };
     target.onpointermove = move;
     target.onpointerup = up;

@@ -1,4 +1,4 @@
-import { displayScale, toDisplay } from "./geometry.ts";
+import { MAX_OFFSET, displayScale, toDisplay } from "./geometry.ts";
 import type { Corner, Rect, Size } from "./geometry.ts";
 
 const CORNERS: Corner[] = ["nw", "ne", "sw", "se"];
@@ -54,14 +54,95 @@ export function mountEditor(opts: {
   onCommit(): void;
   /** When given, each node carries a × that removes it. */
   onRemove?: (index: number) => void;
+  /** When given, each node carries a `− N +` time-offset control (the
+   *  source overlay only). `get`/`set` take the node's index; `set` must
+   *  write quietly — the label is updated here, in place, so a click never
+   *  waits on a render. `bounds` is the footage's real headroom, read live
+   *  (the marks can move without a remount). `disabled` non-null refuses
+   *  every step AWAY from 0 and is shown as the tooltip.
+   *
+   *  A step TOWARD 0 is never refused, by either: an offset restored from
+   *  storage can sit outside today's bounds or under a disabled control,
+   *  and the server answers 400 to some of those on every export — so the
+   *  way back to 0 must always be open. */
+  offset?: {
+    get(i: number): number;
+    set(i: number, v: number): void;
+    bounds(): { min: number; max: number };
+    disabled: string | null;
+  };
 }): EditorHandle {
   const layer = document.createElement("div");
   layer.className = "boxes";
   opts.host.append(layer);
 
   const labelFrom = opts.labelFrom ?? 0;
+  // Per node, the offset label and its two buttons, refreshed in place by
+  // `syncOffset` — never by a re-render, which would rebuild the overlay.
+  const offsetParts: { label: HTMLSpanElement; dec: HTMLButtonElement; inc: HTMLButtonElement }[] = [];
   const nodes = Array.from({ length: opts.count }, (_, i) => makeBox(i));
   layer.append(...nodes);
+
+  function syncOffset(index: number): void {
+    const part = offsetParts[index];
+    if (!part || !opts.offset) return;
+    const v = opts.offset.get(index);
+    part.label.textContent = v > 0 ? `+${v}` : String(v);
+    part.dec.disabled = !canStep(v, -1);
+    part.inc.disabled = !canStep(v, 1);
+  }
+
+  /** Whether `v + step` is allowed: always toward 0, otherwise only inside
+   *  the bounds and when the control is not disabled. */
+  function canStep(v: number, step: number): boolean {
+    const o = opts.offset;
+    if (!o) return false;
+    const next = v + step;
+    if (Math.abs(next) < Math.abs(v)) return true;
+    if (o.disabled !== null) return false;
+    const { min, max } = o.bounds();
+    return next >= Math.max(min, -MAX_OFFSET) && next <= Math.min(max, MAX_OFFSET);
+  }
+
+  function makeOffset(index: number): HTMLDivElement {
+    const group = document.createElement("div");
+    group.className = "box-offset";
+    const n = labelFrom + index + 1;
+    const button = (text: string, step: number, way: "earlier" | "later") => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = text;
+      b.ariaLabel = `Show box ${n} one second ${way}`;
+      b.title = opts.offset?.disabled ?? `Show this box one second ${way}`;
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const o = opts.offset;
+        if (!o) return;
+        const v = o.get(index);
+        if (!canStep(v, step)) {
+          // Bounds are live; the button's state may predate a mark move.
+          syncOffset(index);
+          return;
+        }
+        o.set(index, v + step);
+        syncOffset(index);
+      });
+      return b;
+    };
+    const dec = button("−", -1, "earlier");
+    const label = document.createElement("span");
+    label.className = "box-offset-value";
+    const inc = button("+", 1, "later");
+    group.title = opts.offset?.disabled ?? "Time offset, seconds";
+    // pointerdown stops at the group for the reason `.box-remove`'s does: the
+    // layer's own pointerdown would otherwise start a drag — from a button,
+    // a disabled one, or the label between them alike. The step itself is a
+    // click, so a pointer that slides off a button does nothing.
+    group.addEventListener("pointerdown", (e) => e.stopPropagation());
+    group.append(dec, label, inc);
+    offsetParts[index] = { label, dec, inc };
+    return group;
+  }
 
   function makeBox(index: number): HTMLDivElement {
     const box = document.createElement("div");
@@ -94,6 +175,7 @@ export function mountEditor(opts: {
       });
       box.append(remove);
     }
+    if (opts.offset) box.append(makeOffset(index));
     for (const c of CORNERS) {
       const h = document.createElement("div");
       h.className = `handle handle-${c}`;
@@ -133,6 +215,7 @@ export function mountEditor(opts: {
       node.style.top = `${d.y}px`;
       node.style.width = `${d.w}px`;
       node.style.height = `${d.h}px`;
+      syncOffset(i);
     });
     // Native hit-testing follows paint order, so the later sibling wins where
     // the boxes overlap. defaultBoxes overlaps by construction, which would

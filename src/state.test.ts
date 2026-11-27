@@ -94,6 +94,7 @@ describe("save", () => {
         { x: 0, y: 0, w: 180, h: 160 },
         { x: 10, y: 10, w: 180, h: 160 },
       ],
+      offsets: [],
       customs: [],
       sourceW: 1920,
       sourceH: 1080,
@@ -142,6 +143,7 @@ describe("save", () => {
         { x: 0, y: 0, w: 180, h: 160 },
         { x: 5, y: 5, w: 180, h: 160 },
       ],
+      offsets: [],
       customs: [],
       sourceW: 1920,
       sourceH: 1080,
@@ -172,6 +174,7 @@ describe("save", () => {
         { x: 1, y: 1, w: 180, h: 160 },
         { x: 2, y: 2, w: 180, h: 160 },
       ],
+      offsets: [],
       customs: [],
       sourceW: 1920,
       sourceH: 1080,
@@ -236,6 +239,7 @@ describe("save", () => {
       voiceTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
+      offsets: [],
       customs: [],
       sourceW: 0,
       sourceH: 0,
@@ -261,6 +265,7 @@ describe("save", () => {
       voiceTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
+      offsets: [],
       customs: [],
       sourceW: 0,
       sourceH: 0,
@@ -324,6 +329,7 @@ describe("save", () => {
       voiceTitle: "",
       layoutId: DEFAULT_LAYOUT_ID,
       boxes: [],
+      offsets: [],
       customs: [],
       sourceW: 0,
       sourceH: 0,
@@ -372,6 +378,7 @@ describe("restore", () => {
         { x: 0, y: 0, w: 180, h: 160 },
         { x: 1, y: 1, w: 180, h: 160 },
       ],
+      offsets: [0, 0],
       customs: [],
     });
   });
@@ -407,6 +414,7 @@ describe("restore", () => {
         { x: 3, y: 3, w: 180, h: 160 },
         { x: 4, y: 4, w: 180, h: 160 },
       ],
+      offsets: [0, 0],
       customs: [],
     });
   });
@@ -436,6 +444,7 @@ describe("restore", () => {
       voiceTitle: "",
       layoutId: "2h-1",
       boxes: [],
+      offsets: [],
       customs: [],
     });
   });
@@ -1040,5 +1049,51 @@ describe("project file", () => {
     };
     importProject(JSON.stringify({ v: 1, videoId: ID, record }));
     expect(restore(ID, { w: 1920, h: 1080 }).customs).toEqual([]);
+  });
+});
+
+describe("save / restore — offsets", () => {
+  const source = { w: 1920, h: 1080 };
+  const boxes = [
+    { x: 0, y: 100, w: 900, h: 800 },
+    { x: 1020, y: 100, w: 900, h: 800 },
+  ];
+  const custom = {
+    out: { x: 300, y: 700, w: 480, h: 480 },
+    crop: { x: 0, y: 100, w: 480, h: 480 },
+  };
+  const framing = (videoId: string) =>
+    setState({ videoId, phase: "framing", layoutId: DEFAULT_LAYOUT_ID, source, boxes, customs: [] });
+
+  it("offsets persist under the framing gate", () => {
+    const videoId = "offsets-gate";
+    framing(videoId);
+    setState({ offsets: [0, 3] });
+    save();
+    expect(restore(videoId, source).offsets).toEqual([0, 3]);
+    // Outside framing the stored offsets are carried forward, not overwritten.
+    setState({ phase: "trimming", offsets: [1, 1] });
+    save();
+    expect(restore(videoId, source).offsets).toEqual([0, 3]);
+  });
+
+  it("restore drops bad offsets", () => {
+    const videoId = "offsets-bad";
+    framing(videoId);
+    save();
+    const raw = JSON.parse(localStorage.getItem(`vstack:${videoId}`) ?? "{}");
+    raw.offsets = [0, 9, "x"];
+    localStorage.setItem(`vstack:${videoId}`, JSON.stringify(raw));
+    expect(restore(videoId, source).offsets).toEqual([0, 0]);
+  });
+
+  it("a custom's offset survives restore", () => {
+    const videoId = "offsets-custom";
+    framing(videoId);
+    setState({ customs: [{ ...custom, offset: -2 }, { ...custom, offset: 7 }] });
+    save();
+    const got = restore(videoId, source).customs ?? [];
+    expect(got[0]?.offset).toBe(-2);
+    expect(got[1]?.offset ?? 0).toBe(0);
   });
 });

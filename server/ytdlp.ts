@@ -259,6 +259,30 @@ export async function listClips(): Promise<CachedClip[]> {
   return clips.map(({ mtime: _mtime, ...clip }) => clip);
 }
 
+/** The cached part file `fetchOne` wrote for one segment of a stitch, or
+ *  null if it is gone. `/api/export` needs the parts themselves, not the
+ *  stitch, to shift a box in time: the stitch keeps no pad at its seams.
+ *
+ *  `windowStart` is `fetchOne`'s own arithmetic, but its `windowEnd` is
+ *  clamped to the video's duration, which the export body does not carry —
+ *  so the directory is read for an un-digested name with that start that
+ *  reaches the segment's end. `parseClipName` is the filter (a stitch or a
+ *  download partial never matches), and the path is rebuilt by `clipPath`
+ *  from the parsed integers, never taken from anywhere else. Of several
+ *  matches the longest wins: same footage at the same offsets, more of it
+ *  after the segment to shift into. */
+export async function partPath(videoId: string, seg: Segment): Promise<string | null> {
+  const windowStart = Math.max(0, Math.floor(seg.start - PAD));
+  const names = await readdir(join(MEDIA_DIR, videoId)).catch(() => []);
+  let best = -1;
+  for (const name of names) {
+    const b = parseClipName(name);
+    if (!b || b.digest !== "" || b.windowStart !== windowStart || b.windowEnd < seg.end) continue;
+    best = Math.max(best, b.windowEnd);
+  }
+  return best < 0 ? null : clipPath(videoId, windowStart, best);
+}
+
 /** Fetches (and caches) `[start − PAD, end + PAD]` clamped to the video's
  *  own bounds, then reports the clip's *actual* dimensions via ffprobe —
  *  yt-dlp picks a format, so the fetched resolution can differ from what

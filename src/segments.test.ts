@@ -10,8 +10,10 @@ import {
   keepRanges,
   legsDuration,
   normalize,
+  offsetBounds,
   normalizeSpeeds,
   planLegs,
+  shiftLegs,
   speedGain,
   speedWindows,
   outputAt,
@@ -480,5 +482,103 @@ describe("outputAt", () => {
   it("clamps before the first leg and past the last", () => {
     expect(outputAt(legs, 0)).toBe(0);
     expect(outputAt(legs, 99)).toBe(22.5);
+  });
+});
+
+describe("shiftLegs", () => {
+  const one = [{ file: 0, clipStart: 0, clipEnd: 30, fileStart: 5, fileLength: 40 }];
+  const leg = (start: number, end: number, speed: 1 | 2 | 4 | 8 | 16 = 1) => ({ start, end, speed });
+  const seam = [
+    { file: 0, clipStart: 0, clipEnd: 10, fileStart: 5, fileLength: 20 },
+    { file: 1, clipStart: 10, clipEnd: 20, fileStart: 5, fileLength: 20 },
+  ];
+
+  it("identity at offset 0", () => {
+    expect(shiftLegs([leg(2, 8)], one, 0)).toEqual([{ file: 0, start: 7, end: 13, speed: 1 }]);
+  });
+  it("moves by the offset", () => {
+    expect(shiftLegs([leg(2, 8)], one, 3)).toEqual([{ file: 0, start: 10, end: 16, speed: 1 }]);
+    expect(shiftLegs([leg(2, 8)], one, -2)).toEqual([{ file: 0, start: 5, end: 11, speed: 1 }]);
+  });
+  it("splits a leg at a seam", () => {
+    expect(shiftLegs([leg(8, 12)], seam, 3)).toEqual([
+      { file: 0, start: 16, end: 18, speed: 1 },
+      { file: 1, start: 8, end: 10, speed: 1 },
+    ]);
+  });
+  it("slides at the file start, keeping length", () => {
+    const src = [{ file: 0, clipStart: 0, clipEnd: 30, fileStart: 0, fileLength: 40 }];
+    expect(shiftLegs([leg(1, 4)], src, -3)).toEqual([{ file: 0, start: 0, end: 3, speed: 1 }]);
+  });
+  it("slides at the file end, keeping length", () => {
+    const src = [{ file: 0, clipStart: 0, clipEnd: 30, fileStart: 0, fileLength: 20 }];
+    expect(shiftLegs([leg(15, 18)], src, 4)).toEqual([{ file: 0, start: 17, end: 20, speed: 1 }]);
+  });
+  it("keeps speed", () => {
+    expect(shiftLegs([leg(2, 8, 4)], one, 1)[0]?.speed).toBe(4);
+  });
+  it("preserves duration", () => {
+    const legs = [leg(8, 12), leg(14, 18, 4)];
+    for (let o = -5; o <= 5; o++) {
+      const out = shiftLegs(legs, seam, o).map((l) => ({ start: l.start, end: l.end, speed: l.speed }));
+      expect(Math.abs(legsDuration(out) - legsDuration(legs))).toBeLessThan(1e-9);
+    }
+  });
+});
+
+describe("offsetBounds", () => {
+  const base = { pad: 5, cap: 5, duration: 1217 };
+  const one = (clipStart: number, clipEnd: number, windowStart: number, windowEnd: number) =>
+    offsetBounds({ ...base, digest: "", segments: [], clipStart, clipEnd, windowStart, windowEnd });
+
+  it("gives a single range its window's own headroom", () => {
+    expect(one(405, 425, 400, 437)).toEqual({ min: -5, max: 5 });
+    expect(one(402, 434, 400, 437)).toEqual({ min: -2, max: 3 });
+  });
+
+  it("gives marks flush with the window nothing to shift into", () => {
+    expect(one(400, 437, 400, 437)).toEqual({ min: 0, max: 0 });
+  });
+
+  it("floors fractional headroom toward zero", () => {
+    expect(one(402.6, 433.4, 400, 437)).toEqual({ min: -2, max: 3 });
+  });
+
+  it("caps at the given limit", () => {
+    expect(offsetBounds({ ...base, cap: 3, digest: "", segments: [], clipStart: 410, clipEnd: 420, windowStart: 400, windowEnd: 440 })).toEqual({ min: -3, max: 3 });
+  });
+
+  const stitch = (segments: { start: number; end: number }[], duration = 1217) =>
+    offsetBounds({ ...base, duration, digest: "3caf292a", segments, clipStart: 0, clipEnd: 20, windowStart: 0, windowEnd: 20 });
+
+  it("gives a stitch the tightest part's headroom", () => {
+    expect(stitch([{ start: 405, end: 415 }, { start: 425, end: 435 }])).toEqual({ min: -5, max: 5 });
+  });
+
+  it("gives a stitch whose first part opens the video no room to shift earlier", () => {
+    expect(stitch([{ start: 0, end: 10 }, { start: 20, end: 30 }])).toEqual({ min: 0, max: 5 });
+    expect(stitch([{ start: 2.5, end: 10 }, { start: 20, end: 30 }])).toEqual({ min: -2, max: 5 });
+  });
+
+  it("gives a stitch whose last part ends near the video's end only the footage left", () => {
+    expect(stitch([{ start: 100, end: 110 }, { start: 1210, end: 1215 }])).toEqual({ min: -5, max: 2 });
+    expect(stitch([{ start: 100, end: 110 }, { start: 1210, end: 1217 }])).toEqual({ min: -5, max: 0 });
+  });
+
+  it("ends at the video's real (fractional) end, not its ceil", () => {
+    // fetchOne's window ends at ceil(duration), but the file ends at duration.
+    expect(
+      offsetBounds({ ...base, duration: 1217.4, digest: "", segments: [], clipStart: 1210, clipEnd: 1215, windowStart: 1205, windowEnd: 1218 }),
+    ).toEqual({ min: -5, max: 2 });
+    expect(stitch([{ start: 100, end: 110 }, { start: 1210, end: 1215 }], 1216.6)).toEqual({ min: -5, max: 1 });
+  });
+
+  it("treats a stand-in duration shorter than the parts as unknown", () => {
+    // The dropdown reopen path's `duration` is the clip's own windowEnd.
+    expect(stitch([{ start: 405, end: 415 }, { start: 425, end: 435 }], 20)).toEqual({ min: -5, max: 5 });
+  });
+
+  it("gives a stitch with no stored parts nothing", () => {
+    expect(stitch([{ start: 405, end: 415 }])).toEqual({ min: 0, max: 0 });
   });
 });

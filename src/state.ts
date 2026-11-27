@@ -1,7 +1,7 @@
 import type { Moment } from "./api.ts";
 import { MAX_CUSTOM, isValidCustom } from "./custom.ts";
 import type { CustomBox } from "./custom.ts";
-import { isValidBox } from "./geometry.ts";
+import { cleanOffset, isValidBox } from "./geometry.ts";
 import type { Rect, Size } from "./geometry.ts";
 import { DEFAULT_LAYOUT_ID, cellsOf, layoutById, ratioOf, resolveLayout } from "./layout.ts";
 import { isValidSegments, legsDuration, planLegs, totalDuration } from "./segments.ts";
@@ -241,6 +241,9 @@ export type AppState = {
    *  "not framed yet" — the only other legal length is the layout's cell
    *  count, which is what `save`'s gate and `restore` both check. */
   boxes: Rect[];
+  /** One time offset per cell, whole seconds, in `cellsOf` order. Empty or
+   *  all zero is the normal case; cleared with `boxes` on a layout switch. */
+  offsets: number[];
   /** Floating pieces over the layout, in z order — last on top. Empty is the
    *  normal case. Unlike `boxes` these survive a layout change: a custom
    *  box's ratio is its own and its `out` is frame space, so nothing about it
@@ -321,6 +324,7 @@ const initial: AppState = {
   source: { w: 0, h: 0 },
   layoutId: DEFAULT_LAYOUT_ID,
   boxes: [],
+  offsets: [],
   customs: [],
   outName: "",
   outUrl: "",
@@ -366,6 +370,7 @@ export type Saved = {
   voiceTitle: string;
   layoutId: string;
   boxes: Rect[];
+  offsets: number[];
   customs: CustomBox[];
   sourceW: number;
   sourceH: number;
@@ -468,6 +473,7 @@ function normalizeSaved(parsed: unknown): Saved | null {
     voiceTitle: typeof s.voiceTitle === "string" ? s.voiceTitle : "",
     layoutId: s.layoutId ?? DEFAULT_LAYOUT_ID,
     boxes: migrated ?? (Array.isArray(s.boxes) ? s.boxes : []),
+    offsets: Array.isArray(s.offsets) ? s.offsets : [],
     customs: Array.isArray(s.customs) ? s.customs : [],
     sourceW: s.sourceW ?? 0,
     sourceH: s.sourceH ?? 0,
@@ -532,6 +538,8 @@ export function save(): void {
     voiceTitle: state.voiceTitle,
     layoutId: framed ? layout.id : (prev?.layoutId ?? DEFAULT_LAYOUT_ID),
     boxes: framed ? state.boxes : (prev?.boxes ?? []),
+    // Same gate as boxes: offsets are per cell and mean nothing without them.
+    offsets: framed ? state.offsets : (prev?.offsets ?? []),
     // Same gate as boxes, for the same reason: an `out` is frame space and
     // always meaningful, but a `crop` is source pixels and means nothing
     // before /api/window has reported the clip's real size.
@@ -601,7 +609,16 @@ export function restore(videoId: string, source: Size | null): Partial<AppState>
     voiceTitle: s.voiceTitle,
     layoutId: layout ? layout.id : DEFAULT_LAYOUT_ID,
     boxes: usable ? s.boxes : [],
-    customs: usableCustoms ? s.customs : [],
+    // Truncated to the cell count and cleaned per element; a bad entry
+    // costs only itself. Zero offsets are the identity, so a custom's key
+    // is dropped when 0 and a record without it restores unchanged.
+    offsets: usable ? cells.map((_, i) => cleanOffset(s.offsets[i])) : [],
+    customs: usableCustoms
+      ? s.customs.map((c) => {
+          const offset = cleanOffset(c.offset);
+          return offset === 0 ? { out: c.out, crop: c.crop } : { out: c.out, crop: c.crop, offset };
+        })
+      : [],
   };
 }
 

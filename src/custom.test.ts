@@ -289,3 +289,12 @@ describe("custom boxes in the WIDE frame", () => {
     }
   });
 });
+
+describe("isValidCustom ignores offset", () => {
+  it("a valid custom with an offset is still valid", () => {
+    const src = { w: 1920, h: 1080 };
+    const c = defaultCustom(src, 0, TALL);
+    expect(isValidCustom({ ...c, offset: 3 }, src, TALL)).toBe(true);
+    expect(isValidCustom({ ...c, offset: 99 }, src, TALL)).toBe(true);
+  });
+});
