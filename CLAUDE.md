@@ -107,7 +107,11 @@ lofi to neither, plus
 `docs/specs/2026-10-03-vstack-speed-ranges-design.md`, which supersedes
 nothing and adds violet speed-up ranges to the framing strip (x2-x16, sound
 kept and `atempo`d, motion blur, colour split, badge) — `speeds` + `badgePngs` on top of `/api/export`'s
-body, plus `docs/specs/2026-10-18-vstack-video-cutter-design.md`, which
+body, plus `docs/specs/2026-11-26-vstack-box-offsets-design.md`, which
+supersedes nothing and adds a per-box time offset (±`MAX_OFFSET` = `PAD` = 5s,
+whole seconds) so a livestream's chat box can show footage a few seconds later
+than the stream box — `offsets` + `segments` + `customs[i].offset` on top of
+`/api/export`'s body, export-only, plus `docs/specs/2026-10-18-vstack-video-cutter-design.md`, which
 supersedes nothing and adds a SEVENTH way out of `idle` and a fourth dead
 end: `idle` → `trimming` → `idle`, where `Video cutter →` opens the
 trimming phase under a module-scoped `videoCutter` flag (always, even under
@@ -134,7 +138,7 @@ pnpm dev      # Vite on :5173, proxies /api -> :8787
 pnpm prod     # stable copy to USE while editing: backend :8788 (no --watch),
               # Vite :5174 with HMR + file watching off. Own ports so dev's
               # killOldServer leaves it alone. Restart it to pick up changes.
-pnpm test     # vitest, 603 tests (shells real ffmpeg *and* real VieNeu-TTS)
+pnpm test     # vitest, 663 tests (shells real ffmpeg *and* real VieNeu-TTS)
 pnpm build    # tsc && vite build
 pnpm voices   # audition the starter screen's 20 TTS presets (see below)
 pnpm tts-setup     # one-off: build ~/.vstack/vieneu (see server/tts.py)
@@ -161,7 +165,8 @@ and the only remaining macOS dependency is `afplay` in `pnpm voices` and
 
 ```
 server/errors.ts   HttpError (status + message), toolError (stderr tail)
-server/ffmpeg.ts   SpeedFx/speedFilter (the speed stage), MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
+server/ffmpeg.ts   SpeedFx/speedFilter (the speed stage), buildTimelines/
+                   distinctOffsets/sourceIndex (the shifted twins, ExportOpts.twins), MEDIA_DIR/OUT_DIR, clipName/clipPath, segmentDigest,
                    outName/outPath, isOutName, cutName/isCutName,
                    pieceName/isPieceName (the video cutter's -raw.mp4),
                    scriptName/isScriptName,
@@ -234,17 +239,17 @@ server/facebook.ts buildCaption, reelLengthError, readPageToken,
                    /{page}/videos published=false), reelProgress (both) — imports nothing from youtube.ts
 scripts/facebook-auth.ts  `pnpm facebook-auth` — short token → long-lived →
                    never-expiring Page token in ~/.vstack/facebook-token.json
-server/ytdlp.ts    videoIdFrom, probe, fetchOne, fetchWindow, parseClipName, listClips
+server/ytdlp.ts    videoIdFrom, probe, fetchOne, fetchWindow, parseClipName, listClips, partPath
 server/chat.ts     ChatMsg/Moment, BIN/WIN/LAG/TOP/MIN_GAP/SKIP_HEAD,
                    fetchChat (chat replay -> media/<id>/chat.json),
                    parseChat, peaks (the scorer)
 server/index.ts    23 routes (22 POST + GET /out/<name>), serveOut range
                    streaming, body validators, boot checks
-src/geometry.ts    pure rect math — THE tested core; TALL/WIDE
+src/geometry.ts    pure rect math — THE tested core; TALL/WIDE, MAX_OFFSET/cleanOffset
 src/segments.ts    Segment, MAX_SEGMENTS, normalize, isValidSegments,
                    totalDuration, keepRanges, editMark, planLegs/
                    normalizeSpeeds/isValidSpeeds/legsDuration/speedWindows,
-                   speedGain/FAST_GAIN
+                   speedGain/FAST_GAIN, shiftLegs/LegSource/offsetBounds (per-box offsets)
 src/speed.ts       speedAt, drawBadge, renderBadge (the x-N badge as a
                    transparent PNG, outlined text), the preview's motion-trail approximation lives in preview.ts
 src/lofi.ts        Speech/Placement, BUCKETS_PER_SEC/MIN_GAP/SKIP_HEAD/
@@ -761,6 +766,12 @@ The framing `<video>` **skips** a cut (`ontimeupdate` seeks to its end), and
 are what keeps the next invariant's promise while framing gains holes.
 
 **`planLegs` is the one rule a speed range is spent with, and it reduces to `keepRanges` at no speeds.** A speed range is a violet band on the framing strip, x2 to x16, laid over the clip the way a cut is. Where the two overlap, the cut wins: the speed is clipped to what survives, so a band never plays footage the export drops. Two bands that overlap merge and the EARLIER one's speed wins, for the reason `normalize` keeps the earlier `start`. `planLegs(start, end, cuts, speeds)` returns the legs the render is built from, each a kept range with its speed; the client's kept badge, its set of badge PNGs (one per distinct speed in use) and the server's legs, badge-key check and fx windows all come from that one function. Two copies of the subtraction is how a badge comes to name a duration, or a speed, the file does not have. With no speeds it returns exactly `keepRanges`' ranges at speed 1, which is what keeps every export written before the field existed byte-identical; `src/segments.test.ts` mutation-tests that identity. Two known gaps, stated rather than fixed: the framing `<video>` sets `playbackRate = speed` inside a band on a ~4 Hz `timeupdate` (`ponytail:`-marked), so the rate can lag a band's edge by a quarter second, and leaving framing does not reset the rate until the next `timeupdate` (it self-heals). A band keeps its sound, sped: `concatClips` runs a sounded sped leg through `atempo=<speed>` (pitch kept, 0.5-100 so x16 fits), the same thing the browser's `playbackRate` does by default. At x8 and x16 speech is a warble rather than words, so `speedGain` (in `src/segments.ts`, one rule for both sides) drops those legs to `FAST_GAIN` (0.3, ~-10.5 dB): `volume=` after `atempo` in the stitch, `v.volume` on the framing `<video>` — safe to own because that element has no native controls. It was muted under a bundled whoosh first; the user removed the whoosh and asked for the original sound.
+
+**Offsets are export-only; the preview badges, never shifts.** The canvas keeps drawing every box from the one framing `<video>` and a shifted box gets a `+3s` badge (`ponytail:`-marked; upgrade path is one hidden `<video>` per distinct offset). It is the one deliberate preview/export divergence in this codebase, labelled on screen rather than silent. `AppState.offsets` is per cell in `cellsOf` order, a piece's `offset` rides inside its `CustomBox` (so a layout switch clears the first and keeps the second), and `restore` cleans both with `cleanOffset`. The output-overlay `onChange` in `main.ts` must spread the existing piece (`{ ...cur, out, crop }`) or a resize drops its `offset`. Audio is always the offset-0 timeline's.
+
+**With any offset on, main and twins are built from the SAME part files by `shiftLegs`, never main from the cached stitch.** The cached stitch carries its own trim/`fps` rounding at every seam while a twin maps clip time to part files by arithmetic, so one built from each drifts about a frame per seam. `buildTimelines` runs `concatClips(shiftLegs(legs, sources, 0))` for main and one per distinct non-zero offset, all with `concatClips`' forced `{ width, height, fps }` (parts of one stitch can differ in resolution, and every crop rect is in the cached clip's pixels). `shiftLegs` first SPLITS a leg at part seams so no chat bleeds across a join, then moves each piece, and SLIDES rather than shrinks a piece that would leave its file (the `clampToBounds` rule: the twin keeps main's exact length, a box near the video's start/end shifts by less than asked). It reduces to the identity at offset 0, mutation-tested. Twins are the LAST inputs: 0 clip, 1 mask, badges, then twins, declared before `-ss`; `-ss`/`-t` are output options after every `-i`, so twins stay aligned for any `start`. With all offsets 0 none of this runs and `buildFilter`'s string is byte-identical (string-pinned).
+
+**The client's ± steps away from 0 only within footage that exists, and toward 0 always.** The server slides a shifted range that leaves its file, so an unbounded control would show `+3s` and export no shift — found in a real browser export with marks flush to the window. `offsetBounds` (in `src/segments.ts`) computes the room: window headroom for a single range, per-part PAD'd windows for a stitch (mirroring `fetchOne`/`partPath`). A stored offset is CLAMPED back into those bounds whenever they can shrink — on the framing strip's handle release and again in `doExport` before the body is built (`clampOffsets` in `src/main.ts`, one helper for both) — so label, badge and body always agree; an export-time clamp that changes a value says so in the status row's `.callout`. `partPath` finds a stitch's part file by `windowStart` and `windowEnd >= seg.end`, longest match winning. The route requires `segments` (checked against `digest` via `segmentDigest`) for a stitch with any non-zero offset, and the client disables the control with a message when it has none (a reopened multi-part clip).
 
 **The speed stage is gated, not built per window, and the motion blur lives in the stitch.** `speedFilter(fx, frame, base)` is a red/blue split (`rgbashift`, which only accepts RGB so ffmpeg converts around it by itself, then `format=yuv420p`) plus the badge overlays, and it touches no audio — the export maps `0:a?` with or without it. The VHS lines it once carried, and the planar-RGB `blend` rule that came with them, are gone — nothing in this stage blends any more. The stage is built ONCE, with a single `enable=` sum over every window's `between(t,a,b)`, rather than a copy of the chain per window: N windows cost one pass of the filters, not N. The x-N badges arrive as extra inputs declared AFTER the mask and BEFORE `-ss` (ffmpeg attaches an option to the next `-i`, the lesson the mask carries), and are `overlay`ed inside their window; `ExportOpts.speed` carries windows and the badge map. Every video `enable=` is gated `gt(t,0)*(…)` because the starter screen and the thumbnails are body.mp4's FIRST FRAME and must stay clean even when a range opens the clip (the preview's thumbnail is clean too); `exportClip` also refuses a speed stage on a `start !== 0` input, since windows are output seconds of a stitched clip.
 
